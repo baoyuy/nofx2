@@ -1,0 +1,247 @@
+import { useMemo } from 'react'
+import { useLanguage } from '../../contexts/LanguageContext'
+
+/**
+ * OrchestrationTopology renders the decision funnel as a chain of tightly-packed
+ * dot matrices — one wide grid per layer (flow → signal → decision → execute →
+ * hold), columns sitting close together. Every grid is always full: real symbols
+ * are SOLID (green long / red short) and SCATTERED across the grid; empty cells
+ * are HOLLOW placeholders. Matching symbols connect forward; the engine fans
+ * beams to the candidates that progress.
+ */
+
+export type FunnelDir = 'long' | 'short' | 'flat'
+export interface FunnelItem {
+  symbol: string
+  // 'flat' = neutral signal: drawn grey in the upper zone, counted separately
+  dir: FunnelDir
+}
+export interface FunnelLayer {
+  key: string
+  title: string
+  zh: string
+  items: FunnelItem[]
+}
+interface OrchestrationTopologyProps {
+  layers: FunnelLayer[]
+  className?: string
+}
+
+const VB_W = 800
+const ENGINE_X = 40
+const HEADER_Y = 30
+const COLS = 8
+const LONG_ROWS = 5
+const SHORT_ROWS = 5
+const CAP_LONG = COLS * LONG_ROWS // 40
+const CAP_SHORT = COLS * SHORT_ROWS // 40
+const DX = 11
+const DY = 11
+const ZONE_GAP = 8
+const LAYER_START = 100
+const LAYER_STEP = 128
+
+const LONG = 'var(--tm-up)'
+const SHORT = 'var(--tm-dn)'
+const FLAT = 'var(--tm-muted)'
+
+const dirColor = (dir: string) => (dir === 'short' ? SHORT : dir === 'flat' ? FLAT : LONG)
+
+function baseSymbol(raw: string): string {
+  return raw.toUpperCase().replace(/^XYZ:/, '').replace(/[-_]/g, '').replace(/(USDT|USDC|USD)$/, '')
+}
+
+// stable pseudo-random in [0,1) from a string — gives each beam its own phase so
+// the funnel flickers randomly (not in lockstep) while staying deterministic.
+function hash01(s: string): number {
+  let h = 2166136261
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619)
+  return ((h >>> 0) % 10000) / 10000
+}
+
+// evenly spread `count` solid items across `capacity` grid cells
+function scatter(count: number, capacity: number): Map<number, number> {
+  const m = new Map<number, number>()
+  if (count <= 0) return m
+  for (let i = 0; i < count; i++) {
+    const cell = Math.min(capacity - 1, Math.floor(((i + 0.5) * capacity) / count))
+    m.set(cell, i)
+  }
+  return m
+}
+
+interface Cell {
+  base?: string
+  x: number
+  y: number
+  dir: FunnelDir
+  solid: boolean
+}
+
+function splitDedup(items: FunnelItem[]) {
+  const seen = new Set<string>()
+  // upper zone holds longs and neutral items, each keeping its own direction
+  const longs: { b: string; dir: FunnelDir }[] = []
+  const shorts: string[] = []
+  for (const it of items) {
+    const b = baseSymbol(it.symbol)
+    if (!b || seen.has(b)) continue
+    seen.add(b)
+    if (it.dir === 'short') shorts.push(b)
+    else longs.push({ b, dir: it.dir })
+  }
+  return { longs: longs.slice(0, CAP_LONG), shorts: shorts.slice(0, CAP_SHORT) }
+}
+
+export function OrchestrationTopology({ layers, className }: OrchestrationTopologyProps) {
+  const { language } = useLanguage()
+  const isZh = language === 'zh'
+  const { prepared, cellsByLayer, realByLayer, height, cy, colX } = useMemo(() => {
+    const prep = layers.map((l) => ({ ...l, ...splitDedup(l.items) }))
+    const xs = prep.map((_, i) => LAYER_START + i * LAYER_STEP)
+
+    const gridH = (LONG_ROWS + SHORT_ROWS) * DY + ZONE_GAP
+    const h = HEADER_Y + gridH + 14
+    const centerY = HEADER_Y + gridH / 2
+    const longTop = centerY - gridH / 2
+    const shortTop = longTop + LONG_ROWS * DY + ZONE_GAP
+
+    const cells: Cell[][] = []
+    const realMaps: Map<string, { x: number; y: number; dir: FunnelDir }>[] = []
+
+    prep.forEach((d, li) => {
+      const layerCells: Cell[] = []
+      const real = new Map<string, { x: number; y: number; dir: FunnelDir }>()
+      const longScatter = scatter(d.longs.length, CAP_LONG)
+      const shortScatter = scatter(d.shorts.length, CAP_SHORT)
+
+      for (let idx = 0; idx < CAP_LONG; idx++) {
+        const c = idx % COLS
+        const r = Math.floor(idx / COLS)
+        const x = xs[li] + c * DX
+        const y = longTop + r * DY
+        const itemIdx = longScatter.get(idx)
+        const item = itemIdx !== undefined ? d.longs[itemIdx] : undefined
+        const base = item?.b
+        const dir = item?.dir ?? 'long'
+        layerCells.push({ base, x, y, dir, solid: !!base })
+        if (base) real.set(base, { x, y, dir })
+      }
+      for (let idx = 0; idx < CAP_SHORT; idx++) {
+        const c = idx % COLS
+        const r = Math.floor(idx / COLS)
+        const x = xs[li] + c * DX
+        const y = shortTop + r * DY
+        const itemIdx = shortScatter.get(idx)
+        const base = itemIdx !== undefined ? d.shorts[itemIdx] : undefined
+        layerCells.push({ base, x, y, dir: 'short', solid: !!base })
+        if (base) real.set(base, { x, y, dir: 'short' })
+      }
+      cells.push(layerCells)
+      realMaps.push(real)
+    })
+
+    return { prepared: prep, cellsByLayer: cells, realByLayer: realMaps, height: h, cy: centerY, colX: xs }
+  }, [layers])
+
+  const edges = useMemo(() => {
+    const out: { x1: number; y1: number; x2: number; y2: number; dir: string; key: string }[] = []
+    for (let l = 0; l < realByLayer.length - 1; l++) {
+      const right = realByLayer[l + 1]
+      if (right.size === 0) continue
+      realByLayer[l].forEach((a, base) => {
+        const b = right.get(base)
+        if (b) out.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, dir: a.dir, key: `${l}-${base}` })
+      })
+    }
+    return out
+  }, [realByLayer])
+
+  // engine fans to real nodes in the first non-empty layer — balanced across
+  // long (top) and short (bottom) so both halves get dispatch lines/beams
+  const engineTargets = useMemo(() => {
+    const idx = realByLayer.findIndex((m) => m.size > 0)
+    if (idx < 0) return [] as { x: number; y: number; dir: FunnelDir }[]
+    const all = [...realByLayer[idx].values()]
+    const longs = all.filter((n) => n.dir !== 'short').slice(0, 24)
+    const shorts = all.filter((n) => n.dir === 'short').slice(0, 24)
+    return [...longs, ...shorts]
+  }, [realByLayer])
+
+  return (
+    <svg width="100%" viewBox={`0 0 ${VB_W} ${height}`} role="img"
+      aria-label={isZh ? '决策漏斗矩阵：流量、信号、决策、执行、持有' : 'Decision funnel matrix: flow, signal, decision, execute, hold'}
+      className={className} style={{ display: 'block' }}>
+
+      {prepared.map((d, li) => {
+        const flat = d.longs.filter((it) => it.dir === 'flat').length
+        return (
+          <g key={d.key} fontFamily="var(--tm-mono)">
+            <text x={colX[li] - 2} y={12} fontSize={8} fill="var(--tm-muted)" style={{ letterSpacing: '0.08em' }}>{d.title}</text>
+            <text x={colX[li] - 2} y={23} fontSize={8}>
+              <tspan fill="var(--tm-up)">{isZh ? '多' : 'L'}{d.longs.length - flat}</tspan>
+              <tspan fill="var(--tm-muted)"> </tspan>
+              <tspan fill="var(--tm-dn)">{isZh ? '空' : 'S'}{d.shorts.length}</tspan>
+              {flat > 0 ? <tspan fill={FLAT}>{isZh ? ` 中${flat}` : ` N${flat}`}</tspan> : null}
+            </text>
+          </g>
+        )
+      })}
+
+      <g strokeWidth={0.6} strokeDasharray="2 3" opacity={0.4}>
+        {engineTargets.map((n, i) => (
+          <line key={i} x1={ENGINE_X} y1={cy} x2={n.x} y2={n.y} stroke={dirColor(n.dir)} />
+        ))}
+      </g>
+      <g strokeWidth={0.8} strokeDasharray="2 3" opacity={0.5}>
+        {edges.map((e) => (
+          <line key={e.key} x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2} stroke={dirColor(e.dir)} />
+        ))}
+      </g>
+
+      {engineTargets.map((n, i) => {
+        const r = hash01(`e${i}-${n.x}-${n.y}`)
+        const dur = `${(0.42 + r * 0.55).toFixed(2)}s`
+        const begin = `${(r * 1.4).toFixed(2)}s`
+        return (
+          <circle key={`b0-${i}`} r={1.8} fill={dirColor(n.dir)}>
+            <animate attributeName="cx" values={`${ENGINE_X};${n.x}`} dur={dur} begin={begin} repeatCount="indefinite" />
+            <animate attributeName="cy" values={`${cy};${n.y}`} dur={dur} begin={begin} repeatCount="indefinite" />
+            <animate attributeName="opacity" values="0.9;0.9;0" dur={dur} begin={begin} repeatCount="indefinite" />
+          </circle>
+        )
+      })}
+      {edges.map((e) => {
+        const r = hash01(e.key)
+        const dur = `${(0.38 + r * 0.6).toFixed(2)}s`
+        const begin = `${(r * 1.6).toFixed(2)}s`
+        return (
+          <circle key={`be-${e.key}`} r={2.1} fill={dirColor(e.dir)}>
+            <animate attributeName="cx" values={`${e.x1};${e.x2}`} dur={dur} begin={begin} repeatCount="indefinite" />
+            <animate attributeName="cy" values={`${e.y1};${e.y2}`} dur={dur} begin={begin} repeatCount="indefinite" />
+            <animate attributeName="opacity" values="1;1;0" dur={dur} begin={begin} repeatCount="indefinite" />
+          </circle>
+        )
+      })}
+
+      {cellsByLayer.map((layer, li) =>
+        layer.map((cell, ci) => {
+          const color = dirColor(cell.dir)
+          if (cell.solid) {
+            return <circle key={`${li}-${ci}`} cx={cell.x} cy={cell.y} r={2.7} fill={color} stroke={color} strokeWidth={0.5} />
+          }
+          return <circle key={`${li}-${ci}`} cx={cell.x} cy={cell.y} r={1.8} fill="none" stroke={color} strokeWidth={0.6} opacity={0.2} />
+        })
+      )}
+
+      <circle cx={ENGINE_X} cy={cy} r={18} fill="none" stroke="var(--tm-red)" strokeWidth={1.5}>
+        <animate attributeName="r" values="18;34" dur="2.2s" repeatCount="indefinite" />
+        <animate attributeName="opacity" values="0.6;0" dur="2.2s" repeatCount="indefinite" />
+      </circle>
+      <circle cx={ENGINE_X} cy={cy} r={18} fill="var(--tm-red)" />
+      <text x={ENGINE_X} y={cy + 3} textAnchor="middle" fontFamily="var(--tm-px)" fontSize={7} fill="var(--tm-paper)">NOFX</text>
+    </svg>
+  )
+}
+
+export default OrchestrationTopology
