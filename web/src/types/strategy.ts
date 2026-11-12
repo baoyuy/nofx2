@@ -135,6 +135,13 @@ export interface CoinSourceConfig {
   copy_trade_min_samples?: number
   copy_trade_min_volume_millions?: number
   copy_trade_trend_filter?: boolean
+  // Leave stock and commodity contracts out of the copy source and its opens
+  copy_trade_crypto_only?: boolean
+  // Order of the copy source's coins: confidence (default) | quality
+  copy_trade_rank?: 'confidence' | 'quality'
+  // Reading acted on: confidence (who holds, default) | fresh (who opened lately)
+  copy_trade_signal?: 'confidence' | 'fresh'
+
   // Show followed lead traders' positions to the AI with any coin source
   copy_trade_context?: boolean
   // Program-enforced: follow = open only their side, fade = only the other side, free = AI decides

@@ -30,8 +30,15 @@ type Health struct {
 	// inferred losses, reached the trader's whole balance. Excluded from
 	// counts and confidence.
 	Liquidated bool `json:"liquidated"`
-	// Fresh: opened or added to within freshWindow.
+	// Fresh: opened or added to within freshWindow. It is the union of the two
+	// flags below, kept for callers that only care that something happened.
 	Fresh bool `json:"fresh"`
+	// OpenedRecently: the position was first opened within freshWindow.
+	OpenedRecently bool `json:"opened_recently"`
+	// AddedRecently: an already open position was added to within freshWindow.
+	// Averaging into a loser looks the same from the fills alone, which is why
+	// the two are told apart: an add is weaker evidence than an open.
+	AddedRecently bool `json:"added_recently"`
 }
 
 const (
@@ -44,7 +51,12 @@ const (
 	assumedLeverage = 10.0
 	freshWindow     = 24 * time.Hour
 	freshBoost      = 1.3
-	markInterval    = 10 * time.Second
+	// addBoost is the smaller credit an add gets: the trader was already in,
+	// so this is not a new call.
+	addBoost = 1.1
+	// addCallWeight scales an add's vote in the fresh-call reading.
+	addCallWeight = 0.5
+	markInterval  = 10 * time.Second
 )
 
 // MarksFunc returns mark prices by symbol.
@@ -69,8 +81,13 @@ func healthFactor(p Position) float64 {
 		return 0
 	}
 	f := 1 - 0.9*math.Min(100, p.marginLossPct())/100
-	if p.Fresh && !p.Trapped {
-		f *= freshBoost
+	if !p.Trapped {
+		switch {
+		case p.OpenedRecently:
+			f *= freshBoost
+		case p.AddedRecently:
+			f *= addBoost
+		}
 	}
 	return f
 }
@@ -97,6 +114,30 @@ func (p *Position) assessHistoricalEntry() {
 		p.FirstEntryThresholdPct = trappedMarginPct
 	}
 	p.HistoricalEntryWarning = p.FirstEntryReturnPct <= -p.FirstEntryThresholdPct
+}
+
+// openedWithin tells whether the position was first opened within w. A
+// position older than the stored fills has no open time: it is not new.
+func (p Position) openedWithin(now time.Time, w time.Duration) bool {
+	return p.OpenedAt > 0 && !p.PreExisting && now.Sub(time.UnixMilli(p.OpenedAt)) < w
+}
+
+// addedWithin tells whether an already open position was added to within w.
+// When the open is unknown, any recent add is an add.
+func (p Position) addedWithin(now time.Time, w time.Duration) bool {
+	if p.LastAddAt <= 0 || now.Sub(time.UnixMilli(p.LastAddAt)) >= w {
+		return false
+	}
+	return p.OpenedAt <= 0 || p.LastAddAt > p.OpenedAt
+}
+
+// atLoss tells whether the position is currently under water. Adding to a
+// loser is an attempt to repair, not a call on the coin.
+func (p Position) atLoss() bool {
+	if p.Priced {
+		return p.ReturnPct < 0
+	}
+	return p.UnrealizedPnL < 0
 }
 
 // assessHealth prices positions at marks and flags trapped, fresh and likely
@@ -134,11 +175,9 @@ func assessHealth(positions []Position, marks map[string]float64, balance float6
 			p.Trapped = p.ReturnPct <= -p.TrappedThresholdPct
 			p.assessHistoricalEntry()
 		}
-		last := p.LastAddAt
-		if last == 0 {
-			last = p.OpenedAt
-		}
-		p.Fresh = last > 0 && now.Sub(time.UnixMilli(last)) < freshWindow
+		p.OpenedRecently = p.openedWithin(now, freshWindow)
+		p.AddedRecently = p.addedWithin(now, freshWindow)
+		p.Fresh = p.OpenedRecently || p.AddedRecently
 		if p.Source != "public" && p.UnrealizedPnL < 0 {
 			inferredLoss -= p.UnrealizedPnL
 		}

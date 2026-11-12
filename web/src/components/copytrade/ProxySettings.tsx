@@ -30,7 +30,10 @@ export function ProxySettings({
     setBusy('test')
     setResult(null)
     try {
-      const r = await api.testCopyTradeProxy(input.trim())
+      // The test checks one address: the first of several.
+      const r = await api.testCopyTradeProxy(
+        input.trim().split(/[\s,;]+/)[0] || ''
+      )
       setResult(
         r.ok
           ? {
@@ -101,18 +104,25 @@ export function ProxySettings({
         <label className="mb-2 block text-xs font-medium text-nofx-text-muted">
           {tt('New proxy', '新代理地址')}
         </label>
-        <input
+        <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="http://user:password@1.2.3.4:8080"
           autoComplete="off"
           spellCheck={false}
-          className="w-full rounded-xl border border-[rgba(25,36,52,0.14)] bg-nofx-bg-deeper px-4 py-3 font-mono text-sm text-nofx-text outline-hidden focus:border-nofx-gold/60"
+          rows={Math.min(8, Math.max(1, input.split('\n').length))}
+          className="w-full resize-none rounded-xl border border-[rgba(25,36,52,0.14)] bg-nofx-bg-deeper px-4 py-3 font-mono text-sm text-nofx-text outline-hidden focus:border-nofx-gold/60"
         />
         <p className="mt-1 text-xs text-nofx-text-muted">
           {tt(
             'Supports http://, https://, socks5:// and socks5h://. Username and password are optional and stored encrypted.',
             '支持 http://、https://、socks5://、socks5h://。用户名和密码可选，会加密保存。'
+          )}
+        </p>
+        <p className="mt-1 text-xs text-nofx-text-muted">
+          {tt(
+            'Optional: several proxies, one per line (up to 8). Each IP is paced on its own, so the data refreshes that many times faster, and a rate limit on one does not stop the others. Every extra IP is another one Binance may block: add them only if the data is too slow with one.',
+            '可选：填多个代理，每行一个（最多 8 个）。每个 IP 各自限速，数据刷新速度按个数成倍提高，其中一个被限流不影响其他。但每多一个 IP 就多一个可能被币安封的 IP：只有一个不够用时再加。'
           )}
         </p>
       </div>

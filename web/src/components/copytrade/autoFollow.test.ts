@@ -12,6 +12,9 @@ describe('auto-follow rule labels', () => {
       'balance_low',
       'stale_trapped',
       'inactive',
+      'inaccurate',
+      'high_freq',
+      'unsynced',
       'over_target',
       'manual',
     ]) {
@@ -22,7 +25,7 @@ describe('auto-follow rule labels', () => {
 
   it('joins several rules and reads the pick reason', () => {
     expect(rulesLabel('zh', 'martingale,roi_negative')).toBe(
-      '摊平型、30 天收益为负'
+      '摊平型、30 天收益为负，且明显差于其他带单员'
     )
     expect(rulesLabel('en', 'roi90=120,mdd90=15')).toBe(
       '90-day ROI 120%, drawdown 15%'

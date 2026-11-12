@@ -118,3 +118,146 @@ func TestOpenGateTrendAndVolume(t *testing.T) {
 		t.Fatalf("24h volume = %v", v)
 	}
 }
+
+func TestCopyTradeSourceOptionsAreOffByDefault(t *testing.T) {
+	prev := CopyTradeResolver
+	defer func() { CopyTradeResolver = prev }()
+	coin := func(symbol string, conf float64, openers int, volume float64, tradfi bool) CopyTradeCoin {
+		return CopyTradeCoin{Symbol: symbol, Direction: "long", Confidence: conf, Volume24h: volume, TradFi: tradfi,
+			Long:  CopyTradeSide{Traders: 3, Openers: openers},
+			Fresh: CopyTradeFresh{Direction: "neutral"}}
+	}
+	view := CopyTradeView{Fresh: 5, Total: 5, Coins: []CopyTradeCoin{
+		coin("THINUSDT", 80, 0, 3e6, false),
+		coin("TSLAUSDT", 70, 0, 500e6, true),
+		coin("SOLUSDT", 60, 2, 2000e6, false),
+		coin("DEADUSDT", 50, 0, 1e6, false),
+	}}
+	// SOL: holdings lean long, but the last day's calls are short.
+	view.Coins[2].Fresh = CopyTradeFresh{Direction: "short", Score: 55, ShortCalls: 2}
+	CopyTradeResolver = func() CopyTradeView { return view }
+	symbols := func(src store.CoinSourceConfig) string {
+		src.SourceType, src.CopyTradeMinConfidence, src.CopyTradeLimit = "copy_trade", 40, 10
+		var out []string
+		for _, c := range copyTradeCandidates(src) {
+			out = append(out, c.Symbol)
+		}
+		return strings.Join(out, ",")
+	}
+	// Nothing set: exactly the old behaviour, by confidence.
+	if got := symbols(store.CoinSourceConfig{}); got != "THINUSDT,TSLAUSDT,SOLUSDT,DEADUSDT" {
+		t.Fatalf("defaults changed the source: %s", got)
+	}
+	if got := symbols(store.CoinSourceConfig{CopyTradeCryptoOnly: true}); got != "THINUSDT,SOLUSDT,DEADUSDT" {
+		t.Fatalf("crypto only: %s", got)
+	}
+	// The volume bar used to block the open only; now the coin takes no place.
+	if got := symbols(store.CoinSourceConfig{CopyTradeMinVolumeM: 2}); got != "THINUSDT,TSLAUSDT,SOLUSDT" {
+		t.Fatalf("volume filter: %s", got)
+	}
+	// Quality: liquid and freshly called first, thin and stale last.
+	if got := symbols(store.CoinSourceConfig{CopyTradeRank: "quality"}); !strings.HasPrefix(got, "SOLUSDT,TSLAUSDT") {
+		t.Fatalf("quality ranking: %s", got)
+	}
+	if got := symbols(store.CoinSourceConfig{CopyTradeSignal: "fresh"}); got != "SOLUSDT" {
+		t.Fatalf("fresh signal: %s", got)
+	}
+}
+
+func TestFreshSignalDrivesTheFollowRule(t *testing.T) {
+	prev := CopyTradeResolver
+	defer func() { CopyTradeResolver = prev }()
+	CopyTradeResolver = func() CopyTradeView {
+		return CopyTradeView{Fresh: 5, Total: 5, Coins: []CopyTradeCoin{{Symbol: "SOLUSDT", Direction: "long", Confidence: 60,
+			Long: CopyTradeSide{Traders: 4}, Short: CopyTradeSide{Traders: 2, Openers: 2}, TradFi: false,
+			Fresh: CopyTradeFresh{Direction: "short", Score: 55, ShortCalls: 2, LongExits: 1}}}}
+	}
+	run := func(signal, action string) string {
+		cfg := store.GetDefaultStrategyConfig("en")
+		cfg.CoinSource = store.CoinSourceConfig{SourceType: "copy_trade", CopyTradeFollow: "follow", CopyTradeSignal: signal}
+		engine := NewStrategyEngine(&cfg)
+		ctx := &Context{}
+		enrichCopyTradeData(ctx, engine)
+		return engine.OpenBlockReason(Decision{Symbol: "SOLUSDT", Action: action}, ctx)
+	}
+	if r := run("", "open_long"); r != "" {
+		t.Fatalf("holdings lean long: %q", r)
+	}
+	if r := run("fresh", "open_long"); !strings.Contains(r, "lean short") {
+		t.Fatalf("fresh calls are short, a long must be refused: %q", r)
+	}
+	if r := run("fresh", "open_short"); r != "" {
+		t.Fatalf("fresh calls are short: %q", r)
+	}
+	block := &CopyTradeCoin{Symbol: "SOLUSDT", Direction: "long", Confidence: 60, Long: CopyTradeSide{Traders: 4},
+		Fresh: CopyTradeFresh{Direction: "short", Score: 55, ShortCalls: 2, LongExits: 1, Burst: 2}}
+	whole := &CopyTradeView{Fresh: 5, Total: 5, FreshSignal: true}
+	if got := formatCopyTrade(block, whole, time.Now(), 0, ""); !strings.Contains(got, "Last 24h: 0 opened or added long, 2 short; 1 left longs, 0 left shorts → fresh calls lean SHORT, 55/100, 2 of them within 6h") {
+		t.Fatalf("fresh line missing:\n%s", got)
+	}
+	// A strategy on the default signal reads the prompt it always did.
+	whole.FreshSignal = false
+	if got := formatCopyTrade(block, whole, time.Now(), 0, ""); strings.Contains(got, "Last 24h") {
+		t.Fatalf("default prompt changed:\n%s", got)
+	}
+	def := store.GetDefaultStrategyConfig("en")
+	def.CoinSource = store.CoinSourceConfig{SourceType: "copy_trade"}
+	if strings.Contains(NewStrategyEngine(&def).BuildSystemPrompt(1000, ""), "Last 24h") {
+		t.Fatal("default system prompt changed")
+	}
+	def.CoinSource.CopyTradeSignal = "fresh"
+	if p := NewStrategyEngine(&def).BuildSystemPrompt(1000, ""); !strings.Contains(p, "Last 24h") || !strings.Contains(p, "fresh-call direction") {
+		t.Fatal("fresh signal not explained in the system prompt")
+	}
+}
+
+func TestCryptoOnlyRefusesStockContracts(t *testing.T) {
+	prev := CopyTradeResolver
+	defer func() { CopyTradeResolver = prev }()
+	CopyTradeResolver = func() CopyTradeView {
+		return CopyTradeView{Fresh: 5, Total: 5, Coins: []CopyTradeCoin{{Symbol: "TSLAUSDT", Direction: "long", Confidence: 60,
+			Long: CopyTradeSide{Traders: 3}, TradFi: true}}}
+	}
+	for only, want := range map[bool]bool{false: false, true: true} {
+		cfg := store.GetDefaultStrategyConfig("en")
+		cfg.CoinSource = store.CoinSourceConfig{SourceType: "copy_trade", CopyTradeFollow: "follow", CopyTradeCryptoOnly: only}
+		engine := NewStrategyEngine(&cfg)
+		ctx := &Context{}
+		enrichCopyTradeData(ctx, engine)
+		r := engine.OpenBlockReason(Decision{Symbol: "TSLAUSDT", Action: "open_long"}, ctx)
+		if strings.Contains(r, "stock or commodity") != want {
+			t.Fatalf("crypto only %v: %q", only, r)
+		}
+	}
+}
+
+func TestExitAlertSurvivesAStaleTraderElsewhere(t *testing.T) {
+	now := time.Now()
+	coin := &CopyTradeCoin{Symbol: "SOLUSDT", Direction: "long", Confidence: 50, Long: CopyTradeSide{Traders: 1},
+		Recent: []CopyTradeAction{{Trader: "a", Side: "long", Action: "close"}, {Trader: "b", Side: "long", Action: "close"}}}
+	// 45 of 51 fresh; the stale six hold BTC, not SOL.
+	cov := &CopyTradeView{Fresh: 45, Total: 51, StaleCoins: map[string]int{copyTradeKey("BTCUSDT"): 6}}
+	if !cov.completeFor("SOLUSDT") || cov.completeFor("BTCUSDT") {
+		t.Fatal("per-coin completeness")
+	}
+	got := formatCopyTradeFor(coin, cov, cov.completeFor("SOLUSDT"), now, 100, "long")
+	if !strings.Contains(got, "closed or reduced recently") || strings.Contains(got, "⚠️ Lead traders: only") {
+		t.Fatalf("exit alert lost to an unrelated stale trader:\n%s", got)
+	}
+	// On the coin they do hold, the old caution stands.
+	btc := *coin
+	btc.Symbol = "BTCUSDT"
+	got = formatCopyTradeFor(&btc, cov, cov.completeFor("BTCUSDT"), now, 100, "long")
+	if strings.Contains(got, "closed or reduced recently") || !strings.Contains(got, "only 45 of 51") {
+		t.Fatalf("incomplete coin must not alert:\n%s", got)
+	}
+	// A coin nobody fresh holds, held by us: with the stale ones elsewhere it
+	// is known that no one holds it.
+	if got := formatCopyTradeFor(nil, cov, cov.completeFor("XRPUSDT"), now, 0, "long"); !strings.Contains(got, "none of the followed lead traders") {
+		t.Fatalf("known-empty coin: %q", got)
+	}
+	// Without the per-coin map nothing is assumed.
+	if (&CopyTradeView{Fresh: 45, Total: 51}).completeFor("SOLUSDT") {
+		t.Fatal("unknown staleness treated as complete")
+	}
+}

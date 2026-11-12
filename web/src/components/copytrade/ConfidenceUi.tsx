@@ -164,18 +164,45 @@ export function ScoreBadge({
 
 const pctPart = (v: number) => `${Math.round((v || 0) * 100)}%`
 
-const bandLabel = (language: string, band: HitRate['band']) =>
-  ({
-    high: tr(language, '高（≥70）', 'High (≥70)'),
-    mid: tr(language, '中（40–70）', 'Mid (40–70)'),
-    low: tr(language, '低（<40）', 'Low (<40)'),
-    all: tr(language, '全部', 'All'),
-  })[band]
+type HitGroup = NonNullable<HitRate['group']>
 
-/** History of how often confidence signals moved the called way. */
+const bandLabel = (
+  language: string,
+  group: HitGroup,
+  band: HitRate['band']
+) => {
+  if (band === 'all') return tr(language, '全部', 'All')
+  if (group === 'openers')
+    return tr(language, `${band} 人新开仓`, `${band} fresh openers`)
+  if (group === 'calls')
+    return tr(language, `${band} 人独立开仓`, `${band} independent callers`)
+  return (
+    {
+      high: tr(language, '高（≥70）', 'High (≥70)'),
+      mid: tr(language, '中（40–70）', 'Mid (40–70)'),
+      low: tr(language, '低（<40）', 'Low (<40)'),
+    } as Record<string, string>
+  )[band]
+}
+
+const GROUP_BANDS: Record<HitGroup, HitRate['band'][]> = {
+  confidence: ['high', 'mid', 'low', 'all'],
+  openers: ['3+', '2', '1', '0', 'all'],
+  shadow: ['high', 'mid', 'low', 'all'],
+  calls: ['3+', '2', '1', 'all'],
+  rank: ['high', 'mid', 'low', 'all'],
+}
+
+/**
+ * History of how often signals moved the called way: the holdings confidence,
+ * the same signals by fresh openers, and the fresh-call reading measured next
+ * to it. "vs BTC" takes out the market's own move.
+ */
 export function HitRatePanel({ language }: { language: string }) {
   const [days, setDays] = useState(30)
   const [direction, setDirection] = useState<'all' | 'long' | 'short'>('all')
+  const [group, setGroup] = useState<HitGroup>('confidence')
+  const [measure, setMeasure] = useState<'raw' | 'excess'>('raw')
   const [rows, setRows] = useState<HitRate[]>([])
   const [error, setError] = useState('')
   useEffect(() => {
@@ -196,60 +223,83 @@ export function HitRatePanel({ language }: { language: string }) {
       cancelled = true
     }
   }, [days])
-  const cell = (band: HitRate['band'], horizon: HitRate['horizon']) => {
-    const r = rows.find(
+  const find = (band: HitRate['band'], horizon: HitRate['horizon']) =>
+    rows.find(
       (x) =>
+        (x.group ?? 'confidence') === group &&
         x.band === band &&
         x.horizon === horizon &&
         (x.direction ?? 'all') === direction
     )
-    if (!r || !r.samples)
-      return <span className="text-nofx-text-muted">--</span>
+  const cell = (band: HitRate['band'], horizon: HitRate['horizon']) => {
+    const r = find(band, horizon)
+    const excess = measure === 'excess'
+    const samples = excess ? r?.excess_samples || 0 : r?.samples || 0
+    if (!r || !samples) return <span className="text-nofx-text-muted">--</span>
+    const rate = excess ? r.excess_rate || 0 : r.rate
+    const avg = excess ? r.avg_excess || 0 : r.avg_return
     const tone =
-      r.samples < 30
+      samples < 30
         ? 'text-nofx-text-muted'
-        : r.rate >= 0.55
+        : rate >= 0.55
           ? 'text-nofx-success'
-          : r.rate <= 0.45
+          : rate <= 0.45
             ? 'text-nofx-danger'
             : 'text-nofx-text'
     return (
       <span
         className={tone}
-        title={tr(
-          language,
-          `平均顺向涨跌 ${(r.avg_return * 100).toFixed(2)}%`,
-          `avg move in the called direction ${(r.avg_return * 100).toFixed(2)}%`
-        )}
+        title={
+          excess
+            ? tr(
+                language,
+                `相对 BTC 平均多赚 ${(avg * 100).toFixed(2)}%`,
+                `avg ${(avg * 100).toFixed(2)}% better than BTC`
+              )
+            : tr(
+                language,
+                `平均顺向涨跌 ${(avg * 100).toFixed(2)}%`,
+                `avg move in the called direction ${(avg * 100).toFixed(2)}%`
+              )
+        }
       >
-        {Math.round(r.rate * 100)}%
-        <span className="text-[10px] text-nofx-text-muted"> /{r.samples}</span>
+        {Math.round(rate * 100)}%
+        <span className="text-[10px] text-nofx-text-muted"> /{samples}</span>
       </span>
     )
   }
   const total =
     rows.find(
       (r) =>
-        r.band === 'all' && r.horizon === '4h' && (r.direction ?? 'all') === 'all'
+        (r.group ?? 'confidence') === 'confidence' &&
+        r.band === 'all' &&
+        r.horizon === '4h' &&
+        (r.direction ?? 'all') === 'all'
     )?.samples || 0
+  // Servers from before the 72h horizon and the groups send neither.
+  const has72 = rows.some((r) => r.horizon === '72h')
+  const hasGroups = rows.some((r) => r.group && r.group !== 'confidence')
+  const select = `${ui.inputInline} py-0.5 text-xs`
   return (
     <section className={`${ui.panel} mt-3`}>
-      <div className="mb-2 flex items-center justify-between">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-1">
         <h2 className={`${ui.title} mb-0 whitespace-nowrap`}>
           {tr(language, '历史命中率', 'Hit rate')}
         </h2>
         <select
-          className={`${ui.inputInline} py-0.5 text-xs`}
+          className={select}
           value={direction}
           onChange={(e) => setDirection(e.target.value as typeof direction)}
           aria-label={tr(language, '方向', 'Side')}
         >
           <option value="all">{tr(language, '多空合计', 'Both sides')}</option>
           <option value="long">{tr(language, '只看偏多', 'Long calls')}</option>
-          <option value="short">{tr(language, '只看偏空', 'Short calls')}</option>
+          <option value="short">
+            {tr(language, '只看偏空', 'Short calls')}
+          </option>
         </select>
         <select
-          className={`${ui.inputInline} py-0.5 text-xs`}
+          className={select}
           value={days}
           onChange={(e) => setDays(Number(e.target.value))}
         >
@@ -260,12 +310,61 @@ export function HitRatePanel({ language }: { language: string }) {
           ))}
         </select>
       </div>
-      {error ? <p className="text-xs text-nofx-danger"><NoticeText text={error} /></p> : null}
+      <div className="mb-2 flex flex-wrap items-center gap-1">
+        {hasGroups ? (
+          <select
+            className={select}
+            value={group}
+            onChange={(e) => setGroup(e.target.value as HitGroup)}
+            aria-label={tr(language, '统计对象', 'Signal')}
+          >
+            <option value="confidence">
+              {tr(language, '持仓置信度', 'Holdings confidence')}
+            </option>
+            <option value="openers">
+              {tr(
+                language,
+                '持仓信号 · 按新开仓人数',
+                'Holdings · by fresh openers'
+              )}
+            </option>
+            <option value="shadow">
+              {tr(language, '新开仓评分（试验）', 'Fresh-call score (trial)')}
+            </option>
+            <option value="calls">
+              {tr(language, '新开仓信号 · 按人数', 'Fresh calls · by callers')}
+            </option>
+            <option value="rank">
+              {tr(language, '综合评分（试验）', 'Cross-coin score (trial)')}
+            </option>
+          </select>
+        ) : null}
+        <select
+          className={select}
+          value={measure}
+          onChange={(e) => setMeasure(e.target.value as typeof measure)}
+          aria-label={tr(language, '口径', 'Measure')}
+        >
+          <option value="raw">
+            {tr(language, '价格方向', 'Price direction')}
+          </option>
+          <option value="excess">{tr(language, '相对 BTC', 'vs BTC')}</option>
+        </select>
+      </div>
+      {error ? (
+        <p className="text-xs text-nofx-danger">
+          <NoticeText text={error} />
+        </p>
+      ) : null}
       <table className="w-full text-xs">
         <thead className="text-left text-nofx-text-muted">
           <tr>
             <th className="py-1 font-normal">
-              {tr(language, '置信度', 'Confidence')}
+              {group === 'confidence' ||
+              group === 'shadow' ||
+              group === 'rank'
+                ? tr(language, '置信度', 'Confidence')
+                : tr(language, '人数', 'Traders')}
             </th>
             <th className="font-normal">
               {tr(language, '4 小时后', 'After 4h')}
@@ -273,14 +372,22 @@ export function HitRatePanel({ language }: { language: string }) {
             <th className="font-normal">
               {tr(language, '24 小时后', 'After 24h')}
             </th>
+            {has72 ? (
+              <th className="font-normal">
+                {tr(language, '72 小时后', 'After 72h')}
+              </th>
+            ) : null}
           </tr>
         </thead>
         <tbody className="tabular-nums">
-          {(['high', 'mid', 'low', 'all'] as const).map((b) => (
+          {GROUP_BANDS[group].map((b) => (
             <tr key={b} className={b === 'all' ? `border-t ${ui.border}` : ''}>
-              <td className="py-1 text-nofx-text">{bandLabel(language, b)}</td>
+              <td className="py-1 text-nofx-text">
+                {bandLabel(language, group, b)}
+              </td>
               <td>{cell(b, '4h')}</td>
               <td>{cell(b, '24h')}</td>
+              {has72 ? <td>{cell(b, '72h')}</td> : null}
             </tr>
           ))}
         </tbody>
@@ -298,6 +405,35 @@ export function HitRatePanel({ language }: { language: string }) {
               'No data yet. Each hour the direction and confidence of every coin is recorded; first results arrive 4 hours later, and it takes a few weeks to mean much.'
             )}
       </p>
+      {total ? (
+        <p className={`${ui.muted} mt-1`}>
+          {measure === 'excess'
+            ? tr(
+                language,
+                '「相对 BTC」：同一段时间里，这次判断比 BTC 自己的涨跌多赚还是少赚。大盘下跌时做空几乎都“命中”，这个口径才看得出信号本身有没有用。',
+                '"vs BTC": whether the call did better than BTC’s own move over the same hours. In a falling market nearly every short “hits”; this shows what the signal itself added.'
+              )
+            : tr(
+                language,
+                '「价格方向」会受大盘影响：大盘跌时做空命中率高、做多低。想看信号本身，切到「相对 BTC」。',
+                '"Price direction" follows the market: shorts hit and longs miss while it falls. Switch to "vs BTC" for the signal itself.'
+              )}
+          {group === 'shadow' || group === 'calls'
+            ? tr(
+                language,
+                ' 「新开仓」只看 24 小时内谁开仓、加仓、离场，不算旧仓，和持仓置信度并行记录，用来比较哪个更准。',
+                ' "Fresh calls" reads only who opened, added or left in the last 24h, recorded next to the holdings confidence to compare the two.'
+              )
+            : ''}
+          {group === 'rank'
+            ? tr(
+                language,
+                ' 「综合评分」以新开仓为主、旧仓为辅，按独立人数而不是账户数计票，并对拥挤、流动性差、追高的币打折。它记录在旁边用于比较，目前不影响交易。',
+                ' "Cross-coin score" weighs fresh calls over holdings, counts independent voices rather than accounts, and discounts crowded, thin or chased coins. It is recorded next to the others for comparison and does not move trading yet.'
+              )
+            : ''}
+        </p>
+      ) : null}
     </section>
   )
 }
@@ -364,7 +500,22 @@ export function HealthTag({
         ? tag(
             'bg-nofx-success/10 text-nofx-success',
             tr(language, '新开', 'New'),
-            tr(language, '24 小时内开仓或加仓', 'Opened or added within 24h')
+            tr(
+              language,
+              '24 小时内首次开仓。加仓不算新开，单独标注。',
+              'The position was opened within 24h. Adds are not new positions and get their own tag.'
+            )
+          )
+        : null}
+      {h.added_recently && !h.liquidated
+        ? tag(
+            'bg-nofx-gold/10 text-nofx-gold',
+            tr(language, '加仓', 'Added'),
+            tr(
+              language,
+              '24 小时内给已有仓位加仓，不是新开仓；评分里权重减半，浮亏时加仓不计票。',
+              'Added to an already open position within 24h, not a new open: half weight in scoring, and no vote at all while the position is under water.'
+            )
           )
         : null}
     </>

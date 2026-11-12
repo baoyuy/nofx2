@@ -9,15 +9,19 @@ func TestMergeTurnsCopyTradeGatesOff(t *testing.T) {
 	base.CoinSource.CopyTradeMinHitRate = 55
 	base.CoinSource.CopyTradeMinVolumeM = 20
 	base.CoinSource.CopyTradeTrendFilter = true
+	base.CoinSource.CopyTradeCryptoOnly = true
+	base.CoinSource.CopyTradeRank, base.CoinSource.CopyTradeSignal = "quality", "fresh"
 	merged, err := MergeStrategyConfig(base, map[string]any{"ai_config": map[string]any{"coin_source": map[string]any{
 		"copy_trade_min_openers": 0, "copy_trade_min_hit_rate": 0,
 		"copy_trade_min_volume_millions": 0, "copy_trade_trend_filter": false,
+		"copy_trade_crypto_only": false, "copy_trade_rank": "confidence", "copy_trade_signal": "confidence",
 	}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	cs := merged.CoinSource
-	if cs.CopyTradeMinOpeners != 0 || cs.CopyTradeMinHitRate != 0 || cs.CopyTradeMinVolumeM != 0 || cs.CopyTradeTrendFilter {
+	if cs.CopyTradeMinOpeners != 0 || cs.CopyTradeMinHitRate != 0 || cs.CopyTradeMinVolumeM != 0 || cs.CopyTradeTrendFilter ||
+		cs.CopyTradeCryptoOnly || cs.CopyTradeRank == "quality" || cs.CopyTradeSignal == "fresh" {
 		t.Fatalf("gates kept: %+v", cs)
 	}
 }

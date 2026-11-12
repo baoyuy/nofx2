@@ -145,3 +145,6 @@ img.png
 # Local-only files from the free fork setup
 _backup_original/
 nofx.new.exe
+
+# Local deployment helper: server address and SSH settings.
+server-ssh.config

@@ -17,12 +17,18 @@ func freshAt(at time.Time, maxAge time.Duration, now time.Time) bool {
 }
 
 func (s Snapshot) Quality(maxAge time.Duration, now time.Time) DataQuality {
-	if s.Follow.Private {
+	if NoData(s.Follow) {
 		return DataQuality{}
 	}
+	// A dormant trader is asked less often on purpose: being on schedule is
+	// not being stale, or every quiet trader would make the view incomplete.
+	live := maxAge
+	if s.dormant(now) {
+		live += dormantInterval
+	}
 	return DataQuality{
-		PositionsFresh:  s.PositionsError == "" && freshAt(s.PositionsUpdatedAt, maxAge, now),
-		FillsFresh:      s.FillsError == "" && s.HistoryComplete && freshAt(s.FillsUpdatedAt, maxAge, now),
+		PositionsFresh:  s.PositionsError == "" && freshAt(s.PositionsUpdatedAt, live, now),
+		FillsFresh:      s.FillsError == "" && s.HistoryComplete && freshAt(s.FillsUpdatedAt, live, now),
 		ProfileFresh:    s.ProfileError == "" && freshAt(s.ProfileUpdatedAt, profileInterval+maxAge, now),
 		HistoryComplete: s.HistoryComplete,
 	}

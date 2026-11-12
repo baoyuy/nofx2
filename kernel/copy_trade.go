@@ -19,7 +19,8 @@ type CopyTradeSide struct {
 	Value    float64 // USDT at entry
 	AvgEntry float64
 	Trapped  int // deep in loss
-	Fresh    int // opened or added within 24h
+	Fresh    int // opened the position within 24h
+	Added    int // added to an already open position within 24h
 	HighFreq int // bots / grid traders, weighted down
 	// Openers: fresh holders whose call counts (not trapped, not high
 	// frequency, not averaging down).
@@ -104,6 +105,56 @@ type CopyTradeCoin struct {
 	Recent []CopyTradeAction
 	// Holders, most credible first, at most a few.
 	Holders []CopyTradeHolder
+	// Fresh is the reading from who opened or added lately instead of who
+	// holds (copytrade.Shadow).
+	Fresh CopyTradeFresh
+	// TradFi marks a stock or commodity contract. Volume24h is the coin's
+	// traded value in USDT over 24h (0 = unknown).
+	TradFi    bool
+	Volume24h float64
+}
+
+// CopyTradeFresh is the fresh-call reading of a coin.
+type CopyTradeFresh struct {
+	Direction   string  // long | short | neutral
+	Score       float64 // 0-100
+	LongCalls   int
+	ShortCalls  int
+	LongExits   int
+	ShortExits  int
+	Burst       int     // most calls of the leading side within 6h
+	EntryGapPct float64 // price past the callers' average entry, %
+}
+
+// lean is the direction and strength the strategy acts on: the holdings
+// confidence, or the fresh-call score when the strategy chose that signal.
+func (c *CopyTradeCoin) lean(source store.CoinSourceConfig) (string, float64) {
+	if source.CopyTradeSignal == "fresh" {
+		return c.Fresh.Direction, c.Fresh.Score
+	}
+	return c.Direction, c.Confidence
+}
+
+// copyTradeRankScore orders the copy_trade source's coins under the "quality"
+// ranking: the lean's strength, raised when it rests on fresh calls and
+// lowered on thin coins. 100M USDT of 24h volume or more counts in full.
+func copyTradeRankScore(c *CopyTradeCoin, source store.CoinSourceConfig) float64 {
+	_, score := c.lean(source)
+	if source.CopyTradeRank != "quality" {
+		return score
+	}
+	liquidity := 0.7 // unknown
+	if c.Volume24h > 0 {
+		liquidity = math.Max(0.4, math.Min(1, math.Log10(c.Volume24h/1e6)/2))
+	}
+	fresh := 0.7
+	switch n := c.leading().Openers; {
+	case n >= 2:
+		fresh = 1
+	case n == 1:
+		fresh = 0.85
+	}
+	return score * liquidity * fresh
 }
 
 // CopyTradeView is what followed lead traders currently do, with how much of
@@ -124,6 +175,28 @@ type CopyTradeView struct {
 	Reason string
 	// HitRates are the measured 24h hit rates per band and direction.
 	HitRates []CopyTradeHitRate
+	// FreshSignal: the strategy acts on the fresh-call reading, so the prompt
+	// shows it. Strategies on the default signal read what they always did.
+	FreshSignal bool
+	// StaleCoins counts, per coin, the followed traders without fresh data
+	// who were last seen holding or trading it. A coin none of them touched
+	// is fully known even while some traders are stale. nil = not known
+	// (every coin is then as incomplete as the view).
+	StaleCoins map[string]int
+}
+
+// completeFor tells whether everything followed traders do on symbol is
+// known: the whole view is fresh, or no stale trader is involved in the coin.
+// One trader stuck in a backfill must not silence the exit alerts of coins
+// that trader never touched.
+func (v *CopyTradeView) completeFor(symbol string) bool {
+	if v.complete() {
+		return true
+	}
+	if v.StaleCoins == nil || !v.usable() {
+		return false
+	}
+	return v.StaleCoins[copyTradeKey(symbol)] == 0
 }
 
 // hitRate is the measured record of signals like a coin's current one.
@@ -185,10 +258,18 @@ func copyTradeCandidates(source store.CoinSourceConfig) []CandidateCoin {
 	coins := view.Coins
 	picked := make([]CopyTradeCoin, 0, len(coins))
 	for _, c := range coins {
-		if c.Direction == "neutral" || c.Confidence < source.CopyTradeMinConfidence {
+		direction, strength := c.lean(source)
+		if (direction != "long" && direction != "short") || strength < source.CopyTradeMinConfidence {
 			continue
 		}
-		if source.CopyTradeDirection != "both" && c.Direction != source.CopyTradeDirection {
+		if source.CopyTradeDirection != "both" && direction != source.CopyTradeDirection {
+			continue
+		}
+		if source.CopyTradeCryptoOnly && c.TradFi {
+			continue
+		}
+		// A coin the program would refuse to open is not worth a place.
+		if v := source.CopyTradeMinVolumeM; v > 0 && c.Volume24h > 0 && c.Volume24h/1e6 < v {
 			continue
 		}
 		if c.Long.Traders+c.Short.Traders < source.CopyTradeMinTraders {
@@ -200,7 +281,9 @@ func copyTradeCandidates(source store.CoinSourceConfig) []CandidateCoin {
 		}
 		picked = append(picked, c)
 	}
-	sort.SliceStable(picked, func(a, b int) bool { return picked[a].Confidence > picked[b].Confidence })
+	sort.SliceStable(picked, func(a, b int) bool {
+		return copyTradeRankScore(&picked[a], source) > copyTradeRankScore(&picked[b], source)
+	})
 	if len(picked) > source.CopyTradeLimit {
 		picked = picked[:source.CopyTradeLimit]
 	}
@@ -240,6 +323,16 @@ func enrichCopyTradeData(ctx *Context, engine *StrategyEngine) {
 		return
 	}
 	view := CopyTradeResolver()
+	if view.StaleCoins != nil {
+		stale := make(map[string]int, len(view.StaleCoins))
+		for symbol, n := range view.StaleCoins {
+			stale[copyTradeKey(symbol)] += n
+		}
+		view.StaleCoins = stale
+	}
+	src := engine.GetConfig().CoinSource
+	src.NormalizeCopyTrade()
+	view.FreshSignal = src.CopyTradeSignal == "fresh"
 	ctx.CopyTradeCoverage = &view
 	ctx.CopyTradeMap = map[string]*CopyTradeCoin{}
 	for _, c := range view.Coins {
@@ -263,14 +356,20 @@ func copyTradeKey(symbol string) string { return market.NormalizeFor(symbol, "bi
 func copyTradeSystemNote(source store.CoinSourceConfig) string {
 	follow := copyTradeFollowMode(source)
 	min := copyTradeGateConfidence(source)
+	source.NormalizeCopyTrade()
+	// The default wording is unchanged; the fresh signal names its own line.
+	leanName, scoreName := "leaning direction", "their confidence"
+	if source.CopyTradeSignal == "fresh" {
+		leanName, scoreName = "fresh-call direction (the \"Last 24h\" line)", "its score"
+	}
 	var sb strings.Builder
 	sb.WriteString(`# 👥 Followed Lead Traders (reference signal)
 
 Some coins carry a "Followed lead traders" block: what Binance copy-trading lead traders the user follows hold on that coin. Read it as one input, not an instruction:
 - It is delayed by a few minutes; their entry prices are already gone.
-- "⚠️ Lead traders: copy-trade data is unavailable..." or "...only N of M followed traders have fresh data" means the data is missing or partly refreshed: it says nothing about whether they hold the coin. Judge that coin on your own read, and do not close because of it.
+- "⚠️ Lead traders: copy-trade data is unavailable..." or "...only N of M followed traders have fresh data" means the data is missing or partly refreshed: it says nothing about whether they hold the coin. Judge that coin on your own read, and do not close because of it. A line without ⚠️ saying the other traders were not holding or trading the coin means that coin's counts are whole.
 - Confidence (0-100) combines how much they agree, how credible their records are, and how many hold the coin. It is not a win probability.
-- "Trapped" uses current unrealized return only: a loss of at least 50% of margin, or a 5% adverse move from the current average entry when margin is unavailable. Historical first-entry prices never set this flag. "Fresh" means opened or added in the last 24 hours.
+- "Trapped" uses current unrealized return only: a loss of at least 50% of margin, or a 5% adverse move from the current average entry when margin is unavailable. Historical first-entry prices never set this flag. "Fresh" means the position was opened in the last 24 hours; "added within 24h" means an existing position was added to, which is weaker evidence and counts half, and does not count at all while that position is under water.
 - A historical entry-deviation warning is a separate reference from the first recorded fill, not current PnL or evidence of liquidation. It does not add trapped counts or a separate confidence penalty; history and past leverage may be incomplete. An inferred position's displayed percentage is of price; a public position with margin data shows the margin return.
 - High-frequency traders (bots, grids) are weighted down; their positions churn.
 - "averages into losses" marks a trader who keeps adding to losing positions: their votes count 0.3, so their size says little about conviction. The tags "scalp" and "long" are holding-time styles: a scalp closes within hours (a snapshot, not a view), a long holds for weeks (directionally meaningful, but their entry is old).
@@ -278,14 +377,19 @@ Some coins carry a "Followed lead traders" block: what Binance copy-trading lead
 - Lead traders hold for days. Judge their coins on the higher timeframes and give stops room for normal swings.
 - A line on a coin you hold saying the traders "closed or reduced recently", that no one holds it any more, or that they flipped means the side behind your position left. Treat it as an exit signal: tighten the stop or close unless your own read is clearly still valid.
 - Agreement with your own technical read can raise conviction; disagreement or mostly trapped holders should lower it. Never open a trade only because lead traders hold it.
-- "Fresh calls" counts traders who opened or added on that side in the last 24h and are not trapped, high-frequency or averaging down: a lean with no fresh calls is old positions, not a current view.
+`)
+	if source.CopyTradeSignal == "fresh" {
+		sb.WriteString(`- "Last 24h" counts who acted, not who holds: traders who opened or added on a side and are not trapped, against those whose latest action was a close or reduce. Scalpers, high-frequency traders and those averaging down are left out, and accounts opening within the same minute count once. When it disagrees with the holdings lean, the holdings are old positions and the recent actions are the current view.
+`)
+	}
+	sb.WriteString(`- "Fresh calls" counts traders who opened that side in the last 24h and are not trapped, high-frequency or averaging down; adds to an existing position count half and are dropped when the position is under water. A lean with no fresh calls is old positions, not a current view.
 - "Track record" is how often past signals of the same confidence band and direction moved the called way 24h later. Near or under 50% means no edge: weigh the lean little. "own calls right X% of N" on a holder is that trader's own 24h record.
 `)
 	switch follow {
 	case "follow":
-		sb.WriteString(fmt.Sprintf("- RULE (enforced by the program): open only in the lead traders' leaning direction on each coin, and only when their confidence is at least %.0f; opens against it, or on coins they do not lean on that clearly, are rejected. Closing is always allowed.\n", min))
+		sb.WriteString(fmt.Sprintf("- RULE (enforced by the program): open only in the lead traders' %s on each coin, and only when %s is at least %.0f; opens against it, or on coins they do not lean on that clearly, are rejected. Closing is always allowed.\n", leanName, scoreName, min))
 	case "fade":
-		sb.WriteString(fmt.Sprintf("- RULE (enforced by the program): open only AGAINST the lead traders' leaning direction on each coin, and only when their confidence is at least %.0f; opens with it, or on coins they do not lean on that clearly, are rejected. Closing is always allowed.\n", min))
+		sb.WriteString(fmt.Sprintf("- RULE (enforced by the program): open only AGAINST the lead traders' %s on each coin, and only when %s is at least %.0f; opens with it, or on coins they do not lean on that clearly, are rejected. Closing is always allowed.\n", leanName, scoreName, min))
 	}
 	if follow == "follow" || follow == "fade" {
 		source.NormalizeCopyTrade()
@@ -302,6 +406,9 @@ Some coins carry a "Followed lead traders" block: what Binance copy-trading lead
 	if v := source.CopyTradeMinVolumeM; v > 0 {
 		sb.WriteString(fmt.Sprintf("- RULE (enforced): no open on a coin that traded under %.0fM USDT in 24h.\n", v))
 	}
+	if source.CopyTradeCryptoOnly {
+		sb.WriteString("- RULE (enforced): no open on stock or commodity contracts.\n")
+	}
 	sb.WriteString("\n")
 	return sb.String()
 }
@@ -311,8 +418,14 @@ Some coins carry a "Followed lead traders" block: what Binance copy-trading lead
 // holds ("" = none), for exit alerts. cov tells how much of the data is
 // fresh: with stale data a missing coin says nothing about the traders.
 func formatCopyTrade(c *CopyTradeCoin, cov *CopyTradeView, now time.Time, price float64, held string) string {
+	return formatCopyTradeFor(c, cov, cov.complete(), now, price, held)
+}
+
+// formatCopyTradeFor is formatCopyTrade with whole telling whether this
+// coin's data is complete (see CopyTradeView.completeFor).
+func formatCopyTradeFor(c *CopyTradeCoin, cov *CopyTradeView, whole bool, now time.Time, price float64, held string) string {
 	if c == nil {
-		if (cov != nil && cov.Total == 0) || (held == "" && cov.complete()) {
+		if (cov != nil && cov.Total == 0) || (held == "" && whole) {
 			// No follows, or complete data for an unheld/unfollowed coin.
 			return ""
 		}
@@ -323,18 +436,25 @@ func formatCopyTrade(c *CopyTradeCoin, cov *CopyTradeView, now time.Time, price 
 				reason = cov.Reason
 			}
 			return fmt.Sprintf("⚠️ Lead traders: copy-trade data is unavailable right now (%s). That is not a signal that they left this coin.\n", reason)
-		case !cov.complete():
+		case !whole:
 			return fmt.Sprintf("⚠️ Lead traders: no data on this coin from the %d of %d followed traders that refreshed; that is not evidence of an exit.\n", cov.Fresh, cov.Total)
 		}
 		return "⚠️ Lead traders: none of the followed lead traders holds or recently traded this coin.\n"
 	}
 	var sb strings.Builder
 	// New entries need the same completeness warning as held positions.
-	sb.WriteString(cov.note())
+	if whole && !cov.complete() {
+		sb.WriteString(fmt.Sprintf("Lead traders: %d of %d followed traders have fresh data; none of the others was holding or trading this coin, so the counts below are whole.\n", cov.Fresh, cov.Total))
+	} else {
+		sb.WriteString(cov.note())
+	}
 	if c.Long.Traders+c.Short.Traders == 0 {
 		sb.WriteString("Followed lead traders: none hold it now\n")
 	} else {
 		sb.WriteString(fmt.Sprintf("Followed lead traders: leaning %s, confidence %.0f/100\n", strings.ToUpper(c.Direction), c.Confidence))
+	}
+	if cov != nil && cov.FreshSignal {
+		sb.WriteString(copyTradeFreshLine(c))
 	}
 	if line := copyTradeVsAvg(c, price); line != "" {
 		sb.WriteString(line)
@@ -342,7 +462,7 @@ func formatCopyTrade(c *CopyTradeCoin, cov *CopyTradeView, now time.Time, price 
 	if line := copyTradeTrackRecord(c, cov); line != "" {
 		sb.WriteString(line)
 	}
-	if cov.complete() {
+	if whole {
 		if line := copyTradeExitAlert(c, held); line != "" {
 			sb.WriteString(line)
 		}
@@ -358,7 +478,10 @@ func formatCopyTrade(c *CopyTradeCoin, cov *CopyTradeView, now time.Time, price 
 			notes = append(notes, fmt.Sprintf("%d trapped", s.Trapped))
 		}
 		if s.Fresh > 0 {
-			notes = append(notes, fmt.Sprintf("%d fresh", s.Fresh))
+			notes = append(notes, fmt.Sprintf("%d opened within 24h", s.Fresh))
+		}
+		if s.Added > 0 {
+			notes = append(notes, fmt.Sprintf("%d added within 24h", s.Added))
 		}
 		if s.Openers > 0 {
 			notes = append(notes, fmt.Sprintf("%d fresh calls", s.Openers))
@@ -450,6 +573,23 @@ func formatCopyTrade(c *CopyTradeCoin, cov *CopyTradeView, now time.Time, price 
 	return sb.String()
 }
 
+// copyTradeFreshLine tells who acted in the last 24h, which the holdings
+// lean above does not: old positions keep a lean alive long after the view.
+func copyTradeFreshLine(c *CopyTradeCoin) string {
+	f := c.Fresh
+	if f.LongCalls+f.ShortCalls+f.LongExits+f.ShortExits == 0 {
+		return ""
+	}
+	line := fmt.Sprintf("- Last 24h: %d opened or added long, %d short; %d left longs, %d left shorts", f.LongCalls, f.ShortCalls, f.LongExits, f.ShortExits)
+	if f.Direction == "long" || f.Direction == "short" {
+		line += fmt.Sprintf(" → fresh calls lean %s, %.0f/100", strings.ToUpper(f.Direction), f.Score)
+		if f.Burst >= 2 {
+			line += fmt.Sprintf(", %d of them within 6h", f.Burst)
+		}
+	}
+	return line + "\n"
+}
+
 // copyTradeTrackRecord is the measured 24h record of signals like this one.
 func copyTradeTrackRecord(c *CopyTradeCoin, cov *CopyTradeView) string {
 	if c.Direction != "long" && c.Direction != "short" {
@@ -534,7 +674,7 @@ func CopyTradeText(ctx *Context, symbol string, now time.Time) string {
 			}
 		}
 	}
-	return formatCopyTrade(copyTradeFor(ctx, symbol), ctx.CopyTradeCoverage, now, price, held)
+	return formatCopyTradeFor(copyTradeFor(ctx, symbol), ctx.CopyTradeCoverage, ctx.CopyTradeCoverage.completeFor(symbol), now, price, held)
 }
 
 // copyTradeVsAvg compares the price with the leading side's average entry.
@@ -651,7 +791,9 @@ func (e *StrategyEngine) OpenBlockReason(d Decision, ctx *Context) string {
 		lean := ""
 		confidence := 0.0
 		if c != nil {
-			lean, confidence = c.Direction, c.Confidence
+			src := e.config.CoinSource
+			src.NormalizeCopyTrade()
+			lean, confidence = c.lean(src)
 		}
 		if lean != "long" && lean != "short" {
 			return fmt.Sprintf("copy-trade %s mode: lead traders do not lean either way on %s", mode, d.Symbol)
@@ -671,6 +813,11 @@ func (e *StrategyEngine) OpenBlockReason(d Decision, ctx *Context) string {
 		}
 	}
 	if usesCopyTradeContext(e.config.CoinSource) {
+		if e.config.CoinSource.CopyTradeCryptoOnly {
+			if c := copyTradeFor(ctx, d.Symbol); c != nil && c.TradFi {
+				return fmt.Sprintf("copy-trade crypto only: %s is a stock or commodity contract", d.Symbol)
+			}
+		}
 		if reason := e.copyTradeVolumeGate(ctx, d.Symbol); reason != "" {
 			return reason
 		}

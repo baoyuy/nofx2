@@ -19,7 +19,7 @@ const (
 // a new deadline so already-due live work and other traders get a turn.
 func (s *Snapshot) task() (refreshTask, time.Time) {
 	kind, due := refreshProfile, s.profileDue
-	if !s.Follow.Private {
+	if !NoData(s.Follow) {
 		kind, due = refreshFills, s.fillsDue
 		if s.Follow.PositionShow && !s.positionDue.After(due) {
 			kind, due = refreshPositions, s.positionDue
@@ -66,7 +66,12 @@ func (m *Monitor) refresh(ctx context.Context, id string) {
 	var limited *limitedError
 	paused := errors.Is(err, ErrPaused) || errors.As(err, &limited)
 	if paused {
-		retry = maxTime(now.Add(time.Minute), m.Client.Status().PausedUntil)
+		// Wait for the pause; with another proxy still free, only a moment.
+		if st := m.Client.Status(); st.Paused {
+			retry = maxTime(now.Add(time.Minute), st.PausedUntil)
+		} else {
+			retry = now.Add(10 * time.Second)
+		}
 	}
 
 	m.mu.Lock()
@@ -89,7 +94,7 @@ func (m *Monitor) refresh(ctx context.Context, id string) {
 		*taskError = err.Error()
 		cur.updateError()
 		*due = retry
-		if paused {
+		if paused && m.Client.Status().Paused {
 			cur.nextDue = retry
 		}
 		return
@@ -98,6 +103,7 @@ func (m *Monitor) refresh(ctx context.Context, id string) {
 	*taskError = ""
 	cur.updateError()
 	interval := coldInterval
+	positions := false
 	switch kind {
 	case refreshPositions:
 		// Empty-but-public positions must not turn into inferred holdings.
@@ -105,9 +111,15 @@ func (m *Monitor) refresh(ctx context.Context, id string) {
 		cur.UpdatedAt = now
 		cur.PositionsUpdatedAt = now
 		interval = positionInterval
+		positions = true
 	case refreshFills:
 		cur.filling = pending
 		cur.HistoryComplete = pending == nil
+		if pending == nil {
+			cur.pendingSince = time.Time{}
+		} else if cur.pendingSince.IsZero() {
+			cur.pendingSince = now
+		}
 		if pending == nil {
 			cur.FillsUpdatedAt = time.UnixMilli(f.FillsSyncedAt)
 			if !f.PositionShow {
@@ -124,13 +136,24 @@ func (m *Monitor) refresh(ctx context.Context, id string) {
 		interval = profileInterval
 	}
 	m.rebuild(cur, cur.live)
+	dormant := cur.dormant(now)
 	if kind == refreshFills {
 		if pending != nil {
 			*due = now // yield after every page
 			return
 		}
-		if cur.Hot {
+		switch {
+		case cur.Hot:
 			interval = hotInterval
+		case dormant:
+			interval = dormantInterval
+		}
+	}
+	if positions && len(cur.Positions) == 0 {
+		// Nothing held: a new position may show a little later.
+		interval = idlePositionInterval
+		if dormant {
+			interval = dormantPositionInterval
 		}
 	}
 	if kind == refreshProfile && f.ProfileAt > 0 {
@@ -140,6 +163,13 @@ func (m *Monitor) refresh(ctx context.Context, id string) {
 	// Network/queue time should not get added to every polling interval.
 	// Scheduling no earlier than now avoids a catch-up burst.
 	*due = maxTime(started.Add(interval), now)
+}
+
+// dormant tells a trader who holds nothing and has not traded for
+// dormantAfter: polled at dormantInterval.
+func (s *Snapshot) dormant(now time.Time) bool {
+	return len(s.Positions) == 0 && s.Follow.LastTradeTime > 0 &&
+		now.Sub(time.UnixMilli(s.Follow.LastTradeTime)) > dormantAfter
 }
 
 func (s *Snapshot) updateError() {

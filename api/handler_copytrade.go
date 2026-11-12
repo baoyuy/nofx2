@@ -45,9 +45,19 @@ func (s *Server) StartCopyTrade(ctx context.Context) {
 	}
 	// fapi, not the copy-trade web API: does not count against its limits.
 	m.Marks = binance.GetPublicMarkPrices
+	// Stock and commodity contracts are their own market class.
+	copytrade.ClassOf = func(symbol string) string {
+		switch {
+		case symbol == "BTCUSDT" || symbol == "ETHUSDT":
+			return copytrade.ClassMajor
+		case binance.IsTradFiSymbol(symbol):
+			return copytrade.ClassTradFi
+		}
+		return copytrade.ClassAlt
+	}
 	if proxy, err := s.loadCopyTradeProxy(); err != nil {
 		logger.Warnf("copy-trade: saved proxy not used: %v", err)
-	} else if err := m.Client.SetProxy(proxy); err != nil {
+	} else if err := m.Client.SetProxies(copytrade.SplitProxies(proxy)); err != nil {
 		logger.Warnf("copy-trade: saved proxy not used: %v", err)
 	}
 	s.copyTrade = m
@@ -71,7 +81,7 @@ func copyTradeView(m *copytrade.Monitor, now time.Time) kernel.CopyTradeView {
 	view := kernel.CopyTradeView{Fresh: len(snaps), QualityKnown: true}
 	// Private portfolios never have data: they cannot be missing any.
 	for _, s := range all {
-		if !s.Follow.Private {
+		if !copytrade.NoData(s.Follow) {
 			view.Total++
 			q := s.Quality(copyTradeFreshness, now)
 			if q.PositionsFresh {
@@ -85,6 +95,7 @@ func copyTradeView(m *copytrade.Monitor, now time.Time) kernel.CopyTradeView {
 			}
 		}
 	}
+	view.StaleCoins = copyTradeStaleCoins(all, snaps, now)
 	view.Reason = copyTradeGapReason(m, view)
 	scores := map[string]float64{}
 	for _, s := range snaps {
@@ -93,9 +104,11 @@ func copyTradeView(m *copytrade.Monitor, now time.Time) kernel.CopyTradeView {
 	recent := copytrade.RecentBySymbol(snaps, now.Add(-24*time.Hour).UnixMilli(), 6)
 	side := func(s copytrade.SideSummary) kernel.CopyTradeSide {
 		return kernel.CopyTradeSide{Traders: s.Traders, Value: s.Value, AvgEntry: s.AvgEntry, Trapped: s.Trapped, Fresh: s.Fresh,
-			Openers: s.Openers}
+			Added: s.Added, Openers: s.Openers}
 	}
 	sums := copytrade.Symbols(snaps)
+	// One cached request for every coin; unknown on failure, never a block.
+	volumes, _ := binance.PublicQuoteVolumes(context.Background())
 	// High-frequency holders per side, for the prompt.
 	hf := map[string]int{}
 	for _, s := range snaps {
@@ -117,7 +130,11 @@ func copyTradeView(m *copytrade.Monitor, now time.Time) kernel.CopyTradeView {
 	out := make([]kernel.CopyTradeCoin, 0, len(sums))
 	for _, c := range sums {
 		coin := kernel.CopyTradeCoin{Symbol: c.Symbol, Direction: c.Confidence.Direction, Confidence: c.Confidence.Score,
-			Long: side(c.Long), Short: side(c.Short), Liquidated: c.Liquidated}
+			Long: side(c.Long), Short: side(c.Short), Liquidated: c.Liquidated,
+			Fresh: kernel.CopyTradeFresh{Direction: c.Shadow.Direction, Score: c.Shadow.Score,
+				LongCalls: c.Shadow.LongCalls, ShortCalls: c.Shadow.ShortCalls, LongExits: c.Shadow.LongExits,
+				ShortExits: c.Shadow.ShortExits, Burst: c.Shadow.Burst, EntryGapPct: c.Shadow.EntryGapPct},
+			TradFi: copytrade.ClassOf(c.Symbol) == copytrade.ClassTradFi, Volume24h: volumes[c.Symbol]}
 		coin.Long.HighFreq, coin.Short.HighFreq = hf[c.Symbol+"|long"], hf[c.Symbol+"|short"]
 		coin.Holders = copyTradeHolders(copytrade.Holders(snaps, c.Symbol), highFreq)
 		for _, e := range recent[c.Symbol] {
@@ -136,7 +153,8 @@ func copyTradeView(m *copytrade.Monitor, now time.Time) kernel.CopyTradeView {
 		if held[symbol] {
 			continue
 		}
-		coin := kernel.CopyTradeCoin{Symbol: symbol, Direction: "neutral"}
+		coin := kernel.CopyTradeCoin{Symbol: symbol, Direction: "neutral", Fresh: kernel.CopyTradeFresh{Direction: "neutral"},
+			TradFi: copytrade.ClassOf(symbol) == copytrade.ClassTradFi, Volume24h: volumes[symbol]}
 		for _, e := range items {
 			coin.Recent = append(coin.Recent, kernel.CopyTradeAction{Time: e.Time, Trader: e.Nickname, Score: scores[e.PortfolioID],
 				Side: e.Side, Action: e.Action, Value: e.Value, Price: e.Price, Realized: e.RealizedPnL})
@@ -149,6 +167,42 @@ func copyTradeView(m *copytrade.Monitor, now time.Time) kernel.CopyTradeView {
 			Samples: r.Samples, Rate: r.Rate})
 	}
 	return view
+}
+
+// copyTradeStaleCoins counts per coin the traders without fresh data who were
+// last seen holding it or traded it within 24h of their last update. Coins
+// outside this map are fully known. High-frequency traders are left out:
+// their actions never reach the AI and their positions churn within hours.
+func copyTradeStaleCoins(all, fresh []copytrade.Snapshot, now time.Time) map[string]int {
+	ok := make(map[string]bool, len(fresh))
+	for _, s := range fresh {
+		ok[s.Follow.PortfolioID] = true
+	}
+	out := map[string]int{}
+	for _, s := range all {
+		if ok[s.Follow.PortfolioID] || copytrade.NoData(s.Follow) || s.HighFreq {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, p := range s.Positions {
+			seen[p.Symbol] = true
+		}
+		since := now.Add(-24 * time.Hour).UnixMilli()
+		for _, e := range s.Events {
+			if e.Time < since {
+				break
+			}
+			seen[e.Symbol] = true
+		}
+		// Nothing known of the trader at all: any coin could be theirs.
+		if s.FillsUpdatedAt.IsZero() && len(seen) == 0 {
+			return nil
+		}
+		for symbol := range seen {
+			out[symbol]++
+		}
+	}
+	return out
 }
 
 // copyTradeGapReason explains stale copy-trade data for the prompt, or "" when
@@ -222,7 +276,7 @@ func (s *Server) handleCopyTradeStatus(c *gin.Context) {
 	now := time.Now()
 	aiReady, total, positionsFresh, fillsFresh, profilesFresh := 0, 0, 0, 0, 0
 	for _, sn := range snaps {
-		if !sn.Follow.Private {
+		if !copytrade.NoData(sn.Follow) {
 			total++
 			q := sn.Quality(copyTradeFreshness, now)
 			if q.Complete() && sn.Error == "" {
@@ -402,7 +456,13 @@ func (s *Server) handleCopyTradeSymbols(c *gin.Context) {
 	if c.Query("fresh") == "1" {
 		shown = copytrade.Fresh(snaps, copyTradeFreshness, time.Now())
 	}
-	c.JSON(http.StatusOK, gin.H{"symbols": copytrade.Symbols(shown), "fresh_traders": fresh, "total_traders": total})
+	sums := copytrade.Symbols(shown)
+	// One cached request for every coin, so Rank can weigh depth; unknown on
+	// failure, never a block.
+	if volumes, err := binance.PublicQuoteVolumes(context.Background()); err == nil {
+		copytrade.AttachRanks(sums, volumes)
+	}
+	c.JSON(http.StatusOK, gin.H{"symbols": sums, "fresh_traders": fresh, "total_traders": total})
 }
 
 // copyTradeCoverage counts the followed traders with fresh data and those that
@@ -410,7 +470,7 @@ func (s *Server) handleCopyTradeSymbols(c *gin.Context) {
 func copyTradeCoverage(snaps []copytrade.Snapshot) (fresh, total int) {
 	fresh = len(copytrade.Fresh(snaps, copyTradeFreshness, time.Now()))
 	for _, s := range snaps {
-		if !s.Follow.Private {
+		if !copytrade.NoData(s.Follow) {
 			total++
 		}
 	}
@@ -427,8 +487,14 @@ func (s *Server) handleCopyTradeSymbol(c *gin.Context) {
 		return
 	}
 	snaps := s.copyTrade.Snapshots()
+	sums := copytrade.Symbols(snaps)
+	// Rank weighs depth, so the coin's 24h value has to come from the market
+	// data (cached for minutes, never a block).
+	if volumes, err := binance.PublicQuoteVolumes(context.Background()); err == nil {
+		copytrade.AttachRanks(sums, volumes)
+	}
 	var summary *copytrade.SymbolSummary
-	for _, sum := range copytrade.Symbols(snaps) {
+	for _, sum := range sums {
 		if sum.Symbol == symbol {
 			summary = &sum
 			break
@@ -469,7 +535,16 @@ func (s *Server) handleCopyTradeProxyGet(c *gin.Context) {
 		SafeInternalError(c, "Read copy-trade proxy", err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"proxy": copytrade.MaskProxy(proxy), "configured": proxy != ""})
+	c.JSON(http.StatusOK, gin.H{"proxy": maskProxies(proxy), "configured": proxy != ""})
+}
+
+// maskProxies masks each of the saved proxies' passwords.
+func maskProxies(raw string) string {
+	var out []string
+	for _, p := range copytrade.SplitProxies(raw) {
+		out = append(out, copytrade.MaskProxy(p))
+	}
+	return strings.Join(out, ", ")
 }
 
 func (s *Server) handleCopyTradeProxyPut(c *gin.Context) {
@@ -479,16 +554,24 @@ func (s *Server) handleCopyTradeProxyPut(c *gin.Context) {
 	var req struct {
 		Proxy string `json:"proxy"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || len(req.Proxy) > 500 {
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.Proxy) > 500*copytrade.MaxProxies {
 		SafeBadRequest(c, "proxy must be a URL")
 		return
 	}
-	proxy := strings.TrimSpace(req.Proxy)
+	// One proxy, or several (comma or line separated) used in turn.
+	list := copytrade.SplitProxies(req.Proxy)
+	if len(list) > copytrade.MaxProxies {
+		SafeBadRequest(c, fmt.Sprintf("at most %d proxies", copytrade.MaxProxies))
+		return
+	}
+	proxy := strings.Join(list, ",")
 	stored := ""
 	if proxy != "" {
-		if _, err := copytrade.ParseProxy(proxy); err != nil {
-			SafeBadRequest(c, err.Error())
-			return
+		for _, one := range list {
+			if _, err := copytrade.ParseProxy(one); err != nil {
+				SafeBadRequest(c, err.Error())
+				return
+			}
 		}
 		enc, err := s.cryptoHandler.cryptoService.EncryptForStorage(proxy, copyTradeProxyKey)
 		if err != nil {
@@ -501,11 +584,11 @@ func (s *Server) handleCopyTradeProxyPut(c *gin.Context) {
 		SafeInternalError(c, "Save copy-trade proxy", err)
 		return
 	}
-	if err := s.copyTrade.Client.SetProxy(proxy); err != nil {
+	if err := s.copyTrade.Client.SetProxies(list); err != nil {
 		SafeBadRequest(c, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"proxy": copytrade.MaskProxy(proxy), "configured": proxy != ""})
+	c.JSON(http.StatusOK, gin.H{"proxy": maskProxies(proxy), "configured": proxy != ""})
 }
 
 // handleCopyTradeProxyTest sends one leaderboard request through the given

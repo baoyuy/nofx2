@@ -113,7 +113,7 @@ func TestSignalsRecordEvaluateAndHitRate(t *testing.T) {
 	}
 	found := false
 	for _, r := range rates {
-		if r.Direction != "all" {
+		if r.Direction != "all" || r.Group != GroupConfidence {
 			continue
 		}
 		if r.Band == "all" && r.Horizon == "4h" {
@@ -136,7 +136,7 @@ func TestHitRatesCountARunOfSignalsOnce(t *testing.T) {
 	up, down := 0.02, -0.02
 	sig := func(h int64, sym, dir string, conf float64, ret float64) store.CopyTradeSignal {
 		r := ret
-		return store.CopyTradeSignal{Hour: h * 3600, Symbol: sym, Direction: dir, Confidence: conf, Ret4h: &r, Done4h: true}
+		return store.CopyTradeSignal{Hour: h * 3600, Symbol: sym, Direction: dir, Confidence: conf, Ret4h: &r, Done4h: true, Ranked: true}
 	}
 	sigs := []store.CopyTradeSignal{
 		sig(9, "BTC", "long", 80, down), // before the window: makes hour 10 a continuation
@@ -150,7 +150,7 @@ func TestHitRatesCountARunOfSignalsOnce(t *testing.T) {
 	rates := hitRates(sigs, 10*3600)
 	get := func(band string) HitRate {
 		for _, r := range rates {
-			if r.Band == band && r.Horizon == "4h" && r.Direction == "all" {
+			if r.Group == GroupConfidence && r.Band == band && r.Horizon == "4h" && r.Direction == "all" {
 				return r
 			}
 		}
@@ -164,6 +164,9 @@ func TestHitRatesCountARunOfSignalsOnce(t *testing.T) {
 	}
 	// Split by the called side: one long run (right), two short runs (one right).
 	for _, r := range rates {
+		if r.Group != GroupConfidence {
+			continue
+		}
 		if r.Band == "all" && r.Horizon == "4h" && r.Direction == "long" && (r.Samples != 1 || r.Hits != 1) {
 			t.Fatalf("long runs: %+v", r)
 		}

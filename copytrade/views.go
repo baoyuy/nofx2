@@ -7,6 +7,25 @@ import (
 	"time"
 )
 
+// distinctPortfolios keeps the public portfolio when an explicitly linked
+// signal/private portfolio is also followed. Nicknames are never identity keys.
+// Keep an unpaired portfolio visible; hiding it would silently discard data.
+func distinctPortfolios(snaps []Snapshot) []Snapshot {
+	ids := make(map[string]bool, len(snaps))
+	for _, s := range snaps {
+		ids[s.Follow.PortfolioID] = true
+	}
+	out := make([]Snapshot, 0, len(snaps))
+	for _, s := range snaps {
+		f := s.Follow
+		if f.PublicID != "" && f.PublicID != f.PortfolioID && ids[f.PublicID] {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // FeedItem is one action of one followed trader.
 type FeedItem struct {
 	Event
@@ -41,6 +60,9 @@ func FeedPage(snaps []Snapshot, f FeedFilter) ([]FeedItem, int) {
 	}
 	sym := strings.ToUpper(f.Symbol)
 	var out []FeedItem
+	if f.PortfolioID == "" {
+		snaps = distinctPortfolios(snaps)
+	}
 	for _, s := range snaps {
 		if f.PortfolioID != "" && s.Follow.PortfolioID != f.PortfolioID {
 			continue
@@ -68,13 +90,17 @@ type SideSummary struct {
 	Value   float64 `json:"value"`
 	// AvgEntry is the size-weighted average entry price.
 	AvgEntry float64 `json:"avg_entry"`
-	// Trapped holders are deep in loss; Fresh ones opened or added within
-	// 24 hours. Both are among Traders.
+	// Trapped holders are deep in loss; Fresh ones opened the position within
+	// 24 hours, Added ones added to an already open position within 24 hours.
+	// All are among Traders.
 	Trapped int `json:"trapped"`
 	Fresh   int `json:"fresh"`
+	Added   int `json:"added"`
 	// Openers are fresh holders whose call counts: not trapped, not high
 	// frequency, not averaging down. Holding alone is not a call.
 	Openers int `json:"openers"`
+	// HoldHours is the mean age of the positions whose opening was seen.
+	HoldHours float64 `json:"hold_hours"`
 }
 
 // SymbolSummary is how followed traders hold one coin.
@@ -88,6 +114,15 @@ type SymbolSummary struct {
 	Liquidated int `json:"liquidated"`
 	// HighFreq counts high-frequency holders, whose votes are weighted down.
 	HighFreq int `json:"high_freq"`
+	// Shadow is the fresh-call reading, measured next to Confidence.
+	Shadow Shadow `json:"shadow"`
+	// Volume24h is the coin's 24h traded value in USDT (0 = unknown). The
+	// copy-trade snapshots do not carry it, so the API fills it from the market
+	// data before Rank is recomputed (see AttachRanks).
+	Volume24h float64 `json:"volume_24h"`
+	// Rank is the cross-coin score: which coin is worth trading now, weighing
+	// fresh calls, independent voices, crowding, depth and entry (see rank.go).
+	Rank Rank `json:"rank"`
 }
 
 // Holder is one followed trader's position in a coin, with the trader's
@@ -109,6 +144,7 @@ type Holder struct {
 	PositionsUpdatedAt time.Time `json:"positions_updated_at"`
 	FillsUpdatedAt     time.Time `json:"fills_updated_at"`
 	ProfileUpdatedAt   time.Time `json:"profile_updated_at"`
+	HistoryComplete    bool      `json:"history_complete"`
 }
 
 // openedValue is the size a position was opened with: adding to it later must
@@ -148,9 +184,14 @@ func holdFactor(p Position, now time.Time) float64 {
 // most traders first. Snapshots must carry their Score and position health.
 // Votes weigh each trader's stake by its health, so traders sitting on deep
 // losses count less than ones who just opened or added.
-func Symbols(snaps []Snapshot) []SymbolSummary {
-	now := time.Now()
+func Symbols(snaps []Snapshot) []SymbolSummary { return SymbolsAt(snaps, time.Now()) }
+
+// SymbolsAt is Symbols as of now, for replaying past hours.
+func SymbolsAt(snaps []Snapshot, now time.Time) []SymbolSummary {
 	by := map[string]*SymbolSummary{}
+	calls := map[string][]shadowCall{}
+	exits := map[string][]shadowExit{}
+	ages := map[string][]float64{}
 	qty := map[string]float64{}
 	balance := map[string]float64{}
 	// Traders who average into losses: their size says little, see style.go.
@@ -161,7 +202,7 @@ func Symbols(snaps []Snapshot) []SymbolSummary {
 	accuracy := map[string]float64{}
 	// One vote per trader and side.
 	votes := map[string]map[string]*vote{}
-	for _, s := range snaps {
+	for _, s := range distinctPortfolios(snaps) {
 		balance[s.Follow.PortfolioID] = s.Follow.MarginBalance
 		martingale[s.Follow.PortfolioID] = s.Style.Martingale()
 		probation[s.Follow.PortfolioID] = onProbation(s.Follow, now)
@@ -169,6 +210,17 @@ func Symbols(snaps []Snapshot) []SymbolSummary {
 		counted := map[string]bool{}
 		gone := map[string]bool{}
 		hf := map[string]bool{}
+		latest := latestActions(s.Events, now.Add(-freshWindow).UnixMilli())
+		called := map[string]bool{}
+		for k, action := range latest {
+			if !leaving(action) {
+				continue
+			}
+			symbol, side, _ := strings.Cut(k, "|")
+			if w, ok := shadowVoter(s, symbol, now); ok {
+				exits[symbol] = append(exits[symbol], shadowExit{side: side, weight: w})
+			}
+		}
 		for _, p := range s.Positions {
 			sum := by[p.Symbol]
 			if sum == nil {
@@ -203,6 +255,8 @@ func Symbols(snaps []Snapshot) []SymbolSummary {
 			if p.Side == "short" {
 				side = &sum.Short
 			}
+			opened := p.openedWithin(now, freshWindow)
+			added := p.addedWithin(now, freshWindow)
 			// A trader counts once per side even with several positions.
 			if !counted[k] {
 				counted[k] = true
@@ -210,15 +264,43 @@ func Symbols(snaps []Snapshot) []SymbolSummary {
 				if p.Trapped {
 					side.Trapped++
 				}
-				if p.Fresh {
+				if opened {
 					side.Fresh++
 					if !p.Trapped && !s.HighFreq && !s.Style.Martingale() {
 						side.Openers++
 					}
 				}
+				if added {
+					side.Added++
+				}
 			}
 			side.Value += p.EntryValue
 			qty[k] += p.Qty
+			if p.OpenedAt > 0 && !p.PreExisting {
+				ages[k] = append(ages[k], now.Sub(time.UnixMilli(p.OpenedAt)).Hours())
+			}
+			if ck := p.Symbol + "|" + p.Side; (opened || added) && !p.Trapped && !called[ck] && !leaving(latest[ck]) {
+				if w, ok := shadowVoter(s, p.Symbol, now); ok {
+					at := p.OpenedAt
+					if added {
+						at = p.LastAddAt
+					}
+					if !opened {
+						// An add is weaker evidence than an open, and adding to
+						// a loser is an attempt to repair, not a call.
+						if p.atLoss() {
+							ok = false
+						} else {
+							w *= addCallWeight
+						}
+					}
+					if ok {
+						called[ck] = true
+						calls[p.Symbol] = append(calls[p.Symbol], shadowCall{side: p.Side, weight: w, add: !opened, at: at,
+							entry: p.EntryPrice, value: p.EntryValue, mark: p.MarkPrice})
+					}
+				}
+			}
 		}
 	}
 	out := make([]SymbolSummary, 0, len(by))
@@ -261,6 +343,9 @@ func Symbols(snaps []Snapshot) []SymbolSummary {
 		if q := qty[s.Symbol+"short"]; q > 0 {
 			s.Short.AvgEntry = s.Short.Value / q
 		}
+		s.Long.HoldHours, s.Short.HoldHours = mean(ages[s.Symbol+"long"]), mean(ages[s.Symbol+"short"])
+		s.Shadow = shadowOf(calls[s.Symbol], exits[s.Symbol])
+		s.Rank = RankOf(*s)
 		out = append(out, *s)
 	}
 	sort.Slice(out, func(a, b int) bool {
@@ -273,11 +358,22 @@ func Symbols(snaps []Snapshot) []SymbolSummary {
 	return out
 }
 
+func mean(v []float64) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, x := range v {
+		sum += x
+	}
+	return sum / float64(len(v))
+}
+
 // Holders lists followed traders' positions in one coin, largest first.
 func Holders(snaps []Snapshot, symbol string) []Holder {
 	symbol = strings.ToUpper(symbol)
 	var out []Holder
-	for _, s := range snaps {
+	for _, s := range distinctPortfolios(snaps) {
 		for _, p := range s.Positions {
 			if p.Symbol != symbol {
 				continue
@@ -286,7 +382,7 @@ func Holders(snaps []Snapshot, symbol string) []Holder {
 			out = append(out, Holder{Position: p, PortfolioID: f.PortfolioID, Nickname: f.Nickname, AvatarURL: f.AvatarURL,
 				ROI30: f.ROI, PnL30: f.PnL, WinRate30: f.WinRate, Score: s.Score.Score, HighFreq: s.HighFreq,
 				Style: s.Style.Kind, Accuracy: s.Accuracy, PositionsUpdatedAt: s.PositionsUpdatedAt,
-				FillsUpdatedAt: s.FillsUpdatedAt, ProfileUpdatedAt: s.ProfileUpdatedAt})
+				FillsUpdatedAt: s.FillsUpdatedAt, ProfileUpdatedAt: s.ProfileUpdatedAt, HistoryComplete: s.HistoryComplete})
 		}
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].EntryValue > out[b].EntryValue })
@@ -297,8 +393,8 @@ func Holders(snaps []Snapshot, symbol string) []Holder {
 // show partial snapshots, but their absence must not become an AI exit signal.
 func Fresh(snaps []Snapshot, maxAge time.Duration, now time.Time) []Snapshot {
 	out := make([]Snapshot, 0, len(snaps))
-	for _, s := range snaps {
-		if !s.Follow.Private && s.Error == "" && s.Quality(maxAge, now).Complete() {
+	for _, s := range distinctPortfolios(snaps) {
+		if !NoData(s.Follow) && s.Error == "" && s.Quality(maxAge, now).Complete() {
 			out = append(out, s)
 		}
 	}

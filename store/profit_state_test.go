@@ -28,11 +28,13 @@ func TestProfitStateLifecycleReopenAndPrune(t *testing.T) {
 	if err != nil || fresh || same.PeakPricePct != 10 || !same.BreakevenArmed {
 		t.Fatalf("restart persistence lost: %+v fresh=%v err=%v", same, fresh, err)
 	}
-	_, fresh, err = ps.Observe(PositionProfitState{TraderID: "t", Symbol: "BTCUSDT", Side: "long", Lifecycle: "entry-2", EntryPrice: 101}, true)
+	reopened, fresh, err := ps.Observe(PositionProfitState{TraderID: "t", Symbol: "BTCUSDT", Side: "long", Lifecycle: "entry-2", EntryPrice: 101}, true)
 	if err != nil || !fresh {
 		t.Fatalf("new lifecycle not isolated: fresh=%v err=%v", fresh, err)
 	}
-	if err = ps.Prune("t", map[string]bool{}, same.UpdatedAt+1); err != nil {
+	// The snapshot starts after the latest write: the reopened row may be a
+	// millisecond newer than the first one.
+	if err = ps.Prune("t", map[string]bool{}, max(same.UpdatedAt, reopened.UpdatedAt)+1); err != nil {
 		t.Fatal(err)
 	}
 	gone, err := ps.Get("t", "BTCUSDT", "long")

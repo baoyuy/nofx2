@@ -76,6 +76,10 @@ type Confidence struct {
 	// votes without health, at most 1. Below 1 when the side sits on losses.
 	Health  float64 `json:"health"`
 	Traders int     `json:"traders"`
+	// Effective is the number of independent voices behind the leading side:
+	// (Σw)²/Σw². Several accounts of one source count as one, so a coin held
+	// by "8" traders who move together is not eight times the evidence.
+	Effective float64 `json:"effective"`
 }
 
 // vote is one trader's position on a coin.
@@ -94,7 +98,7 @@ type vote struct {
 }
 
 func confidence(votes []vote) Confidence {
-	var long, short, longBase, shortBase, scoreSum float64
+	var long, short, longBase, shortBase, scoreSum, longSq, shortSq float64
 	traders := map[string]float64{}
 	for _, v := range votes {
 		base := v.base
@@ -104,9 +108,11 @@ func confidence(votes []vote) Confidence {
 		if v.side == "short" {
 			short += v.weight
 			shortBase += base
+			shortSq += v.weight * v.weight
 		} else {
 			long += v.weight
 			longBase += base
+			longSq += v.weight * v.weight
 		}
 		traders[v.trader] = v.score
 	}
@@ -132,8 +138,12 @@ func confidence(votes []vote) Confidence {
 	// Agreement alone stays high when the whole leading side is trapped;
 	// their losses lower the score too.
 	lead, leadBase := long, longBase
+	leadSq := longSq
 	if short > long {
-		lead, leadBase = short, shortBase
+		lead, leadBase, leadSq = short, shortBase, shortSq
+	}
+	if leadSq > 0 {
+		c.Effective = lead * lead / leadSq
 	}
 	c.Health = 1
 	if leadBase > 0 {

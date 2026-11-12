@@ -208,6 +208,70 @@ func GetPublicSymbols(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
+var (
+	tradFiMu       sync.Mutex
+	tradFiSymbols  map[string]bool
+	tradFiCachedAt time.Time
+	tradFiTriedAt  time.Time
+)
+
+// IsTradFiSymbol tells whether a USDT-M contract tracks a stock, index or
+// commodity rather than a coin. The list is read from Binance once a day; a
+// symbol reads as crypto until it has loaded.
+func IsTradFiSymbol(symbol string) bool {
+	tradFiMu.Lock()
+	defer tradFiMu.Unlock()
+	if time.Since(tradFiCachedAt) > 24*time.Hour && time.Since(tradFiTriedAt) > time.Minute {
+		tradFiTriedAt = time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var info struct {
+			Symbols []struct {
+				Symbol         string `json:"symbol"`
+				ContractType   string `json:"contractType"`
+				UnderlyingType string `json:"underlyingType"`
+			} `json:"symbols"`
+		}
+		if err := publicGet(ctx, "/fapi/v1/exchangeInfo", &info); err == nil && len(info.Symbols) > 0 {
+			set := make(map[string]bool)
+			for _, s := range info.Symbols {
+				if strings.HasPrefix(s.ContractType, "TRADIFI") || (s.UnderlyingType != "" && s.UnderlyingType != "COIN") {
+					set[s.Symbol] = true
+				}
+			}
+			tradFiSymbols, tradFiCachedAt = set, time.Now()
+		}
+	}
+	return tradFiSymbols[symbol]
+}
+
+var (
+	volumesMu       sync.Mutex
+	volumesCache    map[string]float64
+	volumesCachedAt time.Time
+)
+
+// PublicQuoteVolumes returns every USDT-M contract's 24h traded value in
+// USDT by symbol, stock and commodity contracts included, cached for five
+// minutes. On failure it returns the last good answer, if any.
+func PublicQuoteVolumes(ctx context.Context) (map[string]float64, error) {
+	volumesMu.Lock()
+	defer volumesMu.Unlock()
+	if volumesCache != nil && time.Since(volumesCachedAt) < 5*time.Minute {
+		return volumesCache, nil
+	}
+	var stats []futuresTicker24h
+	if err := publicGet(ctx, "/fapi/v1/ticker/24hr", &stats); err != nil {
+		return volumesCache, fmt.Errorf("binance 24h tickers: %w", err)
+	}
+	out := make(map[string]float64, len(stats))
+	for _, s := range stats {
+		out[s.Symbol] = parseF(s.QuoteVolume)
+	}
+	volumesCache, volumesCachedAt = out, time.Now()
+	return out, nil
+}
+
 // MarketTickerLite is one row of the coin list / gainers ranking.
 type MarketTickerLite struct {
 	Symbol         string  `json:"symbol"`

@@ -13,9 +13,17 @@ import (
 func (e *StrategyEngine) copyTradeSignalGate(c *CopyTradeCoin, ctx *Context, mode, side, symbol string) string {
 	src := e.config.CoinSource
 	src.NormalizeCopyTrade()
-	if n := src.CopyTradeMinOpeners; n > 0 && c.leading().Openers < n {
+	// Openers of the side acted on, which under the fresh signal may differ
+	// from the side the holdings lean to.
+	lead := c.leading()
+	if dir, _ := c.lean(src); dir == "short" {
+		lead = c.Short
+	} else if dir == "long" {
+		lead = c.Long
+	}
+	if n := src.CopyTradeMinOpeners; n > 0 && lead.Openers < n {
 		return fmt.Sprintf("copy-trade %s mode: only %d lead traders opened or added %s on %s in 24h (minimum %d); holding is not a fresh call",
-			mode, c.leading().Openers, c.Direction, symbol, n)
+			mode, lead.Openers, c.Direction, symbol, n)
 	}
 	if min := src.CopyTradeMinHitRate; min > 0 {
 		hr, _ := ctx.CopyTradeCoverage.hitRate(c.Confidence, c.Direction)

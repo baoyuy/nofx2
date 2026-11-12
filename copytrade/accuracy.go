@@ -175,11 +175,23 @@ func (m *Monitor) ScoreAccuracy(ctx context.Context, now time.Time) {
 		bars[sym] = b
 	}
 	out := make(map[string]Accuracy, len(byTrader))
+	outBy := make(map[string]map[string]Accuracy, len(byTrader))
 	for id, calls := range byTrader {
 		out[id] = scoreCalls(calls, bars, now)
+		classes := map[string][]call{}
+		for _, c := range calls {
+			classes[ClassOf(c.symbol)] = append(classes[ClassOf(c.symbol)], c)
+		}
+		by := make(map[string]Accuracy, len(classes))
+		for class, list := range classes {
+			if a := scoreCalls(list, bars, now); a.Calls > 0 {
+				by[class] = a
+			}
+		}
+		outBy[id] = by
 	}
 	m.accMu.Lock()
-	m.accuracy = out
+	m.accuracy, m.accuracyBy = out, outBy
 	m.accMu.Unlock()
 	logger.Infof("copy-trade: scored the calls of %d traders over %d coins", len(out), len(bars))
 }
@@ -191,8 +203,8 @@ func (m *Monitor) accuracySpacing() time.Duration {
 	return accuracySpacing
 }
 
-func (m *Monitor) accuracyOf(id string) Accuracy {
+func (m *Monitor) accuracyOf(id string) (Accuracy, map[string]Accuracy) {
 	m.accMu.RLock()
 	defer m.accMu.RUnlock()
-	return m.accuracy[id]
+	return m.accuracy[id], m.accuracyBy[id]
 }

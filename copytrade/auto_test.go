@@ -65,7 +65,7 @@ func TestPlanRemovals(t *testing.T) {
 	now := time.Now()
 	bad := func(id string, score float64) Snapshot {
 		s := reviewed(id, score)
-		s.Follow.ROI = -5
+		s.Follow.ROI = -30 // far below the others, whatever the market did
 		return s
 	}
 	manual := bad("m", 1)

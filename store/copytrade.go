@@ -34,7 +34,9 @@ type CopyTradeFollow struct {
 	FillsPending   bool  `gorm:"column:fills_pending" json:"-"`
 	ProfileAt      int64 `gorm:"column:profile_at" json:"-"`
 	ProfileVersion int   `gorm:"column:profile_version" json:"-"`
-	LastTradeTime  int64 `gorm:"column:last_trade_time" json:"last_trade_time"`
+	// PerfAt is when the 30-day results were last read (ms).
+	PerfAt        int64 `gorm:"column:perf_at" json:"-"`
+	LastTradeTime int64 `gorm:"column:last_trade_time" json:"last_trade_time"`
 	// Private portfolios hide trades and positions, so they never show data;
 	// PublicID is the trader's public portfolio, if any.
 	Private  bool   `gorm:"column:private" json:"private"`
@@ -78,8 +80,17 @@ func NewCopyTradeStore(db *gorm.DB) *CopyTradeStore { return &CopyTradeStore{db:
 func (s *CopyTradeStore) InitTables() error { return s.initTables() }
 
 func (s *CopyTradeStore) initTables() error {
-	return s.db.AutoMigrate(&CopyTradeFollow{}, &CopyTradeFill{}, &CopyTradeSignal{},
-		&CopyTradeExclusion{}, &CopyTradeAutoLog{})
+	// Rows from before these columns existed: every one was a ranked signal,
+	// and its 72h result was never asked for.
+	old := s.db.Migrator().HasTable(&CopyTradeSignal{}) && !s.db.Migrator().HasColumn(&CopyTradeSignal{}, "ranked")
+	if err := s.db.AutoMigrate(&CopyTradeFollow{}, &CopyTradeFill{}, &CopyTradeSignal{},
+		&CopyTradeExclusion{}, &CopyTradeAutoLog{}); err != nil {
+		return err
+	}
+	if old {
+		return s.db.Model(&CopyTradeSignal{}).Where("1 = 1").Updates(map[string]any{"ranked": true, "done_72h": true}).Error
+	}
+	return nil
 }
 
 // CopyTradeExclusion keeps a lead trader out of auto-follow until Until (ms;
@@ -153,6 +164,47 @@ type CopyTradeSignal struct {
 	Ret24h  *float64 `gorm:"column:ret_24h"`
 	Done4h  bool     `gorm:"column:done_4h;index"`
 	Done24h bool     `gorm:"column:done_24h;index"`
+	// 72h: lead traders hold for days. Rows from before the column existed
+	// are marked done by the migration, so they are never re-evaluated.
+	Ret72h  *float64 `gorm:"column:ret_72h"`
+	Done72h bool     `gorm:"column:done_72h;index"`
+	// Bench is BTC's price change over the same hours: a call is only as
+	// good as what it added to the market's own move.
+	Bench4h  *float64 `gorm:"column:bench_4h"`
+	Bench24h *float64 `gorm:"column:bench_24h"`
+	Bench72h *float64 `gorm:"column:bench_72h"`
+
+	// What the call was made of, to find which parts carry the edge.
+	// Features is 1 on rows recorded with them (older rows have 0 here).
+	Features     int     `gorm:"column:features"`
+	LongTraders  int     `gorm:"column:long_traders"`
+	ShortTraders int     `gorm:"column:short_traders"`
+	Openers      int     `gorm:"column:openers"` // fresh calls on the leading side
+	Adds         int     `gorm:"column:adds"`    // adds to existing positions on the leading side
+	Trapped      int     `gorm:"column:trapped"` // trapped holders on the leading side
+	LongShare    float64 `gorm:"column:long_share"`
+	// LongShareDelta is the change of LongShare against the hour before; nil
+	// when that hour has no row.
+	LongShareDelta *float64 `gorm:"column:long_share_delta"`
+	HoldHours      float64  `gorm:"column:hold_hours"`    // mean age of the leading side's positions
+	EntryGapPct    float64  `gorm:"column:entry_gap_pct"` // price past the leading side's average entry, %
+	// The fresh-call reading (copytrade.Shadow), scored next to Confidence.
+	ShadowDirection string  `gorm:"column:shadow_direction"`
+	ShadowScore     float64 `gorm:"column:shadow_score"`
+	ShadowCalls     int     `gorm:"column:shadow_calls"`
+	ShadowExits     int     `gorm:"column:shadow_exits"`
+	ShadowBurst     int     `gorm:"column:shadow_burst"`
+	// The cross-coin score (copytrade.Rank): a second reading recorded next to
+	// Confidence and Shadow, so the hit-rate page can tell whether ranking by
+	// "is there a trade here" beats ranking by "how one-sided are the holders".
+	RankDirection    string  `gorm:"column:rank_direction"`
+	RankScore        float64 `gorm:"column:rank_score"`
+	RankStrength     float64 `gorm:"column:rank_strength"`
+	RankIndependence float64 `gorm:"column:rank_independence"`
+	// Ranked: among the hour's top signals by confidence, the set recorded
+	// before every coin was. Hit rates of Confidence count only these, so the
+	// record stays comparable across the change.
+	Ranked bool `gorm:"column:ranked"`
 }
 
 func (CopyTradeSignal) TableName() string { return "copytrade_signals" }
@@ -175,14 +227,17 @@ func (s *CopyTradeStore) SaveSignals(rows []CopyTradeSignal) error {
 // by now (unix seconds).
 func (s *CopyTradeStore) PendingSignals(now int64) ([]CopyTradeSignal, error) {
 	var out []CopyTradeSignal
-	err := s.db.Where("(done_4h = ? AND hour <= ?) OR (done_24h = ? AND hour <= ?)", false, now-4*3600, false, now-24*3600).
-		Order("hour").Limit(2000).Find(&out).Error
+	err := s.db.Where("(done_4h = ? AND hour <= ?) OR (done_24h = ? AND hour <= ?) OR (done_72h = ? AND hour <= ?)",
+		false, now-4*3600, false, now-24*3600, false, now-72*3600).
+		Order("hour").Limit(5000).Find(&out).Error
 	return out, err
 }
 
 func (s *CopyTradeStore) UpdateSignal(sig *CopyTradeSignal) error {
 	return s.db.Model(&CopyTradeSignal{}).Where("id = ?", sig.ID).Updates(map[string]any{
 		"ret_4h": sig.Ret4h, "ret_24h": sig.Ret24h, "done_4h": sig.Done4h, "done_24h": sig.Done24h,
+		"ret_72h": sig.Ret72h, "done_72h": sig.Done72h,
+		"bench_4h": sig.Bench4h, "bench_24h": sig.Bench24h, "bench_72h": sig.Bench72h,
 	}).Error
 }
 
@@ -190,6 +245,13 @@ func (s *CopyTradeStore) UpdateSignal(sig *CopyTradeSignal) error {
 func (s *CopyTradeStore) SignalsSince(sinceHour int64) ([]CopyTradeSignal, error) {
 	var out []CopyTradeSignal
 	err := s.db.Where("hour >= ?", sinceHour).Order("hour").Find(&out).Error
+	return out, err
+}
+
+// SignalsAt returns the signals of one hour.
+func (s *CopyTradeStore) SignalsAt(hour int64) ([]CopyTradeSignal, error) {
+	var out []CopyTradeSignal
+	err := s.db.Where("hour = ?", hour).Find(&out).Error
 	return out, err
 }
 
@@ -229,8 +291,9 @@ func (s *CopyTradeStore) UpdateFollowProfile(f *CopyTradeFollow) error {
 			"aum": f.AUM, "margin_balance": f.MarginBalance, "start_time": f.StartTime,
 			"copy_count": f.CopyCount, "max_copy_count": f.MaxCopyCount,
 			"roi": f.ROI, "pnl": f.PnL, "mdd": f.MDD, "win_rate": f.WinRate,
-			"profile_at": f.ProfileAt, "profile_version": f.ProfileVersion, "last_trade_time": f.LastTradeTime,
-			"private": f.Private, "public_id": f.PublicID,
+			"profile_at": f.ProfileAt, "profile_version": f.ProfileVersion, "perf_at": f.PerfAt,
+			"last_trade_time": f.LastTradeTime,
+			"private":         f.Private, "public_id": f.PublicID,
 		})
 	if result.Error != nil {
 		return result.Error
@@ -250,6 +313,18 @@ func (s *CopyTradeStore) DeleteFollow(id string) error {
 	})
 }
 
+// SetFollowSource marks a follow as the user's ("manual") or auto-follow's.
+func (s *CopyTradeStore) SetFollowSource(id, source string) error {
+	return s.db.Model(&CopyTradeFollow{}).Where("portfolio_id = ?", id).
+		Updates(map[string]any{"source": source, "picked_at": 0}).Error
+}
+
+// DeleteFollowKeepFills removes a follow but leaves its fills, which
+// PruneFills removes as they age out.
+func (s *CopyTradeStore) DeleteFollowKeepFills(id string) error {
+	return s.db.Delete(&CopyTradeFollow{}, "portfolio_id = ?", id).Error
+}
+
 // Fills returns a trader's fills since sinceMs, oldest first.
 func (s *CopyTradeStore) Fills(id string, sinceMs int64) ([]CopyTradeFill, error) {
 	var out []CopyTradeFill
@@ -261,8 +336,18 @@ func (s *CopyTradeStore) Fills(id string, sinceMs int64) ([]CopyTradeFill, error
 // that fills up to untilMs are stored, in one transaction. syncedAt is supplied
 // only after a complete catch-up; partial pages preserve the last completion.
 func (s *CopyTradeStore) ReplaceFills(id string, fromMs int64, fills []CopyTradeFill, untilMs int64, syncedAt ...int64) error {
+	return s.ReplaceFillRange(id, fromMs, 0, fills, untilMs, syncedAt...)
+}
+
+// ReplaceFillRange is ReplaceFills limited to fills before beforeMs (0 = no
+// upper bound), so a backfill can add one page without rewriting newer ones.
+func (s *CopyTradeStore) ReplaceFillRange(id string, fromMs, beforeMs int64, fills []CopyTradeFill, untilMs int64, syncedAt ...int64) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Delete(&CopyTradeFill{}, "portfolio_id = ? AND time >= ?", id, fromMs).Error; err != nil {
+		del := tx.Where("portfolio_id = ? AND time >= ?", id, fromMs)
+		if beforeMs > 0 {
+			del = del.Where("time < ?", beforeMs)
+		}
+		if err := del.Delete(&CopyTradeFill{}).Error; err != nil {
 			return err
 		}
 		if len(fills) > 0 {
@@ -277,6 +362,13 @@ func (s *CopyTradeStore) ReplaceFills(id string, fromMs int64, fills []CopyTrade
 		}
 		return tx.Model(&CopyTradeFollow{}).Where("portfolio_id = ?", id).Updates(updates).Error
 	})
+}
+
+// FillTraders lists every portfolio with stored fills, followed or not.
+func (s *CopyTradeStore) FillTraders() ([]string, error) {
+	var out []string
+	err := s.db.Model(&CopyTradeFill{}).Distinct().Order("portfolio_id").Pluck("portfolio_id", &out).Error
+	return out, err
 }
 
 // PruneFills drops fills older than beforeMs.

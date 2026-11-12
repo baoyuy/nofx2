@@ -97,6 +97,9 @@ type Detail struct {
 // Private tells a portfolio whose trades Binance does not show.
 func (d Detail) Private() bool { return strings.EqualFold(d.PortfolioType, "PRIVATE") }
 
+// Signal portfolios mirror a trader's calls but are not independent traders.
+func (d Detail) Signal() bool { return strings.EqualFold(d.PortfolioType, "SIGNAL") }
+
 func (c *Client) Detail(ctx context.Context, portfolioID string) (Detail, error) {
 	var out Detail
 	var raw map[string]json.RawMessage
@@ -107,6 +110,9 @@ func (c *Client) Detail(ctx context.Context, portfolioID string) (Detail, error)
 	b, _ := json.Marshal(raw)
 	if err := json.Unmarshal(b, &out); err != nil {
 		return out, c.checkFormat("detail", false, err.Error())
+	}
+	if out.PortfolioID != "" && out.PortfolioID != portfolioID {
+		return Detail{}, fmt.Errorf("Binance copy-trade profile ID mismatch: requested %s, received %s", portfolioID, out.PortfolioID)
 	}
 	return out, c.checkFormat("detail", out.PortfolioID != "" || out.Nickname != "", "profile has no ID or nickname")
 }

@@ -46,6 +46,9 @@ export interface CopyTradeSettings {
   minSamples: number
   minVolumeM: number
   trendFilter: boolean
+  cryptoOnly: boolean
+  rank: 'confidence' | 'quality'
+  signal: 'confidence' | 'fresh'
 }
 // Same defaults and ranges as the backend (store.NormalizeCopyTrade).
 export const DEFAULT_COPY_TRADE: CopyTradeSettings = {
@@ -59,6 +62,9 @@ export const DEFAULT_COPY_TRADE: CopyTradeSettings = {
   minSamples: 30,
   minVolumeM: 0,
   trendFilter: false,
+  cryptoOnly: false,
+  rank: 'confidence',
+  signal: 'confidence',
 }
 export const COPY_TRADE_LIMITS = {
   minConfidence: { min: 10, max: 100 },
@@ -390,6 +396,9 @@ export function formFromStrategy(strategy: Strategy): FreeForm {
         DEFAULT_COPY_TRADE.minVolumeM
       ),
       trendFilter: Boolean(src?.copy_trade_trend_filter),
+      cryptoOnly: Boolean(src?.copy_trade_crypto_only),
+      rank: src?.copy_trade_rank === 'quality' ? 'quality' : 'confidence',
+      signal: src?.copy_trade_signal === 'fresh' ? 'fresh' : 'confidence',
     },
     copyTradeContext: Boolean(src?.copy_trade_context),
     // Only a saved choice; unset takes the default of the source chosen
@@ -555,6 +564,9 @@ export function configFromForm(
                     copy_trade_min_samples: copyTrade.minSamples,
                     copy_trade_min_volume_millions: copyTrade.minVolumeM,
                     copy_trade_trend_filter: copyTrade.trendFilter,
+                    copy_trade_crypto_only: copyTrade.cryptoOnly,
+                    copy_trade_rank: copyTrade.rank,
+                    copy_trade_signal: copyTrade.signal,
                   }
                 : {}),
               static_coins:

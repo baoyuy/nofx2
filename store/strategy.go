@@ -950,6 +950,19 @@ type CoinSourceConfig struct {
 	// CopyTradeTrendFilter refuses follow/fade opens against the 4h trend
 	// (EMA20 vs EMA50): no long in a downtrend, no short in an uptrend.
 	CopyTradeTrendFilter bool `json:"copy_trade_trend_filter,omitempty"`
+	// CopyTradeCryptoOnly leaves stock and commodity contracts out of the
+	// copy_trade source and refuses copy-trade opens on them: few followed
+	// traders hold them, so a lean there is one or two people.
+	CopyTradeCryptoOnly bool `json:"copy_trade_crypto_only,omitempty"`
+	// CopyTradeRank orders the copy_trade source's coins: "confidence" (the
+	// default) by direction confidence, "quality" by confidence weighed with
+	// how tradable the coin is (24h traded value) and how fresh the lean is.
+	CopyTradeRank string `json:"copy_trade_rank,omitempty"`
+	// CopyTradeSignal picks the reading the source and the follow/fade rule
+	// use: "confidence" (the default, who holds the coin) or "fresh" (who
+	// opened or added lately, see copytrade.Shadow). "fresh" is measured in
+	// the hit-rate record as the shadow group; switch once it proves better.
+	CopyTradeSignal string `json:"copy_trade_signal,omitempty"`
 	// static coin list (used when source_type = "static")
 	StaticCoins []string `json:"static_coins,omitempty"`
 	// excluded coins list (filtered out from all sources)
@@ -1796,4 +1809,10 @@ func (c *CoinSourceConfig) clampCopyTradeGates() {
 	}
 	c.CopyTradeMinSamples = min(c.CopyTradeMinSamples, 1000)
 	c.CopyTradeMinVolumeM = min(max(c.CopyTradeMinVolumeM, 0), MaxCopyTradeMinVolumeM)
+	if c.CopyTradeRank != "quality" {
+		c.CopyTradeRank = "confidence"
+	}
+	if c.CopyTradeSignal != "fresh" {
+		c.CopyTradeSignal = "confidence"
+	}
 }

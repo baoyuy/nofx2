@@ -2,6 +2,7 @@ package copytrade
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -34,8 +35,12 @@ const (
 	maxAddsPerRun = 10
 	// maxChecksPerRun bounds the profile requests spent on candidates.
 	maxChecksPerRun = 20
-	// exclusionDays keeps a dropped trader from being picked again soon.
-	exclusionDays = 30
+	// exclusionDays keeps a dropped trader from being picked again soon;
+	// softExclusionDays when only the month's result was held against them
+	// (it may turn), goneExclusionDays when the portfolio is closed or hidden.
+	exclusionDays     = 30
+	softExclusionDays = 7
+	goneExclusionDays = 90
 
 	// Entry bar, from the leaderboard and the profile.
 	pickMinDays    = 60
@@ -61,7 +66,56 @@ const (
 	RuleBalanceLow   = "balance_low"   // balance below dropMinBalance
 	RuleStaleTrapped = "stale_trapped" // over half the book is old trapped positions
 	RuleInactive     = "inactive"      // no trade and nothing held for 2 weeks
+	RuleHighFreq     = "high_freq"     // a bot or grid: dozens of orders a day, every day
+	RuleUnsynced     = "unsynced"      // trade history could not be read for 2 days
 )
+
+// roiSlack and roiFloor shape the losing-month rule. A month below zero is
+// held against a trader only when it is also roiSlack points under the median
+// of everyone followed: in a falling market most records turn negative
+// together, and dropping them all leaves no one. roiFloor drops regardless.
+const (
+	roiSlack = 10.0
+	roiFloor = -20.0
+)
+
+// DropContext is what a trader is measured against: the others followed.
+type DropContext struct {
+	// MedianROI is the median 30-day ROI of the followed traders with a
+	// profile; Known tells it was computed from enough of them.
+	MedianROI float64
+	Known     bool
+}
+
+// minPeers followed traders are needed for a median worth comparing to.
+const minPeers = 5
+
+// dropContextOf computes the context from followed traders' profiles.
+func dropContextOf(follows []store.CopyTradeFollow) DropContext {
+	var rois []float64
+	for _, f := range follows {
+		if f.ProfileAt > 0 && !NoData(f) {
+			rois = append(rois, f.ROI)
+		}
+	}
+	if len(rois) < minPeers {
+		return DropContext{}
+	}
+	sort.Float64s(rois)
+	mid := rois[len(rois)/2]
+	if len(rois)%2 == 0 {
+		mid = (rois[len(rois)/2-1] + mid) / 2
+	}
+	return DropContext{MedianROI: mid, Known: true}
+}
+
+// losingMonth is the ROI drop rule.
+func (c DropContext) losingMonth(roi float64) bool {
+	if roi >= 0 {
+		return false
+	}
+	return roi < roiFloor || !c.Known || roi < c.MedianROI-roiSlack
+}
 
 // Entry-bar rejections of a candidate, logged as "skip" with the value.
 const (
@@ -77,14 +131,27 @@ func onProbation(f store.CopyTradeFollow, now time.Time) bool {
 // DropReasons lists the rules a followed trader breaks, from a view (scored,
 // positions priced). Only closed and private apply on probation, and the rest
 // wait for a complete picture of the trader.
-func DropReasons(s Snapshot, now time.Time) []string {
+func DropReasons(s Snapshot, now time.Time) []string { return DropReasonsIn(s, now, DropContext{}) }
+
+// DropReasonsIn is DropReasons measured against the other followed traders.
+func DropReasonsIn(s Snapshot, now time.Time, peers DropContext) []string {
 	f := s.Follow
 	var out []string
-	if f.Status != "" && !strings.EqualFold(f.Status, "ACTIVE") {
+	if Closed(f) {
 		out = append(out, RuleClosed)
 	}
 	if f.Private {
 		out = append(out, RulePrivate)
+	}
+	if NoData(f) {
+		return out
+	}
+	// What a trader is, not how the month went: these do not wait.
+	if s.FillDays >= highFreqMinDays && s.OrdersPerDayAvg >= highFreqOrders {
+		out = append(out, RuleHighFreq)
+	}
+	if !s.HistoryComplete && !s.pendingSince.IsZero() && now.Sub(s.pendingSince) > unsyncedAfter {
+		out = append(out, RuleUnsynced)
 	}
 	if onProbation(f, now) || f.ProfileAt == 0 || !s.HistoryComplete {
 		return out
@@ -95,7 +162,7 @@ func DropReasons(s Snapshot, now time.Time) []string {
 	if s.Accuracy.inaccurate() {
 		out = append(out, RuleInaccurate)
 	}
-	if f.ROI < 0 {
+	if peers.losingMonth(f.ROI) {
 		out = append(out, RuleROINegative)
 	}
 	if f.MDD > dropMaxMDD {
@@ -125,6 +192,22 @@ func DropReasons(s Snapshot, now time.Time) []string {
 	return out
 }
 
+// exclusionFor is how long a trader dropped for reasons (comma separated rule
+// codes) stays out.
+func exclusionFor(reasons string) time.Duration {
+	days := softExclusionDays
+	for _, r := range strings.Split(reasons, ",") {
+		switch r {
+		case RuleClosed, RulePrivate:
+			return goneExclusionDays * 24 * time.Hour
+		case RuleROINegative:
+		default:
+			days = exclusionDays
+		}
+	}
+	return time.Duration(days) * 24 * time.Hour
+}
+
 // planned is one follow the manager will remove.
 type planned struct {
 	id, nickname, reason string
@@ -141,6 +224,11 @@ type autoPlan struct {
 // them unless the count is over target; then the weakest picks go until the
 // count is down to target, picks still on probation last.
 func planRemovals(views []Snapshot, target, dropBudget int, now time.Time) autoPlan {
+	follows := make([]store.CopyTradeFollow, len(views))
+	for i, s := range views {
+		follows[i] = s.Follow
+	}
+	peers := dropContextOf(follows)
 	var plan autoPlan
 	type ranked struct {
 		s       Snapshot
@@ -151,7 +239,7 @@ func planRemovals(views []Snapshot, target, dropBudget int, now time.Time) autoP
 		if s.Follow.Source == "manual" {
 			continue
 		}
-		r := ranked{s: s, reasons: DropReasons(s, now)}
+		r := ranked{s: s, reasons: DropReasonsIn(s, now, peers)}
 		if len(r.reasons) > 0 {
 			breakers = append(breakers, r)
 		} else {
@@ -164,7 +252,10 @@ func planRemovals(views []Snapshot, target, dropBudget int, now time.Time) autoP
 			if pa != pb {
 				return !pa
 			}
-			return list[a].s.Score.Score < list[b].s.Score.Score
+			// The record on Binance, corrected by how their own calls turned
+			// out here.
+			return list[a].s.Score.Score*accuracyFactor(list[a].s.Accuracy) <
+				list[b].s.Score.Score*accuracyFactor(list[b].s.Accuracy)
 		})
 	}
 	byScore(breakers)
@@ -216,7 +307,7 @@ func pickable(rows []Leader, skip map[string]bool, now time.Time) []Leader {
 func pickReject(d Detail) string {
 	// Hidden positions are fine: they are inferred from the public fills.
 	switch {
-	case d.Private():
+	case d.Private() || d.Signal():
 		return RulePrivate
 	case d.Status != "" && !strings.EqualFold(d.Status, "ACTIVE"):
 		return RuleClosed
@@ -345,12 +436,12 @@ func (m *Monitor) runAuto(ctx context.Context, cfg AutoConfig, now time.Time, st
 	}
 	plan := planRemovals(m.Snapshots(), cfg.Target, max(budget, 0), now)
 	remove := func(p planned, action string) error {
-		if err := m.Unfollow(p.id); err != nil {
+		if err := m.unfollow(p.id, true); err != nil {
 			return err
 		}
 		if action == "drop" {
 			if err := m.store.Exclude(store.CopyTradeExclusion{PortfolioID: p.id, Nickname: p.nickname, Reason: p.reason,
-				Until: now.Add(exclusionDays * 24 * time.Hour).UnixMilli(), CreatedAt: nowMs}); err != nil {
+				Until: now.Add(exclusionFor(p.reason)).UnixMilli(), CreatedAt: nowMs}); err != nil {
 				return err
 			}
 		}
@@ -435,6 +526,17 @@ func (m *Monitor) fillAuto(ctx context.Context, cfg AutoConfig, now time.Time, s
 			}
 			continue
 		}
+		if f.PortfolioID != r.PortfolioID {
+			// The row was an alias of a public portfolio: do not spend
+			// requests resolving it again every run.
+			m.auto.mu.Lock()
+			m.auto.rejected[r.PortfolioID] = now.Add(24 * time.Hour)
+			m.auto.mu.Unlock()
+		}
+		if skip[f.PortfolioID] {
+			continue
+		}
+		skip[f.PortfolioID] = true
 		f.Source, f.PickedAt = "auto", now.UnixMilli()
 		if err := m.addFollow(f); err != nil {
 			if strings.Contains(err.Error(), "at most") {
@@ -458,8 +560,24 @@ func (m *Monitor) fillAuto(ctx context.Context, cfg AutoConfig, now time.Time, s
 func (m *Monitor) checkPick(ctx context.Context, id string) (string, store.CopyTradeFollow, error) {
 	f := store.CopyTradeFollow{PortfolioID: id}
 	d, err := m.Client.Detail(ctx, id)
+	if errors.Is(err, ErrClosed) {
+		return RuleClosed, f, nil
+	}
 	if err != nil {
 		return "", f, err
+	}
+	// Same as a manual follow: a signal or private portfolio stands for the
+	// trader's public one.
+	if (d.Signal() || d.Private()) && d.PublicID != "" && d.PublicID != id {
+		id = d.PublicID
+		d, err = m.Client.Detail(ctx, id)
+		if errors.Is(err, ErrClosed) {
+			return RuleClosed, f, nil
+		}
+		if err != nil {
+			return "", f, err
+		}
+		f.PortfolioID = id
 	}
 	if reason := pickReject(d); reason != "" {
 		return reason, f, nil
@@ -474,5 +592,6 @@ func (m *Monitor) checkPick(ctx context.Context, id string) (string, store.CopyT
 	applyDetail(&f, d)
 	f.ROI, f.PnL, f.MDD, f.WinRate = float64(perf.ROI), float64(perf.PnL), float64(perf.MDD), float64(perf.WinRate)
 	f.ProfileAt, f.ProfileVersion = time.Now().UnixMilli(), profileVersion
+	f.PerfAt = f.ProfileAt
 	return "", f, nil
 }

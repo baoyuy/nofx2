@@ -95,6 +95,9 @@ describe('copy-trade source', () => {
           minSamples: 40,
           minVolumeM: 20,
           trendFilter: true,
+          cryptoOnly: true,
+          rank: 'quality',
+          signal: 'fresh',
         },
       },
       'zh',
@@ -113,6 +116,9 @@ describe('copy-trade source', () => {
       copy_trade_min_samples: 40,
       copy_trade_min_volume_millions: 20,
       copy_trade_trend_filter: true,
+      copy_trade_crypto_only: true,
+      copy_trade_rank: 'quality',
+      copy_trade_signal: 'fresh',
       static_coins: [],
     })
     const back = formFromStrategy({
@@ -131,6 +137,9 @@ describe('copy-trade source', () => {
       minSamples: 40,
       minVolumeM: 20,
       trendFilter: true,
+      cryptoOnly: true,
+      rank: 'quality',
+      signal: 'fresh',
     })
     // Gates turned off are sent as 0 / false: the backend merges a save
     // into the stored config, so leaving them out kept the old values.
@@ -144,6 +153,10 @@ describe('copy-trade source', () => {
     expect(off.copy_trade_min_hit_rate).toBe(0)
     expect(off.copy_trade_min_volume_millions).toBe(0)
     expect(off.copy_trade_trend_filter).toBe(false)
+    // The new options too: off and the old behaviour unless chosen.
+    expect(off.copy_trade_crypto_only).toBe(false)
+    expect(off.copy_trade_rank).toBe('confidence')
+    expect(off.copy_trade_signal).toBe('confidence')
 
     const staticCfg = configFromForm(
       null,

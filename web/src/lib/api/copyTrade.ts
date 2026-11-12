@@ -114,8 +114,12 @@ export interface TraderPosition {
   first_entry?: number
   /** inferred position whose loss reached the trader's balance */
   liquidated: boolean
-  /** opened or added to within 24 hours */
+  /** opened or added to within 24 hours (either kind of activity) */
   fresh: boolean
+  /** the position was first opened within 24 hours */
+  opened_recently?: boolean
+  /** an already open position was added to within 24 hours */
+  added_recently?: boolean
 }
 
 export interface TradeEvent {
@@ -229,8 +233,10 @@ export interface SideSummary {
   avg_entry: number
   /** holders deep in loss, among traders */
   trapped: number
-  /** holders who opened or added within 24 hours, among traders */
+  /** holders who opened within 24 hours, among traders */
   fresh: number
+  /** holders who added to an existing position within 24 hours, among traders */
+  added: number
   /** fresh holders whose call counts: not trapped, not high-frequency, not averaging down */
   openers?: number
 }
@@ -250,6 +256,8 @@ export interface Confidence {
   /** leading side's health, 0-1; below 1 when it sits on losses */
   health: number
   traders: number
+  /** independent voices behind the leading side, (Σw)²/Σw² */
+  effective?: number
 }
 
 /** How far a lead trader's record can be trusted, 0-100, and its parts (0-1). */
@@ -282,18 +290,78 @@ export interface TraderAccuracy {
 }
 
 export interface HitRate {
-  band: 'high' | 'mid' | 'low' | 'all'
-  horizon: '4h' | '24h'
+  /**
+   * What the rows are split by: confidence (who holds, bands high/mid/low),
+   * openers (those signals by fresh openers 0/1/2/3+), shadow (the
+   * fresh-call score, same bands), calls (fresh-call signals by independent
+   * callers 1/2/3+), rank (the cross-coin score, same bands). Missing on old
+   * servers = confidence.
+   */
+  group?: 'confidence' | 'openers' | 'shadow' | 'calls' | 'rank'
+  band: 'high' | 'mid' | 'low' | 'all' | '0' | '1' | '2' | '3+'
+  horizon: '4h' | '24h' | '72h'
   /** called side; 'all' sums both */
   direction?: 'all' | 'long' | 'short'
   samples: number
   hits: number
   rate: number
   avg_return: number
+  /** Against BTC over the same hours: calls with a benchmark, share that
+   * beat it, mean excess. */
+  excess_samples?: number
+  excess_rate?: number
+  avg_excess?: number
+}
+
+/** The fresh-call reading of a coin: who opened or added lately. */
+export interface Shadow {
+  direction: 'long' | 'short' | 'neutral'
+  score: number
+  long_calls: number
+  short_calls: number
+  long_exits: number
+  short_exits: number
+  burst: number
+  entry_gap_pct: number
+  flow: number
+  /** independent calls behind the leading side, (Σw)²/Σw² */
+  effective?: number
+  /** share of the leading side's calls that opened rather than added, 0-1 */
+  open_share?: number
+}
+
+/**
+ * The cross-coin score: which coin is worth trading now. Fresh calls outrank
+ * stale holdings, independent voices outrank account counts, and crowded, thin
+ * or chased coins are discounted. Comparable across coins, unlike confidence.
+ */
+export interface Rank {
+  direction: 'long' | 'short' | 'neutral'
+  /** 0-100 */
+  score: number
+  /** 0-100, before the discounts */
+  strength: number
+  /** effective independent callers */
+  independence: number
+  /** 1 = room, floor 0.7 when crowded */
+  crowding: number
+  /** 1 = deep, 0.4 thin, 0.7 unknown */
+  liquidity: number
+  /** 1 = at the callers' average entry, 0.4 fully chased */
+  entry: number
+  /** estimated round-trip cost, % */
+  cost_pct: number
+  /** what the direction rests on */
+  basis: 'fresh' | 'holding' | ''
+  /** fresh callers on the leading side */
+  callers: number
+  /** accounts holding the leading side */
+  holders: number
 }
 
 export interface SymbolSummary {
   symbol: string
+  shadow?: Shadow
   long: SideSummary
   short: SideSummary
   confidence: Confidence
@@ -301,10 +369,15 @@ export interface SymbolSummary {
   liquidated: number
   /** high-frequency holders, weighted down */
   high_freq: number
+  /** 24h traded value in USDT; 0 = unknown */
+  volume_24h?: number
+  /** the cross-coin score (see Rank); absent on old servers */
+  rank?: Rank
 }
 
 export interface Holder extends TraderPosition, TraderBrief {
   portfolio_id: string
+  history_complete?: boolean
   high_freq: boolean
   /** scalp | swing | long | martingale | few_samples | unknown */
   style?: string

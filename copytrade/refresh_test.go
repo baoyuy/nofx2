@@ -59,7 +59,7 @@ func TestHistoryPageYieldsAndPreservesSplitTimestamps(t *testing.T) {
 		t.Fatal(err)
 	}
 	pending, err := m.syncFillsPage(ctx, f, nil)
-	if err != nil || pending == nil || pending.page != 1 || f.FillsUntil != 0 {
+	if err != nil || pending == nil || len(pending.rows) != TradePageSize || f.FillsUntil != 0 {
 		t.Fatalf("first page must yield without advancing watermark: %+v %v", pending, err)
 	}
 	rows, _ := m.store.Fills("42", 0)

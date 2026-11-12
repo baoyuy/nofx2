@@ -1,6 +1,7 @@
 package apischeduler
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,25 @@ import (
 	"strings"
 	"time"
 )
+
+type egressKey struct{}
+
+// WithEgress names the egress (e.g. a proxy) a request leaves through, for
+// providers whose budget is kept per egress. The name is only a key; it is
+// hashed so no proxy address or credential is kept or shown.
+func WithEgress(ctx context.Context, name string) context.Context {
+	if name == "" {
+		return ctx
+	}
+	sum := sha256.Sum256([]byte(name))
+	return context.WithValue(ctx, egressKey{}, hex.EncodeToString(sum[:6]))
+}
+
+// Egress returns the egress key set with WithEgress, or "".
+func Egress(ctx context.Context) string {
+	v, _ := ctx.Value(egressKey{}).(string)
+	return v
+}
 
 func providerFor(r *http.Request) string {
 	host := strings.ToLower(r.URL.Hostname())
@@ -186,11 +206,22 @@ func (s *Scheduler) policy(r *http.Request) requestPolicy {
 			}
 		}
 	}
-	p.limits = append(p.limits, Limit{Key: provider + ":weight", Capacity: profile.WeightPerMinute, Window: time.Minute, Weight: weight}, Limit{Key: provider + ":requests", Capacity: profile.RequestsPerSecond, Window: time.Second, Weight: 1})
+	// Budgets are per egress IP. A caller that sends this provider's requests
+	// through several proxies names the egress, so each has its own budget
+	// and a pushback on one pauses only that one. Unnamed requests share one
+	// budget, as before. The provider (statistics, concurrency) is unchanged.
+	key := provider
+	if egress := Egress(r.Context()); egress != "" && provider == "binance-copytrade" {
+		key = provider + "@" + egress
+		for i := range p.limits {
+			p.limits[i].Key = key + strings.TrimPrefix(p.limits[i].Key, provider)
+		}
+	}
+	p.limits = append(p.limits, Limit{Key: key + ":weight", Capacity: profile.WeightPerMinute, Window: time.Minute, Weight: weight}, Limit{Key: key + ":requests", Capacity: profile.RequestsPerSecond, Window: time.Second, Weight: 1})
 	// Reserve budget, not just a concurrency slot, for urgent private requests.
 	// Public traffic consumes both the full pool and this narrower pool.
 	if p.priority < 2 {
-		p.limits = append(p.limits, Limit{Key: provider + ":background", Capacity: max(weight, profile.WeightPerMinute*4/5), Window: time.Minute, Weight: weight})
+		p.limits = append(p.limits, Limit{Key: key + ":background", Capacity: max(weight, profile.WeightPerMinute*4/5), Window: time.Minute, Weight: weight})
 	}
 	if !private && r.Method == http.MethodGet {
 		p.cacheTTL = publicTTL(provider, path)

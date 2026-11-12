@@ -427,6 +427,76 @@ export function CopyTradeGates({
           'No open against the 4h trend (no long while EMA20 < EMA50, no short while above)'
         )}
       </label>
+      <label className="mt-2 flex items-center gap-2 text-sm text-nofx-text">
+        <input
+          type="checkbox"
+          checked={s.cryptoOnly}
+          onChange={(e) => set({ cryptoOnly: e.target.checked })}
+        />
+        {text(
+          language,
+          '只做加密货币（不选、不开股票和商品合约，如 TSLA、原油）',
+          'Crypto only (no stock or commodity contracts such as TSLA or oil)'
+        )}
+      </label>
+      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <Field
+          language={language}
+          label={text(language, '候选币排序', 'Order of the coins')}
+          hint={text(
+            language,
+            '「综合」在置信度之外还看 24 小时成交额和最近新开仓的人数：成交清淡、只有旧仓的币排后面。',
+            '"Quality" also weighs 24h volume and how many traders opened lately: thin coins held only as old positions rank last.'
+          )}
+        >
+          <select
+            className="w-full rounded-lg border border-[rgba(25,36,52,0.14)] bg-nofx-bg-deeper px-3 py-2 text-sm text-nofx-text"
+            value={s.rank}
+            onChange={(e) =>
+              set({
+                rank: e.target.value === 'quality' ? 'quality' : 'confidence',
+              })
+            }
+          >
+            <option value="confidence">
+              {text(language, '按置信度（默认）', 'By confidence (default)')}
+            </option>
+            <option value="quality">
+              {text(
+                language,
+                '综合：置信度 × 流动性 × 新开仓',
+                'Quality: confidence × liquidity × fresh opens'
+              )}
+            </option>
+          </select>
+        </Field>
+        <Field
+          language={language}
+          label={text(language, '方向依据', 'Direction from')}
+          hint={text(
+            language,
+            '「持仓」看现在谁持有；「新开仓」只看 24 小时内谁开仓、加仓、离场，不算旧仓。新开仓的历史表现在带单页「历史命中率」里单独统计，确认它更好再切换。',
+            '"Holdings" reads who holds now; "Fresh calls" only who opened, added or left in the last 24h. Its record is shown separately under Hit rate on the Copy trade page: switch once it proves better.'
+          )}
+        >
+          <select
+            className="w-full rounded-lg border border-[rgba(25,36,52,0.14)] bg-nofx-bg-deeper px-3 py-2 text-sm text-nofx-text"
+            value={s.signal}
+            onChange={(e) =>
+              set({
+                signal: e.target.value === 'fresh' ? 'fresh' : 'confidence',
+              })
+            }
+          >
+            <option value="confidence">
+              {text(language, '持仓（默认）', 'Holdings (default)')}
+            </option>
+            <option value="fresh">
+              {text(language, '新开仓（试验）', 'Fresh calls (experimental)')}
+            </option>
+          </select>
+        </Field>
+      </div>
       {!directed && (s.minOpeners || s.minHitRate || s.trendFilter) ? (
         <p className="mt-1 text-xs text-nofx-gold">
           {text(

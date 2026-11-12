@@ -153,7 +153,23 @@ export function ruleLabel(language: string, code: string): string {
     case 'martingale':
       return tr(language, '摊平型', 'Averages down')
     case 'roi_negative':
-      return tr(language, '30 天收益为负', 'Negative 30-day ROI')
+      return tr(
+        language,
+        '30 天收益为负，且明显差于其他带单员',
+        'Negative 30-day ROI, well below the others'
+      )
+    case 'high_freq':
+      return tr(
+        language,
+        '高频账户（每天几十单以上）',
+        'High-frequency account (dozens of orders a day)'
+      )
+    case 'unsynced':
+      return tr(
+        language,
+        '成交记录两天都没能读完',
+        'Trade history could not be read for two days'
+      )
     case 'mdd_high':
       return tr(language, '30 天回撤超过 40%', '30-day drawdown over 40%')
     case 'balance_low':

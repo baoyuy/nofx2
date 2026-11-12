@@ -3,10 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { LOCAL_SNAPSHOT_OPTIONS } from '../../lib/liveSnapshot'
 import { api } from '../../lib/api'
-import type {
-  SideSummary,
-  SymbolSummary,
-} from '../../lib/api/copyTrade'
+import type { HitRate, SideSummary, SymbolSummary } from '../../lib/api/copyTrade'
 import type { MarketKline } from '../../lib/api/market'
 import { BinanceChart, BN, type PriceMarker } from '../market/BinanceChart'
 import { tr, ui } from '../market/marketUi'
@@ -19,6 +16,7 @@ import {
   HealthTag,
   HitRatePanel,
 } from './ConfidenceUi'
+import { CrowdingTag, RankBadge, RankPanel } from './RankUi'
 import {
   ago,
   base,
@@ -47,6 +45,7 @@ function sideHealth(language: string, s: SideSummary): string {
 }
 
 export type CoinSort =
+  | 'rank'
   | 'confidence'
   | 'traders'
   | 'long'
@@ -66,6 +65,7 @@ export function sortCoins(
   bias: CoinBias
 ): SymbolSummary[] {
   const key: Record<CoinSort, (s: SymbolSummary) => number> = {
+    rank: (s) => s.rank?.score || 0,
     confidence: (s) => s.confidence?.score || 0,
     traders: traderCount,
     long: (s) => s.long.traders,
@@ -122,6 +122,31 @@ function CoinDetail({
   )
   const holders = detail?.holders || []
   const summary = detail?.summary ?? null
+  // The measured record of this score's band, for the expected excess. The
+  // same SWR key as the hit-rate panel, so the page fetches it once.
+  const { data: hitRate } = useSWR(
+    'copytrade/hit-rate:30',
+    () => api.getHitRate(30),
+    LOCAL_SNAPSHOT_OPTIONS
+  )
+  const expected = useMemo(() => {
+    const r = summary?.rank
+    if (!r || r.direction === 'neutral') return null
+    const band: HitRate['band'] =
+      r.score >= 70 ? 'high' : r.score >= 40 ? 'mid' : 'low'
+    const hit = (hitRate?.rows || []).find(
+      (x) =>
+        (x.group ?? 'confidence') === 'rank' &&
+        x.horizon === '24h' &&
+        x.band === band &&
+        (x.direction ?? 'all') === r.direction
+    )
+    if (!hit) return null
+    const samples = hit.excess_samples || 0
+    // Below 30 calls a band's average is mostly noise; say so instead.
+    if (samples < 30) return { samples }
+    return { samples, excess: (hit.avg_excess || 0) - r.cost_pct / 100 }
+  }, [hitRate, summary])
   const events = detail?.events || []
   const traders = detail?.traders || {}
   const [showAvg, setShowAvg] = useState(false)
@@ -156,7 +181,6 @@ function CoinDetail({
       cancelled = true
     }
   }, [symbol, interval])
-
 
   const last = candles[candles.length - 1]?.close || 0
   // The newest candle's time stands for now (pure, and current enough).
@@ -214,6 +238,12 @@ function CoinDetail({
           <span className="tabular-nums text-nofx-text">{price(last)}</span>
           {summary ? (
             <ConfidenceBadge c={summary.confidence} language={language} />
+          ) : null}
+          {summary ? (
+            <span className="flex items-center gap-1">
+              <RankBadge r={summary.rank} language={language} />
+              <CrowdingTag r={summary.rank} language={language} />
+            </span>
           ) : null}
           {summary ? (
             <span className={ui.muted}>
@@ -301,6 +331,15 @@ function CoinDetail({
               '. It measures how much followed traders agree and how trustworthy they are, not a win probability.'
             )}
           </p>
+        ) : null}
+        {summary && summary.rank && summary.rank.direction !== 'neutral' ? (
+          <div className="mb-2 rounded bg-nofx-bg-deeper px-2 py-1">
+            <RankPanel
+              r={summary.rank}
+              expected={expected}
+              language={language}
+            />
+          </div>
         ) : null}
         <p className={`${ui.muted} mb-2`}>
           {tr(
@@ -396,7 +435,7 @@ function CoinDetail({
                 </tr>
               </thead>
               <tbody className="text-nofx-text">
-                {holders.map((h) => {
+                {holders.map((h, index) => {
                   // Unpriced inferred positions: estimate from the last candle.
                   const upnl =
                     h.unrealized_pnl ||
@@ -407,11 +446,23 @@ function CoinDetail({
                       : 0)
                   return (
                     <tr
-                      key={h.portfolio_id + h.side}
+                      key={`${h.portfolio_id}:${h.side}:${index}`}
                       className={`border-t ${ui.border} ${h.liquidated ? 'opacity-50' : ''}`}
                     >
                       <td className="py-1.5">
-                        {h.nickname}
+                        <a
+                          href={`https://www.binance.com/${language === 'zh' ? 'zh-CN' : 'en'}/copy-trading/lead-details/${encodeURIComponent(h.portfolio_id)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hover:text-nofx-gold"
+                          title={tr(
+                            language,
+                            '查看币安带单主页',
+                            'View Binance lead portfolio'
+                          )}
+                        >
+                          {h.nickname || h.portfolio_id}
+                        </a>
                         {h.high_freq ? (
                           <span
                             className="ml-1 rounded bg-nofx-bg-deeper px-1 text-[10px] text-nofx-text-muted"
@@ -436,6 +487,9 @@ function CoinDetail({
                             {styleLabel(language, h.style)}
                           </span>
                         ) : null}
+                        <div className="text-[10px] tabular-nums text-nofx-text-muted">
+                          ID: {h.portfolio_id}
+                        </div>
                       </td>
                       <td className={sideClass(h.side)}>
                         {sideLabel(language, h.side)}
@@ -480,6 +534,19 @@ function CoinDetail({
                             ? tr(language, '公开', 'Public')
                             : tr(language, '推算', 'Inferred')}
                         </span>
+                        {h.source === 'inferred' &&
+                        h.history_complete === false ? (
+                          <span
+                            className="ml-1 text-xs text-nofx-danger"
+                            title={tr(
+                              language,
+                              '历史成交回填未完成，仓位数量和开仓价可能不准确',
+                              'Trade backfill is incomplete; quantity and entry may be inaccurate'
+                            )}
+                          >
+                            {tr(language, '回填中', 'Backfilling')}
+                          </span>
+                        ) : null}
                       </td>
                     </tr>
                   )
@@ -499,12 +566,19 @@ function CoinDetail({
         <p className={`${ui.muted} mt-2`}>
           {tr(
             language,
-            '「推算」的仓位由成交记录算出：开仓价和金额是准确的，但看不到杠杆和保证金，浮盈亏按最新标记价格估算。',
-            '"Inferred" positions come from trades: entry and value are exact, leverage and margin are unknown, and uPnL is estimated from the latest mark price.'
+            '按带单账号 ID 识别持仓归属，昵称可能重复；点击昵称可到币安主页核对。币安明确关联的信号与公开账户同时被关注时，仅统计公开账户，不按昵称合并其他账号。',
+            'Positions belong to portfolio IDs, not nicknames. Click a name to verify on Binance. When explicitly linked signal and public accounts are both followed, only the public account is counted; unrelated namesakes stay separate.'
+          )}
+        </p>
+        <p className={`${ui.muted} mt-2`}>
+          {tr(
+            language,
+            '「推算」的仓位由可获取的成交记录重建，不等于已核实的当前持仓；历史不完整、漏单或强平都可能影响开仓价和金额，杠杆和保证金未知，浮盈亏按最新标记价格估算。',
+            '"Inferred" positions are rebuilt from available fills, not verified current holdings. Incomplete history, missing fills or liquidation can affect entry and value; leverage and margin are unknown, and uPnL uses the latest mark price.'
           )}
           {tr(
             language,
-            '「被套」只看本表当前浮亏：保证金亏损达到 50%，或没有保证金数据时价格反向达到 5%；不使用历史首笔价格。「历史入场偏离」单独提示首笔成交记录的参考偏离，不代表当前实际浮亏，也不计入被套人数或额外降低置信度。悬停或聚焦标签可查看数值、口径和阈值。未到被套的浮亏仍按当前亏损降低置信度。「新开」：24 小时内开仓或加仓。「可能已强平」：推算亏损已超过账户余额。',
+            '「被套」只看本表当前浮亏：保证金亏损达到 50%，或没有保证金数据时价格反向达到 5%；不使用历史首笔价格。「历史入场偏离」单独提示首笔成交记录的参考偏离，不代表当前实际浮亏，也不计入被套人数或额外降低置信度。悬停或聚焦标签可查看数值、口径和阈值。未到被套的浮亏仍按当前亏损降低置信度。「新开」：24 小时内首次开仓；「加仓」：24 小时内给已有仓位加仓，不算新开，评分权重减半，浮亏时不计票。「可能已强平」：推算亏损已超过账户余额。',
             ' "Trapped" uses only the current return shown here: a loss of 50% of margin, or a 5% adverse price move when margin is unavailable. Historical entry is excluded. "Historical entry deviation" is a separate reference from the first recorded fill, not current PnL; it adds no trapped count or separate confidence penalty. Hover or focus a tag for values, basis and thresholds. Smaller current losses still reduce confidence. "New": opened or added within 24h. "Likely liquidated": inferred loss exceeds the account balance.'
           )}
         </p>
@@ -528,7 +602,7 @@ export function CoinsTab({
     LOCAL_SNAPSHOT_OPTIONS
   )
   const symbols = data?.symbols || []
-  const [sort, setSort] = useState<CoinSort>('confidence')
+  const [sort, setSort] = useState<CoinSort>('rank')
   const [bias, setBias] = useState<CoinBias>('all')
   const shown = useMemo(
     () => sortCoins(symbols, sort, bias),
@@ -550,6 +624,9 @@ export function CoinsTab({
               onChange={(e) => setSort(e.target.value as CoinSort)}
               aria-label={tr(language, '排序', 'Sort')}
             >
+              <option value="rank">
+                {tr(language, '综合评分最高', 'Best cross-coin score')}
+              </option>
               <option value="confidence">
                 {tr(language, '置信度最高', 'Highest confidence')}
               </option>
@@ -634,6 +711,12 @@ export function CoinsTab({
                         compact
                       />
                     </div>
+                    {s.rank && s.rank.direction !== 'neutral' ? (
+                      <div className="mt-1 flex items-center justify-between gap-1">
+                        <RankBadge r={s.rank} language={language} compact />
+                        <CrowdingTag r={s.rank} language={language} />
+                      </div>
+                    ) : null}
                   </button>
                 </li>
               ))}
