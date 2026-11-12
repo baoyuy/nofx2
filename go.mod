@@ -1,6 +1,6 @@
 module nofx
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/adshao/go-binance/v2 v2.8.9
@@ -23,6 +23,7 @@ require (
 	go.starlark.net v0.0.0-20231101134539-556fd59b42f6
 	golang.org/x/crypto v0.57.0
 	golang.org/x/net v0.60.0
+	golang.org/x/sync v0.23.0
 	golang.org/x/term v0.46.0
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/driver/sqlite v1.6.0
@@ -95,7 +96,6 @@ require (
 	go.elastic.co/fastjson v1.5.1 // indirect
 	golang.org/x/arch v0.20.0 // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
-	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
