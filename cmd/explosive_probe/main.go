@@ -89,8 +89,8 @@ func main() {
 				rank = j + 1
 			}
 		}
-		fmt.Printf("%2d %-12s strength=%5.1f risk=%.2f score=%5.1f %-12s 24h=%+7.2f%% 5m=%+5.2f%% volx=%4.1f oi=%+6.2f%% fund=%+.4f%% parts[speed=%.2f vol=%.2f oi=%.2f struct=%.2f rel=%.2f] %v\n",
-			rank, r.Symbol, r.Strength, r.Risk, r.Score, r.State, r.Change24h, r.Change5m, r.VolRatio,
-			r.OIChange1h*100, r.Funding*100, r.Speed, r.Volume, r.OpenInt, r.Structure, r.RelStrength, r.Tags)
+		fmt.Printf("%2d %-12s pred=%+6.2f%% day=%+7.2f%% ran=%4.1fh slope=%+6.1f%% %-12s volx=%4.1f oi=%+6.2f%% fund=%+.4f%% %v\n",
+			rank, r.Symbol, r.PredictedRemaining, r.DayGain*100, r.ElapsedH, r.VolumeSlope*100, r.State,
+			r.VolRatio, r.OIChange1h*100, r.Funding*100, r.Tags)
 	}
 }

@@ -128,7 +128,7 @@ export function AccuracyPanel({ language }: { language: string }) {
         <>
           <div>
             <h3 className={`${ui.muted} mb-1`}>
-              {tr(language, '按爆发力分档', 'By strength band')}
+              {tr(language, '按预测剩余分档', 'By predicted remaining')}
             </h3>
             <BandTable language={language} rows={data.bands} />
           </div>

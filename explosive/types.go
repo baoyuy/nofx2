@@ -38,6 +38,16 @@ type Row struct {
 	Volume24h float64 `json:"volume_24h"`
 	// VolRatio is the last 5m volume over the median of the 20 before it.
 	VolRatio float64 `json:"vol_ratio"`
+	// Beijing calendar-day view: the gain since 00:00, how many hours the move
+	// has run, and the volume slope over the last three hours.
+	DayGain     float64 `json:"day_gain"`
+	ElapsedH    float64 `json:"elapsed_hours"`
+	VolumeSlope float64 `json:"volume_slope"`
+	// PredictedRemaining is the model's estimate of the rest of the day's
+	// move, in percent. The board is ordered by it.
+	PredictedRemaining float64 `json:"predicted_remaining"`
+	// Tradability is a coarse liquidity label: good | fair | thin.
+	Tradability string `json:"tradability"`
 	// Multi-timeframe changes, percent, from 1h closes.
 	Change1h float64 `json:"change_1h"`
 	Change4h float64 `json:"change_4h"`
@@ -112,4 +122,11 @@ type Input struct {
 	// BTCChange24h is the market's own 24h change, so a coin can be scored on
 	// what it did beyond the market.
 	BTCChange24h float64
+	// Day fields, Beijing calendar day. HasDay is false when the day's open
+	// could not be found (short history), and the day model is then skipped.
+	HasDay      bool
+	DayGain     float64
+	ElapsedH    float64
+	VolumeSlope float64
+	DayHighDist float64
 }

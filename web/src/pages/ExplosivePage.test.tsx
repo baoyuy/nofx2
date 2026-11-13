@@ -28,6 +28,11 @@ const row = {
   change_15m: 2.1,
   volume_24h: 120_000_000,
   vol_ratio: 3.2,
+  day_gain: 0.184,
+  elapsed_hours: 3.2,
+  volume_slope: 0.12,
+  predicted_remaining: 12.5,
+  tradability: 'good',
   oi_change_1h: 0.021,
   funding: 0.0001,
   atr_pct: 0.6,
@@ -92,10 +97,8 @@ describe('explosive board', () => {
       </LanguageProvider>
     )
     expect((await screen.findAllByText('SOL')).length).toBeGreaterThan(0)
-    expect(screen.getAllByText('88').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('+12.5%').length).toBeGreaterThan(0)
     expect(screen.getAllByText('+18.40%').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('3.2').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('+2.10%').length).toBeGreaterThan(0)
     // The null-tags row still rendered instead of taking the page down.
     expect((await screen.findAllByText('NULL')).length).toBeGreaterThan(0)
   })

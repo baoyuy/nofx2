@@ -25,15 +25,17 @@ function compact(v: number): string {
   return v.toFixed(0)
 }
 
-function StrengthBar({ strength }: { strength: number }) {
-  const color = strength >= 55 ? BN.up : strength >= 35 ? '#b45309' : '#94a3b8'
+function PotentialBar({ value }: { value: number }) {
+  // 40% or more remaining is a strong prediction; scale the bar to that.
+  const width = Math.min(100, (value / 40) * 100)
+  const color = value >= 20 ? BN.up : value >= 8 ? '#b45309' : '#94a3b8'
   return (
     <div className="flex items-center gap-2">
       <div className="h-1.5 w-14 overflow-hidden rounded bg-[rgba(25,36,52,0.08)]">
-        <div className="h-full" style={{ width: `${Math.min(100, strength)}%`, background: color }} />
+        <div className="h-full" style={{ width: `${width}%`, background: color }} />
       </div>
-      <span className="w-7 text-right text-xs font-semibold tabular-nums" style={{ color }}>
-        {strength.toFixed(0)}
+      <span className="w-14 text-right text-xs font-semibold tabular-nums" style={{ color }}>
+        +{value.toFixed(1)}%
       </span>
     </div>
   )
@@ -146,8 +148,8 @@ export function ExplosivePage() {
         <p className={`${ui.muted} leading-relaxed`}>
           {tr(
             language,
-            '按"速度 / 量能 / 持仓量 / 结构 / 相对强度"算爆发力，榜单按爆发力排序——正在爆的币不会被藏起来。资金费率过热、追高、OI 流出只作为风险标注，并给出扣风险后的"健康分"。价格和 24h 涨幅来自实时行情，每秒更新；K 线、持仓量和评分每分钟在后台重算，页面不会等待。',
-            'Strength combines speed, participation, open interest, structure and relative strength, and the board is ordered by it: a coin in the middle of a move is never buried. Hot funding, chasing and open-interest drain are shown as risk and rolled into a separate health score. Prices and 24h change stream in every second; candles, open interest and scores recompute in the background once a minute, so the page never waits.'
+            '榜单回答的是"今天还能涨多少"：按北京时间自然日计算今日涨幅和已运行时间，用剩余时间、量能斜率、持仓量、距今日高点、资金费率估算今天的剩余空间，按"预测剩余"排序。已经涨了 300% 的币空间接近 0，涨了 20% 但量能还在放大的币排在前面。成交额只做下限和可交易性提示，不参与排序。',
+            'The board answers "how much of today is left": gains and elapsed hours use the Beijing calendar day, and the remaining move is estimated from time left, volume slope, open interest, distance below the day high and funding. A coin already up 300% has almost no room left; a +20% mover with expanding volume ranks above it. Turnover is a floor and a tradability hint, never a ranking input.'
           )}
         </p>
       </section>
@@ -170,18 +172,18 @@ export function ExplosivePage() {
                 <tr>
                   <th className="py-1.5 font-normal">#</th>
                   <th className="font-normal">{tr(language, '币种', 'Coin')}</th>
-                  <th className="font-normal">{tr(language, '爆发力', 'Strength')}</th>
-                  <th className="text-right font-normal">{tr(language, '健康分', 'Health')}</th>
+                  <th className="font-normal">{tr(language, '预测剩余', 'Remaining')}</th>
                   <th className="font-normal">{tr(language, '状态', 'State')}</th>
-                  <th className="text-right font-normal">24h</th>
-                  <th className="text-right font-normal">5m</th>
-                  <th className="text-right font-normal">{tr(language, '量比', 'Vol×')}</th>
+                  <th className="text-right font-normal">{tr(language, '今日涨幅', 'Day')}</th>
+                  <th className="text-right font-normal">{tr(language, '已运行', 'Ran')}</th>
+                  <th className="text-right font-normal">{tr(language, '量能斜率', 'Vol slope')}</th>
                   <th className="text-right font-normal">OI 1h</th>
                   <th className="text-right font-normal">{tr(language, '费率', 'Funding')}</th>
                   <th className="text-right font-normal">{tr(language, '成交额', 'Turnover')}</th>
                   <th className="text-right font-normal">
                     {tr(language, '距高点', 'Off high')}
                   </th>
+                  <th className="font-normal">{tr(language, '可交易性', 'Tradability')}</th>
                   <th className="font-normal">{tr(language, '触发', 'Signals')}</th>
                 </tr>
               </thead>
@@ -197,18 +199,7 @@ export function ExplosivePage() {
                     <td className="py-1.5 text-nofx-text-muted tabular-nums">{i + 1}</td>
                     <td className="font-medium">{r.symbol.replace('USDT', '')}</td>
                     <td>
-                      <StrengthBar strength={r.strength} />
-                    </td>
-                    <td
-                      className="text-right tabular-nums"
-                      title={tr(
-                        language,
-                        `风险系数 ${r.risk.toFixed(2)}：费率、追高、OI 流出会打折`,
-                        `Risk factor ${r.risk.toFixed(2)}: funding, chasing and open-interest drain discount it`
-                      )}
-                      style={{ color: r.risk < 0.8 ? BN.down : undefined }}
-                    >
-                      {r.score.toFixed(0)}
+                      <PotentialBar value={r.predicted_remaining} />
                     </td>
                     <td>
                       <span
@@ -218,13 +209,13 @@ export function ExplosivePage() {
                         {stateLabel(language, r.state)}
                       </span>
                     </td>
-                    <td className="text-right tabular-nums" style={{ color: r.change_24h >= 0 ? BN.up : BN.down }}>
-                      {signed(r.change_24h)}
+                    <td className="text-right tabular-nums" style={{ color: r.day_gain >= 0 ? BN.up : BN.down }}>
+                      {signed(r.day_gain * 100)}
                     </td>
-                    <td className="text-right tabular-nums" style={{ color: r.change_5m >= 0 ? BN.up : BN.down }}>
-                      {signed(r.change_5m)}
+                    <td className="text-right tabular-nums">{r.elapsed_hours.toFixed(1)}h</td>
+                    <td className="text-right tabular-nums" style={{ color: r.volume_slope >= 0 ? BN.up : BN.down }}>
+                      {signed(r.volume_slope * 100)}
                     </td>
-                    <td className="text-right tabular-nums">{r.vol_ratio.toFixed(1)}</td>
                     <td
                       className="text-right tabular-nums"
                       title={
@@ -239,6 +230,21 @@ export function ExplosivePage() {
                     <td className="text-right tabular-nums">{(r.funding * 100).toFixed(3)}%</td>
                     <td className="text-right tabular-nums">{compact(r.volume_24h)}</td>
                     <td className="text-right tabular-nums">{r.distance_high.toFixed(1)}%</td>
+                    <td>
+                      <span
+                        className="rounded px-1.5 py-0.5 text-[10px]"
+                        style={{
+                          color: r.tradability === 'good' ? BN.up : r.tradability === 'fair' ? '#b45309' : BN.down,
+                          background: 'rgba(25,36,52,0.06)',
+                        }}
+                      >
+                        {r.tradability === 'good'
+                          ? tr(language, '好', 'Good')
+                          : r.tradability === 'fair'
+                            ? tr(language, '一般', 'Fair')
+                            : tr(language, '偏薄', 'Thin')}
+                      </span>
+                    </td>
                     <td>
                       <span className="flex flex-wrap gap-1">
                         {(r.tags ?? []).slice(0, 3).map((t) => (
@@ -302,8 +308,28 @@ export function ExplosivePage() {
 
           {row ? (
             <section className={ui.panel}>
+              <div className="mb-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                <div className="flex justify-between">
+                  <span className={ui.muted}>{tr(language, '预测剩余', 'Predicted')}</span>
+                  <span className="font-semibold tabular-nums" style={{ color: BN.up }}>
+                    +{row.predicted_remaining.toFixed(1)}%
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className={ui.muted}>{tr(language, '今日涨幅', 'Day gain')}</span>
+                  <span className="tabular-nums">{signed(row.day_gain * 100)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className={ui.muted}>{tr(language, '已运行', 'Running')}</span>
+                  <span className="tabular-nums">{row.elapsed_hours.toFixed(1)}h</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className={ui.muted}>{tr(language, '量能斜率', 'Vol slope')}</span>
+                  <span className="tabular-nums">{signed(row.volume_slope * 100)}</span>
+                </div>
+              </div>
               <h3 className={`${ui.muted} mb-2`}>
-                {tr(language, '爆发力构成', 'Strength parts')}
+                {tr(language, '动量构成', 'Momentum parts')}
               </h3>
               <div className="grid grid-cols-5 gap-2 text-xs">
                 <Part label={tr(language, '速度', 'Speed')} value={row.speed} />

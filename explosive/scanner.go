@@ -234,20 +234,30 @@ func (s *Screener) build(limit int) Board {
 			// dropping right now must score lower right now.
 			bars5 = formingBar(bars5, price, 5*time.Minute, time.Now())
 		}
+		dayGain, elapsed, volSlope, dayHighDist, hasDay := dayFeatures(bars1, price, time.Now())
+		if hasDay && dayGain <= 0 {
+			continue // today's gainers only: this coin is down on the day
+		}
 		row, ok := Evaluate(Input{
 			Symbol: symbol, Price: price, Change24h: change, Volume24h: volume,
 			Bars5m: bars5, Bars1h: bars1,
 			OIChange1h: snap.OIChange1h, OIKnown: snap.OIKnown,
 			Funding: snap.Funding, BTCChange24h: btc,
+			HasDay: hasDay, DayGain: dayGain, ElapsedH: elapsed, VolumeSlope: volSlope, DayHighDist: dayHighDist,
 		})
 		if !ok || row.DistanceHigh > MaxDistanceHigh {
 			continue
 		}
 		rows = append(rows, row)
 	}
-	// Ordered by momentum, not by the risk-adjusted score: burying a coin
-	// that is in the middle of a move is exactly what this board must not do.
-	sort.SliceStable(rows, func(a, b int) bool { return rows[a].Strength > rows[b].Strength })
+	// Ordered by the expected rest of the day, not by what already happened:
+	// a +20% coin with room left outranks a +300% one that is done.
+	sort.SliceStable(rows, func(a, b int) bool {
+		if rows[a].PredictedRemaining != rows[b].PredictedRemaining {
+			return rows[a].PredictedRemaining > rows[b].PredictedRemaining
+		}
+		return rows[a].Strength > rows[b].Strength
+	})
 	if limit > 0 && len(rows) > limit {
 		rows = rows[:limit]
 	}

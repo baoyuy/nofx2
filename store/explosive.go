@@ -27,6 +27,13 @@ type ExplosiveSignal struct {
 	Change1h  float64 `gorm:"column:change_1h"`
 	Change4h  float64 `gorm:"column:change_4h"`
 
+	// Beijing calendar-day features and the prediction the board ranks on.
+	DayGain            float64 `gorm:"column:day_gain"`
+	ElapsedH           float64 `gorm:"column:elapsed_hours"`
+	VolumeSlope        float64 `gorm:"column:volume_slope"`
+	PredictedRemaining float64 `gorm:"column:predicted_remaining"`
+	Tradability        string  `gorm:"column:tradability"`
+
 	VolRatio     float64 `gorm:"column:vol_ratio"`
 	OIChange1h   float64 `gorm:"column:oi_change_1h"`
 	Funding      float64 `gorm:"column:funding"`

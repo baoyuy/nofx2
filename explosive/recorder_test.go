@@ -29,7 +29,7 @@ func testRecorder(t *testing.T) *Recorder {
 
 func TestSnapshotStoresTheBoardOnce(t *testing.T) {
 	r := testRecorder(t)
-	now := time.Now()
+	now := time.Unix(1794587400, 0) // 00:30 CST, the start of a bucket
 	r.now = func() time.Time { return now }
 	r.board = func(context.Context) (Board, error) {
 		return Board{Rows: []Row{
@@ -110,13 +110,13 @@ func TestAccuracyGroupsByStrength(t *testing.T) {
 	dd := -0.01
 	bench := 0.0
 	neg := -0.02
-	mk := func(symbol string, strength float64, r *float64) store.ExplosiveSignal {
-		return store.ExplosiveSignal{TS: ts, Symbol: symbol, Strength: strength, Rank: 1,
+	mk := func(symbol string, predicted float64, r *float64) store.ExplosiveSignal {
+		return store.ExplosiveSignal{TS: ts, Symbol: symbol, PredictedRemaining: predicted, Rank: 1,
 			Ret4h: r, Bench4h: &bench, MaxDD4h: &dd, Done4h: true, Done1h: true, Ret1h: r}
 	}
 	rows := []store.ExplosiveSignal{
-		mk("A", 85, &ret), mk("B", 85, &ret), mk("C", 85, &neg),
-		mk("D", 45, &neg),
+		mk("A", 25, &ret), mk("B", 25, &ret), mk("C", 25, &neg),
+		mk("D", 6, &neg),
 	}
 	if err := r.store.SaveSignals(rows); err != nil {
 		t.Fatal(err)
@@ -126,14 +126,14 @@ func TestAccuracyGroupsByStrength(t *testing.T) {
 		t.Fatal(err)
 	}
 	high := acc.Bands[0]
-	if high.Band != "≥80" || high.Samples != 3 {
+	if high.Band != "≥10%" || high.Samples != 3 {
 		t.Fatalf("high band: %+v", high)
 	}
 	if math.Abs(high.Up4h-2.0/3) > 1e-9 || math.Abs(high.Sustained-2.0/3) > 1e-9 {
 		t.Fatalf("high band stats: %+v", high)
 	}
 	low := acc.Bands[3]
-	if low.Band != "<40" || low.Samples != 0 {
+	if low.Band != "<2%" || low.Samples != 0 {
 		t.Fatalf("empty band must stay empty: %+v", low)
 	}
 	if acc.Total != 4 {
@@ -152,8 +152,8 @@ func TestAccuracyUsesPerHorizonDenominators(t *testing.T) {
 	down := -0.01
 	// Only the 1h result is in; there is no 4h sample for these rows.
 	err := r.store.SaveSignals([]store.ExplosiveSignal{
-		{TS: ts, Symbol: "A", Strength: 85, Rank: 1, Ret1h: &up, Done1h: true},
-		{TS: ts, Symbol: "B", Strength: 85, Rank: 2, Ret1h: &down, Done1h: true},
+		{TS: ts, Symbol: "A", PredictedRemaining: 25, Rank: 1, Ret1h: &up, Done1h: true},
+		{TS: ts, Symbol: "B", PredictedRemaining: 25, Rank: 2, Ret1h: &down, Done1h: true},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
 // flatBars is n bars at price with a small range and constant volume.
@@ -262,5 +263,50 @@ func TestPreScoreKeepsTheConsolidatingLeader(t *testing.T) {
 	mover := preScore(flat, 3, 1)
 	if leader <= mover {
 		t.Fatalf("a +300%% leader resting must outrank a +3%% mover: %.3f vs %.3f", leader, mover)
+	}
+}
+
+func TestDayFeaturesUseBeijingMidnight(t *testing.T) {
+	now := time.Date(2026, 11, 14, 10, 0, 0, 0, beijing)
+	start := time.Date(2026, 11, 14, 0, 0, 0, 0, beijing)
+	bars := make([]Kline, 10)
+	for i := range bars {
+		p := 100 + float64(i)
+		vol := 1000.0
+		if i >= 7 {
+			vol = 2000
+		}
+		bars[i] = Kline{Time: start.Add(time.Duration(i) * time.Hour).UnixMilli(), Open: p, High: p + 1, Low: p - 1, Close: p + 1, Volume: vol}
+	}
+	gain, elapsed, slope, highDist, ok := dayFeatures(bars, 105, now)
+	if !ok {
+		t.Fatal("day features missing")
+	}
+	if math.Abs(gain-0.05) > 1e-9 || math.Abs(elapsed-10) > 1e-9 {
+		t.Fatalf("gain=%.4f elapsed=%.1f", gain, elapsed)
+	}
+	if math.Abs(slope-1) > 1e-9 {
+		t.Fatalf("volume slope = %.3f", slope)
+	}
+	if highDist <= 0 || highDist > 5 {
+		t.Fatalf("distance below the day high = %.2f", highDist)
+	}
+}
+
+func TestPotentialPrefersTheEarlyMover(t *testing.T) {
+	early := potential(0.2, 1, 1.0, 0.03, true, 1, 0)
+	late := potential(3.0, 10, -0.5, -0.01, true, 8, 0.002)
+	if early <= late {
+		t.Fatalf("an early +20%% mover must outrank a late +300%% one: %.2f vs %.2f", early, late)
+	}
+	mid := potential(0.6, 3, 0.5, 0.02, true, 2, 0)
+	if mid <= 0 {
+		t.Fatalf("mid move should have room: %.2f", mid)
+	}
+	if potential(0.2, 1, -0.9, -0.05, true, 12, 0.003) >= early {
+		t.Fatal("a fading move must score below a fed one")
+	}
+	if potential(-0.1, 1, 1, 0.03, true, 1, 0) != 0 {
+		t.Fatal("a coin down on the day has no remaining upside")
 	}
 }

@@ -18,6 +18,16 @@ export interface ExplosiveRow {
   change_15m: number
   volume_24h: number
   vol_ratio: number
+  /** percent gained since Beijing midnight */
+  day_gain: number
+  /** hours since Beijing midnight */
+  elapsed_hours: number
+  /** last 3h volume over the 3h before, as a fraction */
+  volume_slope: number
+  /** model estimate of the rest of the day's move, percent: the ranking key */
+  predicted_remaining: number
+  /** good | fair | thin */
+  tradability: string
   oi_change_1h: number
   /** false when the open-interest request failed; show — rather than 0 */
   oi_known: boolean

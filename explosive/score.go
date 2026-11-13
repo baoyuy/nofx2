@@ -27,7 +27,7 @@ const (
 	oiDrain = 0.05
 
 	// Gates and thresholds.
-	MinVolume24h = 20_000_000 // USDT of 24h turnover
+	MinVolume24h = 5_000_000 // USDT of 24h turnover: a low floor, not a filter that removes the movers
 	// MaxDistanceHigh only drops a coin that gave back nearly the whole run.
 	// A leader resting 8-10% under its high is consolidating, not broken: that
 	// is scored as risk below, not filtered out.
@@ -227,6 +227,102 @@ func oiScore(change float64) float64 {
 	return math.Max(0, 0.3*(1+change/oiDrain))
 }
 
+// beijing is the calendar day the board uses: the user's day, not UTC.
+var beijing = time.FixedZone("CST", 8*3600)
+
+// dayCap is the daily gain at which the model sees no room left.
+const dayCap = 3.0
+
+// dayFeatures reads the Beijing calendar day from 1h candles: the gain since
+// 00:00, how long ago that was, the volume slope of the last three hours and
+// the distance below the day's high.
+func dayFeatures(hourly []Kline, price float64, now time.Time) (gain, elapsedH, volSlope, highDist float64, ok bool) {
+	if len(hourly) == 0 || price <= 0 {
+		return 0, 0, 0, 0, false
+	}
+	local := now.In(beijing)
+	start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, beijing)
+	idx := -1
+	for i := range hourly {
+		if hourly[i].Time == start.UnixMilli() {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 || hourly[idx].Open <= 0 {
+		return 0, 0, 0, 0, false
+	}
+	open := hourly[idx].Open
+	high := 0.0
+	for i := idx; i < len(hourly); i++ {
+		high = math.Max(high, hourly[i].High)
+	}
+	gain = price/open - 1
+	elapsedH = now.Sub(start).Hours()
+	if elapsedH < 0 {
+		elapsedH = 0
+	}
+	if len(hourly) >= 6 {
+		var recent, prev float64
+		for i := len(hourly) - 3; i < len(hourly); i++ {
+			recent += hourly[i].Volume
+		}
+		for i := len(hourly) - 6; i < len(hourly)-3; i++ {
+			prev += hourly[i].Volume
+		}
+		if prev > 0 {
+			// Clamp: thin coins can print 10x hour-over-hour noise.
+			volSlope = math.Max(-1, math.Min(3, recent/prev-1))
+		}
+	}
+	if high > 0 {
+		highDist = (high - price) / high * 100
+	}
+	return gain, elapsedH, volSlope, highDist, true
+}
+
+// potential estimates the rest of the day's move in percent. A move that is
+// early, fed by expanding volume and rising open interest, with room left
+// before the day cap, scores highest; a late, fading move at a large gain has
+// almost no room. The weights are an initial guess to be calibrated by the
+// recorded outcomes.
+func potential(gain, elapsedH, volSlope, oi float64, oiKnown bool, highDist, funding float64) float64 {
+	if gain <= 0 {
+		return 0
+	}
+	hoursLeft := 24 - elapsedH
+	if hoursLeft < 0 {
+		hoursLeft = 0
+	}
+	timeF := math.Pow(0.25+0.75*hoursLeft/24, 2)
+	room := math.Max(0, 1-gain/dayCap)
+	persist := 0.6 + 0.2*clamp01(volSlope)
+	if oiKnown {
+		persist += 0.2 * clamp01(oi/0.03)
+	} else {
+		persist += 0.1
+	}
+	persist -= 0.15 * clamp01(highDist/10)
+	if funding > fundingHot {
+		persist -= 0.1
+	}
+	persist = math.Max(0.15, math.Min(1, persist))
+	return math.Max(0, 0.5*persist*timeF*math.Log1p(gain)*room*100)
+}
+
+// tradability is a coarse liquidity label, shown next to the prediction but
+// never used to rank.
+func tradability(volume24h float64) string {
+	switch {
+	case volume24h >= 100e6:
+		return "good"
+	case volume24h >= 20e6:
+		return "fair"
+	default:
+		return "thin"
+	}
+}
+
 // Evaluate scores one coin. ok is false when there is not enough data.
 func Evaluate(in Input) (Row, bool) {
 	if in.Price <= 0 || len(in.Bars5m) < minBars5m {
@@ -357,6 +453,11 @@ func Evaluate(in Input) (Row, bool) {
 		tags = append(tags, TagOI)
 	}
 
+	predicted := 0.0
+	if in.HasDay {
+		predicted = potential(in.DayGain, in.ElapsedH, in.VolumeSlope, in.OIChange1h, in.OIKnown, in.DayHighDist, in.Funding)
+	}
+
 	rel := clamp01((in.Change24h - in.BTCChange24h) / relFull)
 	strength := 100 * (wSpeed*speedRaw + wVolume*volScore + wOI*oi + wStructure*structure + wRel*rel)
 	strength = math.Max(0, strength)
@@ -382,6 +483,8 @@ func Evaluate(in Input) (Row, bool) {
 		Symbol: in.Symbol, Price: in.Price, Change24h: in.Change24h, Change5m: ret5, Change15m: ret15,
 		Volume24h: in.Volume24h, VolRatio: vr, OIChange1h: in.OIChange1h, OIKnown: in.OIKnown, Funding: in.Funding,
 		Change1h: ch1, Change4h: ch4, EMASlope: slope, TakerBuyRatio: takerRatio, RiseEfficiency: efficiency,
+		DayGain: in.DayGain, ElapsedH: in.ElapsedH, VolumeSlope: in.VolumeSlope,
+		PredictedRemaining: predicted, Tradability: tradability(in.Volume24h),
 		ATRPct: atr, DistanceHigh: distHigh, EMA20: e20, EMA60: e60, EMA120: e120,
 		Strength: strength, Risk: risk, Score: score, Speed: speed, Volume: volScore, OpenInt: oi,
 		Structure: structure, RelStrength: rel, State: state, Tags: tags,

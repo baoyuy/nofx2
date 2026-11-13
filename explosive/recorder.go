@@ -115,6 +115,8 @@ func (r *Recorder) snapshot(ctx context.Context, now time.Time) error {
 			Score: row.Score, Strength: row.Strength, Risk: row.Risk, ScoreVersion: scoreVersion,
 			Change24h: row.Change24h, Change5m: row.Change5m, Change15m: row.Change15m,
 			Change1h: row.Change1h, Change4h: row.Change4h,
+			DayGain: row.DayGain, ElapsedH: row.ElapsedH, VolumeSlope: row.VolumeSlope,
+			PredictedRemaining: row.PredictedRemaining, Tradability: row.Tradability,
 			VolRatio: row.VolRatio, OIChange1h: row.OIChange1h, Funding: row.Funding,
 			ATRPct: row.ATRPct, DistanceHigh: row.DistanceHigh,
 			EMA20: row.EMA20, EMA60: row.EMA60, EMA120: row.EMA120, EMASlope: row.EMASlope,
@@ -303,16 +305,18 @@ func (a *accAcc) stat(band string) BandStat {
 	return s
 }
 
-func strengthBand(strength float64) string {
+// potentialBand groups rows by the model's predicted remaining move, which is
+// what the board ranks on.
+func potentialBand(predicted float64) string {
 	switch {
-	case strength >= 80:
-		return "≥80"
-	case strength >= 60:
-		return "60-80"
-	case strength >= 40:
-		return "40-60"
+	case predicted >= 10:
+		return "≥10%"
+	case predicted >= 5:
+		return "5-10%"
+	case predicted >= 2:
+		return "2-5%"
 	default:
-		return "<40"
+		return "<2%"
 	}
 }
 
@@ -333,7 +337,7 @@ func (r *Recorder) Accuracy(days int, now time.Time) (Accuracy, error) {
 	if err != nil {
 		return Accuracy{}, err
 	}
-	bands := map[string]*accAcc{"≥80": {}, "60-80": {}, "40-60": {}, "<40": {}}
+	bands := map[string]*accAcc{"≥10%": {}, "5-10%": {}, "2-5%": {}, "<2%": {}}
 	top, rest := &accAcc{}, &accAcc{}
 	tags := map[string]*accAcc{}
 	total := 0
@@ -342,7 +346,7 @@ func (r *Recorder) Accuracy(days int, now time.Time) (Accuracy, error) {
 			continue
 		}
 		total++
-		bands[strengthBand(row.Strength)].add(row)
+		bands[potentialBand(row.PredictedRemaining)].add(row)
 		if row.Rank <= 5 {
 			top.add(row)
 		} else {
@@ -359,7 +363,7 @@ func (r *Recorder) Accuracy(days int, now time.Time) (Accuracy, error) {
 		}
 	}
 	acc := Accuracy{Days: days, Total: total, UpdatedAt: now}
-	for _, b := range []string{"≥80", "60-80", "40-60", "<40"} {
+	for _, b := range []string{"≥10%", "5-10%", "2-5%", "<2%"} {
 		acc.Bands = append(acc.Bands, bands[b].stat(b))
 	}
 	acc.Top = []BandStat{top.stat("top5"), rest.stat("rest")}
