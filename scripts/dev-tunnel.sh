@@ -17,9 +17,14 @@ USER_NAME="${NOFX_TUNNEL_USER:-root}"
 
 BIND="${NOFX_TUNNEL_BIND:-127.0.0.1}"
 
-exec ssh -N -D "$BIND:$PORT" -i "$KEY" \
-  -o ExitOnForwardFailure=yes \
-  -o ServerAliveInterval=30 \
-  -o ServerAliveCountMax=3 \
-  -o StrictHostKeyChecking=accept-new \
-  "$USER_NAME@$HOST"
+# Reconnect when the link drops (sleep, Wi-Fi change, server restart).
+while true; do
+  ssh -N -D "$BIND:$PORT" -i "$KEY" \
+    -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=3 \
+    -o StrictHostKeyChecking=accept-new \
+    "$USER_NAME@$HOST" || true
+  echo "tunnel closed; reconnecting in 3s" >&2
+  sleep 3
+done
