@@ -176,3 +176,22 @@ func TestFormingBarUpdatesAnOpenBar(t *testing.T) {
 		t.Fatalf("open bar: %+v", out)
 	}
 }
+
+func TestBuildPassesOpenInterestThrough(t *testing.T) {
+	s := New()
+	now := time.Now()
+	s.snaps = map[string]symbolSnapshot{
+		"SOLUSDT": {
+			Bars5m: burst5m(flatBars(60, 100, 1000)), Bars1h: trendBars(150, 100, 0.3),
+			OIChange1h: 0.02, OIKnown: true, Price: 159, Change24h: 5, Volume24h: 50e6,
+		},
+	}
+	s.fullAt = now
+	row := s.build(20).Rows[0]
+	if !row.OIKnown || math.Abs(row.OIChange1h-0.02) > 1e-9 {
+		t.Fatalf("open interest dropped from the scoring input: %+v", row)
+	}
+	if row.OpenInt <= 0.5 {
+		t.Fatalf("open interest must affect the score: %+v", row)
+	}
+}

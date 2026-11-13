@@ -225,8 +225,16 @@ export function ExplosivePage() {
                       {signed(r.change_5m)}
                     </td>
                     <td className="text-right tabular-nums">{r.vol_ratio.toFixed(1)}</td>
-                    <td className="text-right tabular-nums" style={{ color: r.oi_change_1h >= 0 ? BN.up : BN.down }}>
-                      {signed(r.oi_change_1h * 100)}
+                    <td
+                      className="text-right tabular-nums"
+                      title={
+                        r.oi_known
+                          ? undefined
+                          : tr(language, '持仓量数据获取失败，按中性处理', 'Open interest unavailable, scored as neutral')
+                      }
+                      style={{ color: r.oi_known ? (r.oi_change_1h >= 0 ? BN.up : BN.down) : undefined }}
+                    >
+                      {r.oi_known ? signed(r.oi_change_1h * 100) : '—'}
                     </td>
                     <td className="text-right tabular-nums">{(r.funding * 100).toFixed(3)}%</td>
                     <td className="text-right tabular-nums">{compact(r.volume_24h)}</td>

@@ -275,6 +275,11 @@ func binanceWeight(r *http.Request, fallback int) int {
 			return 10
 		}
 		return 20
+	case strings.HasPrefix(path, "/futures/data/"):
+		// Binance prices these statistics at weight 1, not at the profile's
+		// default 40: charging 40 made a board scan exceed a whole minute's
+		// budget and every open-interest request timed out in the queue.
+		return 1
 	case path == "/fapi/v1/exchangeInfo" || path == "/fapi/v1/time" || path == "/fapi/v1/ping" || path == "/fapi/v1/openInterest":
 		return 1
 	case strings.HasSuffix(path, "/account") || strings.HasSuffix(path, "/balance") || strings.HasSuffix(path, "/positionRisk"):

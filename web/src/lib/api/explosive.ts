@@ -19,6 +19,8 @@ export interface ExplosiveRow {
   volume_24h: number
   vol_ratio: number
   oi_change_1h: number
+  /** false when the open-interest request failed; show — rather than 0 */
+  oi_known: boolean
   funding: number
   atr_pct: number
   distance_high: number

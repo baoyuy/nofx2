@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"nofx/internal/apischeduler"
+	"nofx/logger"
 	"nofx/trader/binance"
 )
 
@@ -236,6 +237,7 @@ func (s *Screener) build(limit int) Board {
 		row, ok := Evaluate(Input{
 			Symbol: symbol, Price: price, Change24h: change, Volume24h: volume,
 			Bars5m: bars5, Bars1h: bars1,
+			OIChange1h: snap.OIChange1h, OIKnown: snap.OIKnown,
 			Funding: snap.Funding, BTCChange24h: btc,
 		})
 		if !ok || row.DistanceHigh > MaxDistanceHigh {
@@ -500,6 +502,8 @@ func (s *Screener) scan(ctx context.Context) (map[string]symbolSnapshot, map[str
 		snap   symbolSnapshot
 		ok     bool
 	}
+	var mu sync.Mutex
+	oiFails := 0
 	out := make([]refined, len(kept))
 	for i, o := range kept {
 		wg.Add(1)
@@ -513,6 +517,14 @@ func (s *Screener) scan(ctx context.Context) (map[string]symbolSnapshot, map[str
 			}
 			s.live.Seed(o.t.Symbol, kline1h, hourly)
 			oi, oiErr := s.oiChange1h(ctx, o.t.Symbol)
+			if oiErr != nil {
+				mu.Lock()
+				if oiFails < 2 {
+					logger.Warnf("explosive: open interest %s: %v", o.t.Symbol, oiErr)
+				}
+				oiFails++
+				mu.Unlock()
+			}
 			out[i] = refined{symbol: o.t.Symbol, ok: true, snap: symbolSnapshot{
 				Bars5m: o.bars, Bars1h: hourly, OIChange1h: oi, OIKnown: oiErr == nil,
 				Funding: funding[o.t.Symbol], Price: o.t.Price, Change24h: o.t.ChangePct, Volume24h: o.t.QuoteVolume,
@@ -520,6 +532,9 @@ func (s *Screener) scan(ctx context.Context) (map[string]symbolSnapshot, map[str
 		}(i, o)
 	}
 	wg.Wait()
+	if oiFails > 0 {
+		logger.Warnf("explosive: open interest failed for %d of %d symbols", oiFails, len(kept))
+	}
 
 	snaps := make(map[string]symbolSnapshot, len(out))
 	candidateSymbols := make([]string, 0, len(kept))

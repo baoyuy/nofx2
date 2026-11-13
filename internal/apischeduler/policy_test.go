@@ -23,7 +23,7 @@ func TestBinanceWeightVariantsAndAliasBudget(t *testing.T) {
 	cases := []struct {
 		path   string
 		weight int
-	}{{"/fapi/v1/klines?limit=99", 1}, {"/fapi/v1/klines?limit=499", 2}, {"/fapi/v1/klines?limit=500", 5}, {"/fapi/v1/klines?limit=1500", 10}, {"/fapi/v1/ticker/24hr", 40}, {"/fapi/v1/ticker/24hr?symbol=BTCUSDT", 1}, {"/fapi/v1/depth?limit=1000", 20}, {"/fapi/v1/openOrders", 40}}
+	}{{"/fapi/v1/klines?limit=99", 1}, {"/fapi/v1/klines?limit=499", 2}, {"/fapi/v1/klines?limit=500", 5}, {"/fapi/v1/klines?limit=1500", 10}, {"/fapi/v1/ticker/24hr", 40}, {"/fapi/v1/ticker/24hr?symbol=BTCUSDT", 1}, {"/fapi/v1/depth?limit=1000", 20}, {"/fapi/v1/openOrders", 40}, {"/futures/data/openInterestHist?symbol=BTCUSDT&period=5m&limit=13", 1}}
 	for _, tc := range cases {
 		p := s.policy(request(t, "GET", "https://fapi.binance.com"+tc.path))
 		if weightOf(p) != tc.weight {
