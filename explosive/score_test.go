@@ -209,3 +209,27 @@ func TestEmptyTagsMarshalAsArray(t *testing.T) {
 		t.Fatalf("tags must be an array, got %s", b)
 	}
 }
+
+func TestSellingOffCutsStrength(t *testing.T) {
+	up := strongInput()
+	down := strongInput()
+	bars := burst5m(flatBars(60, 100, 1000))
+	last := &bars[len(bars)-1]
+	last.Close = bars[len(bars)-2].Close * 0.97
+	last.High = bars[len(bars)-2].Close
+	last.Low = last.Close
+	down.Bars5m = bars
+	down.Price = last.Close
+
+	a, _ := Evaluate(up)
+	b, ok := Evaluate(down)
+	if !ok {
+		t.Fatal("expected a row")
+	}
+	if b.Strength >= a.Strength {
+		t.Fatalf("a selling-off coin must score below a rising one: %.1f vs %.1f", b.Strength, a.Strength)
+	}
+	if b.State != StateFalling || !hasTag(b.Tags, TagFalling) {
+		t.Fatalf("state = %s tags=%v, want falling", b.State, b.Tags)
+	}
+}

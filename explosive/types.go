@@ -21,6 +21,7 @@ const (
 	StateAccelerating State = "accelerating" // price and participation both expanding
 	StateOverheated   State = "overheated"   // funding or distance says crowded
 	StateFading       State = "fading"       // open interest and volume falling
+	StateFalling      State = "falling"      // the last few 5m bars are selling off
 )
 
 // Row is one coin's reading.

@@ -3,6 +3,7 @@ package explosive
 import (
 	"math"
 	"sort"
+	"time"
 )
 
 // Weights of the four score parts. They are an initial guess: the ranking is
@@ -17,7 +18,7 @@ const (
 
 const (
 	// A 5m close-to-close move of speedFull average ranges scores full.
-	speedFull = 1.8
+	speedFull = 1.2
 	// Volume at volumeFull times the 20-bar median scores full.
 	volumeFull = 3.5
 	// Open interest +3% in an hour scores full.
@@ -52,6 +53,7 @@ const (
 	TagChase      = "chase"
 	TagOIDrain    = "oi_drain"
 	TagFading     = "fading"
+	TagFalling    = "falling"
 )
 
 func clamp01(v float64) float64 { return math.Max(0, math.Min(1, v)) }
@@ -147,7 +149,16 @@ func volumeRatio(bars []Kline) float64 {
 	if len(bars) < 6 {
 		return 1
 	}
-	last := bars[len(bars)-1].Volume
+	// A forming bar built from the live price has no volume yet; compare the
+	// last closed bar instead of reporting zero.
+	end := len(bars)
+	if bars[end-1].Volume <= 0 {
+		end--
+	}
+	if end < 6 {
+		return 1
+	}
+	last := bars[end-1].Volume
 	var prev []float64
 	for i := len(bars) - 21; i < len(bars)-1; i++ {
 		if i >= 0 {
@@ -229,7 +240,10 @@ func Evaluate(in Input) (Row, bool) {
 		ret15 = (last/prev - 1) * 100
 	}
 	vr := volumeRatio(in.Bars5m)
-	speed := clamp01((ret5 / math.Max(atr, 0.05)) / speedFull)
+	// Speed is signed: a coin selling off must lose points, not merely stop
+	// gaining them.
+	speedRaw := math.Max(-1, math.Min(1, (ret5/math.Max(atr, 0.05))/speedFull))
+	speed := clamp01(speedRaw)
 	volScore := clamp01((vr - 1) / (volumeFull - 1))
 	// Unknown open interest is neutral, not zero: a failed request must not
 	// sink an otherwise good coin.
@@ -292,11 +306,17 @@ func Evaluate(in Input) (Row, bool) {
 	}
 
 	rel := clamp01((in.Change24h - in.BTCChange24h) / relFull)
-	strength := 100 * (wSpeed*speed + wVolume*volScore + wOI*oi + wStructure*structure + wRel*rel)
+	strength := 100 * (wSpeed*speedRaw + wVolume*volScore + wOI*oi + wStructure*structure + wRel*rel)
+	strength = math.Max(0, strength)
+	if speedRaw < -0.3 {
+		tags = append(tags, TagFalling)
+	}
 	score := strength * risk
 
 	state := StateAccelerating
 	switch {
+	case speedRaw <= -0.5:
+		state = StateFalling
 	case in.Funding > fundingHot || dist > distanceChase:
 		state = StateOverheated
 	case in.OIChange1h < 0 && vr < 1:
@@ -313,4 +333,31 @@ func Evaluate(in Input) (Row, bool) {
 		Strength: strength, Risk: risk, Score: score, Speed: speed, Volume: volScore, OpenInt: oi,
 		Structure: structure, RelStrength: rel, State: state, Tags: tags,
 	}, true
+}
+
+// formingBar returns bars with the current, not yet closed 5m candle appended
+// or updated from the live price. Volume is left at zero: it is not known.
+func formingBar(bars []Kline, price float64, interval time.Duration, now time.Time) []Kline {
+	if len(bars) == 0 || price <= 0 {
+		return bars
+	}
+	last := bars[len(bars)-1]
+	step := int64(interval / time.Millisecond)
+	out := make([]Kline, len(bars), len(bars)+1)
+	copy(out, bars)
+	if now.UnixMilli() >= last.Time+step {
+		return append(out, Kline{
+			Time: last.Time + step, Open: last.Close,
+			High: math.Max(last.Close, price), Low: math.Min(last.Close, price), Close: price,
+		})
+	}
+	cur := &out[len(out)-1]
+	cur.Close = price
+	cur.High = math.Max(cur.High, price)
+	if cur.Low == 0 {
+		cur.Low = price
+	} else {
+		cur.Low = math.Min(cur.Low, price)
+	}
+	return out
 }

@@ -25,7 +25,7 @@ const (
 	// boardTTL is how often the expensive pass (candles and open interest) is
 	// refreshed. The board itself is rebuilt from those snapshots plus the
 	// live feed on every read, so callers never wait for a scan.
-	boardTTL = 60 * time.Second
+	boardTTL = 30 * time.Second
 	// liveMaxAge is how old a websocket tick may be before REST is used.
 	liveMaxAge = 10 * time.Second
 	// candidateLimit is how many of the day's top gainers get 5m candles;
@@ -110,7 +110,7 @@ func (s *Screener) Board(ctx context.Context, refresh bool) (Board, error) {
 		if err := s.refresh(ctx); err != nil {
 			return Board{}, err
 		}
-	} else if (stale || refresh) && !refreshing {
+	} else if !refreshing && (stale || refresh || s.hotWithoutSnapshot()) {
 		go func() { _ = s.refresh(context.Background()) }()
 	}
 	return s.build(maxBoardRows), nil
@@ -152,6 +152,41 @@ func (s *Screener) refresh(ctx context.Context) error {
 	return err
 }
 
+// hotWithoutSnapshot tells whether a live top gainer has never been scanned.
+// Waiting a full cycle would leave a fresh mover off the board.
+func (s *Screener) hotWithoutSnapshot() bool {
+	live := s.live.Snapshot()
+	if len(live) == 0 {
+		return false
+	}
+	type pair struct {
+		symbol string
+		change float64
+	}
+	top := make([]pair, 0, len(live))
+	for symbol, t := range live {
+		if !strings.HasSuffix(symbol, "USDT") || t.QuoteVolume < MinVolume24h || t.ChangePct <= 0 {
+			continue
+		}
+		top = append(top, pair{symbol, t.ChangePct})
+	}
+	if len(top) == 0 {
+		return false
+	}
+	sort.Slice(top, func(i, j int) bool { return top[i].change > top[j].change })
+	if len(top) > maxBoardRows {
+		top = top[:maxBoardRows]
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, p := range top {
+		if _, ok := s.snaps[p.symbol]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
 // build recomputes the rows from the cached snapshots and live prices. It is
 // cheap and never touches the network. limit <= 0 keeps every row.
 func (s *Screener) build(limit int) Board {
@@ -160,7 +195,8 @@ func (s *Screener) build(limit int) Board {
 	s.mu.Unlock()
 
 	liveFresh := s.live.Fresh(liveMaxAge)
-	if liveFresh {
+	statsFresh := s.live.StatsFresh(statsPoll)
+	if statsFresh {
 		if v := s.live.BTCChange(); !math.IsNaN(v) {
 			btc = v
 		}
@@ -171,12 +207,28 @@ func (s *Screener) build(limit int) Board {
 		price, change, volume := snap.Price, snap.Change24h, snap.Volume24h
 		if liveFresh {
 			if t, ok := s.live.Get(symbol); ok {
-				price, change, volume = t.Price, t.ChangePct, t.QuoteVolume
+				price = t.Price
+				if statsFresh {
+					change, volume = t.ChangePct, t.QuoteVolume
+				}
 			}
+		}
+		bars5, bars1 := snap.Bars5m, snap.Bars1h
+		if b := s.live.Bars(symbol, kline5m); len(b) >= minBars5m {
+			bars5 = b
+		}
+		if b := s.live.Bars(symbol, kline1h); len(b) >= minBars1h {
+			bars1 = b
+		}
+		if liveFresh {
+			// The futures kline stream is not delivered on every network, so
+			// the forming bar is built from the live price: a coin that is
+			// dropping right now must score lower right now.
+			bars5 = formingBar(bars5, price, 5*time.Minute, time.Now())
 		}
 		row, ok := Evaluate(Input{
 			Symbol: symbol, Price: price, Change24h: change, Volume24h: volume,
-			Bars5m: snap.Bars5m, Bars1h: snap.Bars1h, OIChange1h: snap.OIChange1h, OIKnown: snap.OIKnown,
+			Bars5m: bars5, Bars1h: bars1,
 			Funding: snap.Funding, BTCChange24h: btc,
 		})
 		if !ok || row.DistanceHigh > MaxDistanceHigh {
@@ -221,7 +273,7 @@ func (s *Screener) get(ctx context.Context, path string, out any) error {
 // tickers lists every contract with its 24h change and turnover, from the
 // live feed when it is fresh and from REST otherwise.
 func (s *Screener) tickers(ctx context.Context) ([]ticker, error) {
-	if s.live.Fresh(liveMaxAge) {
+	if s.live.Fresh(liveMaxAge) && s.live.StatsFresh(statsPoll) {
 		snapshot := s.live.Snapshot()
 		out := make([]ticker, 0, len(snapshot))
 		for symbol, t := range snapshot {
@@ -394,6 +446,7 @@ func (s *Screener) scan(ctx context.Context) (map[string]symbolSnapshot, int, in
 			if err != nil || len(bars) < minBars5m {
 				return
 			}
+			s.live.Seed(t.Symbol, kline5m, bars)
 			one[i] = stageOne{t: t, bars: bars, pre: preScore(bars)}
 		}(i, t)
 	}
@@ -427,6 +480,7 @@ func (s *Screener) scan(ctx context.Context) (map[string]symbolSnapshot, int, in
 			if err != nil || len(hourly) < minBars1h {
 				return
 			}
+			s.live.Seed(o.t.Symbol, kline1h, hourly)
 			oi, oiErr := s.oiChange1h(ctx, o.t.Symbol)
 			out[i] = refined{symbol: o.t.Symbol, ok: true, snap: symbolSnapshot{
 				Bars5m: o.bars, Bars1h: hourly, OIChange1h: oi, OIKnown: oiErr == nil,
@@ -437,11 +491,19 @@ func (s *Screener) scan(ctx context.Context) (map[string]symbolSnapshot, int, in
 	wg.Wait()
 
 	snaps := make(map[string]symbolSnapshot, len(out))
+	candidateSymbols := make([]string, 0, len(kept))
+	for _, o := range kept {
+		candidateSymbols = append(candidateSymbols, o.t.Symbol)
+	}
+	refinedSymbols := make([]string, 0, len(out))
 	for _, r := range out {
 		if r.ok {
 			snaps[r.symbol] = r.snap
+			refinedSymbols = append(refinedSymbols, r.symbol)
 		}
 	}
+	// Keep the kline streams in step with what the board watches.
+	s.live.SetSymbols(candidateSymbols, refinedSymbols)
 	return snaps, len(tickers), len(candidates), btcChange, nil
 }
 

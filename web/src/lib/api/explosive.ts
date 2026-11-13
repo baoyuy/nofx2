@@ -8,6 +8,7 @@ export type ExplosiveState =
   | 'accelerating'
   | 'overheated'
   | 'fading'
+  | 'falling'
 
 export interface ExplosiveRow {
   symbol: string

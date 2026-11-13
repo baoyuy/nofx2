@@ -15,6 +15,7 @@ import (
 
 func main() {
 	jsonOut := flag.Bool("json", false, "print the board as JSON")
+	watch := flag.Int("watch", 0, "poll the board once a second for N seconds and print the top row")
 	all := flag.Bool("all", false, "print every refined row, not just the top 20")
 	symbol := flag.String("symbol", "", "focus on one symbol, e.g. AKEUSDT")
 	timeout := flag.Duration("timeout", 90*time.Second, "scan timeout")
@@ -43,6 +44,23 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "scan failed: %v\n", err)
 		os.Exit(1)
+	}
+	if *watch > 0 {
+		_, _ = explosive.Shared.Board(ctx, true) // warm up
+		for i := 0; i < *watch; i++ {
+			board, err := explosive.Shared.Board(ctx, false)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "board: %v\n", err)
+				return
+			}
+			if len(board.Rows) > 0 {
+				r := board.Rows[0]
+				fmt.Printf("%s %-12s price=%-12.6f 24h=%+7.2f%% 5m=%+6.2f%% strength=%5.1f age=%ds %s\n",
+					time.Now().Format("15:04:05"), r.Symbol, r.Price, r.Change24h, r.Change5m, r.Strength, board.AgeSeconds, r.State)
+			}
+			time.Sleep(time.Second)
+		}
+		return
 	}
 	if *jsonOut {
 		enc := json.NewEncoder(os.Stdout)

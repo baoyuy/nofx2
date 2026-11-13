@@ -1,6 +1,7 @@
 package explosive
 
 import (
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -50,7 +51,7 @@ func TestBuildRecomputesWithLivePrices(t *testing.T) {
 	}
 	s.fullAt = now
 	s.live.m = map[string]liveTicker{"SOLUSDT": {Price: 160, ChangePct: 25, QuoteVolume: 60e6, At: now}}
-	s.live.updatedAt = now
+	s.live.updatedAt, s.live.statsAt = now, now
 
 	board := s.build(20)
 	if len(board.Rows) != 1 {
@@ -94,5 +95,84 @@ func TestBuildReportsStaleness(t *testing.T) {
 	}
 	if board.AgeSeconds < int(boardTTL.Seconds()) {
 		t.Fatalf("age: %d", board.AgeSeconds)
+	}
+}
+
+func klineMsg(symbol string, start int64, closeP string, closed bool) []byte {
+	return []byte(`{"e":"kline","s":"` + symbol + `","k":{"t":` +
+		fmt.Sprint(start) + `,"o":"100","h":"101","l":"99","c":"` + closeP + `","v":"10","x":` +
+		fmt.Sprint(closed) + `}}`)
+}
+
+func TestKlineStreamUpdatesTheFormingBar(t *testing.T) {
+	l := newLiveTickers()
+	l.applyKline(kline5m, klineMsg("SOLUSDT", 1000, "102", false))
+	bars := l.Bars("SOLUSDT", kline5m)
+	if len(bars) != 1 || bars[0].Close != 102 {
+		t.Fatalf("forming bar: %+v", bars)
+	}
+	l.applyKline(kline5m, klineMsg("SOLUSDT", 1000, "103", false))
+	if bars = l.Bars("SOLUSDT", kline5m); len(bars) != 1 || bars[0].Close != 103 {
+		t.Fatalf("same bar must be replaced: %+v", bars)
+	}
+	l.applyKline(kline5m, klineMsg("SOLUSDT", 1300, "104", true))
+	if bars = l.Bars("SOLUSDT", kline5m); len(bars) != 2 || bars[1].Close != 104 {
+		t.Fatalf("closed bar must be appended: %+v", bars)
+	}
+	// The 1h series must not receive 5m events.
+	if got := l.Bars("SOLUSDT", kline1h); len(got) != 0 {
+		t.Fatalf("intervals leaked: %+v", got)
+	}
+}
+
+func TestSeedIsCopied(t *testing.T) {
+	l := newLiveTickers()
+	seed := []Kline{{Time: 1, Close: 1}}
+	l.Seed("XUSDT", kline5m, seed)
+	seed[0].Close = 99
+	if got := l.Bars("XUSDT", kline5m); got[0].Close != 1 {
+		t.Fatalf("seed must be copied: %+v", got)
+	}
+}
+
+func TestSetSymbolsDiffersTheWatchList(t *testing.T) {
+	l := newLiveTickers()
+	l.SetSymbols([]string{"AUSDT", "BUSDT"}, []string{"AUSDT"})
+	if !l.subs[kline5m]["AUSDT"] || !l.subs[kline5m]["BUSDT"] || !l.subs[kline1h]["AUSDT"] {
+		t.Fatalf("subscriptions: %+v", l.subs)
+	}
+	l.Seed("BUSDT", kline5m, flatBars(3, 100, 1))
+	l.SetSymbols([]string{"AUSDT"}, []string{"AUSDT"})
+	if l.subs[kline5m]["BUSDT"] {
+		t.Fatalf("unwatched symbol kept: %+v", l.subs)
+	}
+	if got := l.Bars("BUSDT", kline5m); len(got) != 0 {
+		t.Fatalf("unwatched bars kept: %+v", got)
+	}
+}
+
+func TestFormingBarCarriesTheLivePrice(t *testing.T) {
+	bars := []Kline{{Time: 0, Close: 100, Volume: 10}, {Time: 300000, Close: 101, Volume: 12}}
+	// One minute into the next 5m bar: a new forming bar is appended.
+	now := time.UnixMilli(660000) // one minute into the bar after the last closed one
+	out := formingBar(bars, 90, 5*time.Minute, now)
+	if len(out) != 3 {
+		t.Fatalf("forming bar missing: %+v", out)
+	}
+	last := out[2]
+	if last.Open != 101 || last.Close != 90 || last.High != 101 || last.Low != 90 {
+		t.Fatalf("forming bar: %+v", last)
+	}
+	if r := volumeRatio(out); r <= 0 {
+		t.Fatalf("a zero-volume forming bar must not zero the ratio: %v", r)
+	}
+}
+
+func TestFormingBarUpdatesAnOpenBar(t *testing.T) {
+	bars := []Kline{{Time: 0, Close: 100, Volume: 10}, {Time: 300000, Open: 100, High: 103, Low: 99, Close: 102, Volume: 5}}
+	now := time.UnixMilli(300000 + 60000)
+	out := formingBar(bars, 95, 5*time.Minute, now)
+	if len(out) != 2 || out[1].Close != 95 || out[1].Low != 95 || out[1].High != 103 {
+		t.Fatalf("open bar: %+v", out)
 	}
 }
