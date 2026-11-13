@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { Loader2, RefreshCw } from 'lucide-react'
 import { api } from '../lib/api'
-import { explosiveApi, type ExplosiveState } from '../lib/api/explosive'
+import { explosiveApi } from '../lib/api/explosive'
 import type { MarketKline } from '../lib/api/market'
 import {
   BinanceChart,
@@ -13,37 +13,8 @@ import {
 import { tr, ui } from '../components/market/marketUi'
 import { useLanguage } from '../contexts/LanguageContext'
 import { priceDecimals } from '../utils/marketIndicators'
-
-const stateLabel = (language: string, state: ExplosiveState) =>
-  ({
-    starting: tr(language, '刚启动', 'Starting'),
-    accelerating: tr(language, '加速中', 'Accelerating'),
-    overheated: tr(language, '过热', 'Overheated'),
-    fading: tr(language, '衰减', 'Fading'),
-    falling: tr(language, '回落', 'Falling'),
-  })[state]
-
-const stateColor: Record<ExplosiveState, string> = {
-  starting: BN.up,
-  accelerating: '#b45309',
-  overheated: BN.down,
-  fading: '#94a3b8',
-  falling: '#dc2626',
-}
-
-const tagLabel = (language: string, tag: string) =>
-  ({
-    breakout: tr(language, '突破', 'Breakout'),
-    volume: tr(language, '放量', 'Volume'),
-    oi: tr(language, 'OI 增', 'OI up'),
-    oi_drain: tr(language, 'OI 流出', 'OI draining'),
-    aligned: tr(language, '多头排列', 'EMA uptrend'),
-    hold_ema: tr(language, '站上 EMA20', 'Above EMA20'),
-    funding_hot: tr(language, '费率过热', 'Hot funding'),
-    chase: tr(language, '追高', 'Chasing'),
-    fading: tr(language, '量能衰减', 'Fading'),
-    falling: tr(language, '正在回落', 'Falling'),
-  })[tag] || tag
+import { AccuracyPanel } from '../components/explosive/AccuracyPanel'
+import { stateColor, stateLabel, tagLabel } from '../components/explosive/labels'
 
 const signed = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
 
@@ -84,6 +55,7 @@ function Part({ label, value }: { label: string; value: number }) {
 
 export function ExplosivePage() {
   const { language } = useLanguage()
+  const [view, setView] = useState<'board' | 'accuracy'>('board')
   const [selected, setSelected] = useState('')
   const [chartInterval, setChartInterval] = useState('15m')
 
@@ -142,9 +114,24 @@ export function ExplosivePage() {
                 : ''}
             </span>
           ) : null}
+          <div className="ml-auto flex gap-1">
+            {(['board', 'accuracy'] as const).map((v) => (
+              <button
+                key={v}
+                type="button"
+                aria-pressed={view === v}
+                className={`${ui.btnGhost} ${view === v ? 'border-nofx-gold text-nofx-gold' : ''}`}
+                onClick={() => setView(v)}
+              >
+                {v === 'board'
+                  ? tr(language, '榜单', 'Board')
+                  : tr(language, '准确率', 'Accuracy')}
+              </button>
+            ))}
+          </div>
           <button
             type="button"
-            className={`ml-auto flex items-center gap-1 ${ui.btnGhost}`}
+            className={`flex items-center gap-1 ${ui.btnGhost}`}
             onClick={refresh}
             disabled={isValidating}
           >
@@ -172,6 +159,9 @@ export function ExplosivePage() {
         </p>
       ) : null}
 
+      {view === 'accuracy' ? (
+        <AccuracyPanel language={language} />
+      ) : (
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
         <section className={`${ui.panel} min-w-0 overflow-x-auto`}>
           {rows.length ? (
@@ -343,6 +333,7 @@ export function ExplosivePage() {
           ) : null}
         </aside>
       </div>
+      )}
     </div>
   )
 }

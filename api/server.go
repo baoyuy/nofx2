@@ -8,6 +8,7 @@ import (
 	"nofx/auth"
 	"nofx/copytrade"
 	"nofx/crypto"
+	"nofx/explosive"
 	"nofx/internal/apischeduler"
 	"nofx/logger"
 	"nofx/manager"
@@ -38,6 +39,7 @@ type Server struct {
 	telegramReloadCh          chan<- struct{} // signal Telegram bot to reload
 	authLimiter               *ipRateLimiter  // per-IP throttle for login/register
 	copyTrade                 *copytrade.Monitor
+	explosiveRec              *explosive.Recorder
 	mirror                    *mirror.Engine
 	mirrorCtx                 context.Context
 	proxyTestMu               sync.Mutex

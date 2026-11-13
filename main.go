@@ -125,6 +125,7 @@ func main() {
 	copyTradeCtx, stopCopyTrade := context.WithCancel(context.Background())
 	defer stopCopyTrade()
 	server.StartCopyTrade(copyTradeCtx)
+	server.StartExplosiveRecorder(copyTradeCtx)
 
 	// Load all traders from database to memory (may auto-start traders with IsRunning=true)
 	if err := traderManager.LoadTradersFromStore(st); err != nil {

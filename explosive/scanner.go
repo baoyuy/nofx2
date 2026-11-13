@@ -339,20 +339,44 @@ func (s *Screener) klines(ctx context.Context, symbol, interval string, limit in
 	if err := s.get(ctx, "/fapi/v1/klines?"+q.Encode(), &rows); err != nil {
 		return nil, err
 	}
+	out := parseKlines(rows)
+	if len(out) > 1 {
+		out = out[:len(out)-1] // the newest candle is still forming
+	}
+	return out, nil
+}
+
+// KlinesRange fetches bars whose open time falls in [startMs, endMs].
+func (s *Screener) KlinesRange(ctx context.Context, symbol, interval string, startMs, endMs int64) ([]Kline, error) {
+	q := url.Values{}
+	q.Set("symbol", symbol)
+	q.Set("interval", interval)
+	q.Set("startTime", strconv.FormatInt(startMs, 10))
+	q.Set("endTime", strconv.FormatInt(endMs, 10))
+	q.Set("limit", "500")
+	var rows [][]json.RawMessage
+	if err := s.get(ctx, "/fapi/v1/klines?"+q.Encode(), &rows); err != nil {
+		return nil, err
+	}
+	return parseKlines(rows), nil
+}
+
+func parseKlines(rows [][]json.RawMessage) []Kline {
 	out := make([]Kline, 0, len(rows))
 	for _, r := range rows {
 		if len(r) < 6 {
 			continue
 		}
+		var takerBuy float64
+		if len(r) > 9 {
+			takerBuy = num(r[9])
+		}
 		out = append(out, Kline{
 			Time: int64(num(r[0])), Open: num(r[1]), High: num(r[2]), Low: num(r[3]),
-			Close: num(r[4]), Volume: num(r[5]),
+			Close: num(r[4]), Volume: num(r[5]), TakerBuy: takerBuy,
 		})
 	}
-	if len(out) > 1 {
-		out = out[:len(out)-1] // the newest candle is still forming
-	}
-	return out, nil
+	return out
 }
 
 // oiChange1h is the open-interest change over the last hour.

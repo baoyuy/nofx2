@@ -10,6 +10,8 @@ type Kline struct {
 	Low    float64
 	Close  float64
 	Volume float64
+	// TakerBuy is the base volume bought by takers (aggressors).
+	TakerBuy float64
 }
 
 // State is where a coin sits in its move. A high score in the wrong state is
@@ -36,6 +38,15 @@ type Row struct {
 	Volume24h float64 `json:"volume_24h"`
 	// VolRatio is the last 5m volume over the median of the 20 before it.
 	VolRatio float64 `json:"vol_ratio"`
+	// Multi-timeframe changes, percent, from 1h closes.
+	Change1h float64 `json:"change_1h"`
+	Change4h float64 `json:"change_4h"`
+	// EMASlope is the change of EMA20 over the last three 1h bars, percent.
+	EMASlope float64 `json:"ema_slope"`
+	// TakerBuyRatio is aggressive buying over volume in the last hour, 0-1.
+	TakerBuyRatio float64 `json:"taker_buy_ratio"`
+	// RiseEfficiency is net move over the path travelled in the last hour.
+	RiseEfficiency float64 `json:"rise_efficiency"`
 	// OIChange1h is the open-interest change over the last hour, as a
 	// fraction (0.03 = +3%). OIKnown is false when the request failed: the
 	// open-interest part is then neutral rather than zero.

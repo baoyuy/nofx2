@@ -32,6 +32,7 @@ type Store struct {
 	marketAnalysis *MarketAnalysisStore
 	coinPool       *CoinPoolStore
 	copyTrade      *CopyTradeStore
+	explosive      *ExplosiveStore
 	mirror         *MirrorStore
 	telegramConfig TelegramConfigStore
 
@@ -176,6 +177,9 @@ func (s *Store) initTables() error {
 	}
 	if err := s.CopyTrade().initTables(); err != nil {
 		return fmt.Errorf("failed to initialize copy-trade tables: %w", err)
+	}
+	if err := s.Explosive().initTables(); err != nil {
+		return fmt.Errorf("failed to initialize explosive tables: %w", err)
 	}
 	if err := s.Mirror().initTables(); err != nil {
 		return fmt.Errorf("failed to initialize mirror tables: %w", err)
@@ -334,6 +338,16 @@ func (s *Store) CoinPool() *CoinPoolStore {
 }
 
 // CopyTrade gets the copy-trade monitor storage
+// Explosive gets the explosive board's signal storage.
+func (s *Store) Explosive() *ExplosiveStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.explosive == nil {
+		s.explosive = NewExplosiveStore(s.gdb)
+	}
+	return s.explosive
+}
+
 func (s *Store) CopyTrade() *CopyTradeStore {
 	s.mu.Lock()
 	defer s.mu.Unlock()

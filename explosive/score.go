@@ -253,6 +253,42 @@ func Evaluate(in Input) (Row, bool) {
 	}
 
 	// Always a non-nil slice: a nil one marshals to null and the page maps it.
+	// Multi-timeframe context, recorded for later tuning.
+	ch1, ch4, slope := 0.0, 0.0, 0.0
+	takerRatio, efficiency := 0.0, 0.0
+	if len(in.Bars1h) >= 5 {
+		cl1 := closes(in.Bars1h)
+		last := cl1[len(cl1)-1]
+		if prev := cl1[len(cl1)-2]; prev > 0 {
+			ch1 = (last/prev - 1) * 100
+		}
+		if prev := cl1[len(cl1)-5]; prev > 0 {
+			ch4 = (last/prev - 1) * 100
+		}
+		nowE := ema(cl1, 20)
+		beforeE := ema(cl1[:len(cl1)-3], 20)
+		if beforeE > 0 {
+			slope = (nowE/beforeE - 1) * 100
+		}
+	}
+	if n := len(in.Bars5m); n >= 13 {
+		from := n - 12
+		var buyVol, totalVol, path float64
+		for i := from; i < n; i++ {
+			buyVol += in.Bars5m[i].TakerBuy
+			totalVol += in.Bars5m[i].Volume
+			if i > from {
+				path += math.Abs(in.Bars5m[i].Close - in.Bars5m[i-1].Close)
+			}
+		}
+		if totalVol > 0 && buyVol > 0 {
+			takerRatio = clamp01(buyVol / totalVol)
+		}
+		if path > 0 {
+			efficiency = clamp01(math.Abs(in.Bars5m[n-1].Close-in.Bars5m[from].Close) / path)
+		}
+	}
+
 	structure, tags := 0.3, []string{}
 	var e20, e60, e120 float64
 	if len(in.Bars1h) >= minBars1h {
@@ -329,6 +365,7 @@ func Evaluate(in Input) (Row, bool) {
 	return Row{
 		Symbol: in.Symbol, Price: in.Price, Change24h: in.Change24h, Change5m: ret5, Change15m: ret15,
 		Volume24h: in.Volume24h, VolRatio: vr, OIChange1h: in.OIChange1h, OIKnown: in.OIKnown, Funding: in.Funding,
+		Change1h: ch1, Change4h: ch4, EMASlope: slope, TakerBuyRatio: takerRatio, RiseEfficiency: efficiency,
 		ATRPct: atr, DistanceHigh: distHigh, EMA20: e20, EMA60: e60, EMA120: e120,
 		Strength: strength, Risk: risk, Score: score, Speed: speed, Volume: volScore, OpenInt: oi,
 		Structure: structure, RelStrength: rel, State: state, Tags: tags,

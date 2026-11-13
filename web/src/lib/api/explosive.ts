@@ -65,7 +65,45 @@ function unwrap<T>(
   return result.data
 }
 
+export interface BandStat {
+  band: string
+  samples: number
+  up_1h: number
+  up_4h: number
+  up_24h: number
+  /** share that beat BTC over the same four hours */
+  beat_4h: number
+  avg_excess_4h: number
+  avg_dd_4h: number
+  /** rose over 4h without a 3% drawdown */
+  sustained: number
+}
+
+export interface TagStat {
+  tag: string
+  samples: number
+  up_4h: number
+  sustained: number
+}
+
+export interface ExplosiveAccuracy {
+  days: number
+  total: number
+  bands: BandStat[]
+  top: BandStat[]
+  tags: TagStat[]
+  updated_at: string
+}
+
 export const explosiveApi = {
+  async accuracy(days = 30): Promise<ExplosiveAccuracy> {
+    const r = await httpClient.request<ExplosiveAccuracy>(
+      `${API_BASE}/market/explosive/accuracy`,
+      { params: { days }, silent: true, timeout: 20000 }
+    )
+    return unwrap(r, 'Failed to load accuracy')
+  },
+
   async board(refresh = false): Promise<ExplosiveBoard> {
     const r = await httpClient.request<ExplosiveBoard>(
       `${API_BASE}/market/explosive`,
