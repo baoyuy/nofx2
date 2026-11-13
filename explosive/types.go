@@ -50,16 +50,22 @@ type Row struct {
 	EMA20  float64 `json:"ema20"`
 	EMA60  float64 `json:"ema60"`
 	EMA120 float64 `json:"ema120"`
-	// Score and its parts, all 0-1 except Score (0-100).
-	Score     float64 `json:"score"`
-	Speed     float64 `json:"speed"`
-	Volume    float64 `json:"volume"`
-	OpenInt   float64 `json:"open_interest"`
-	Structure float64 `json:"structure"`
-	// Penalty is the product of the overheated discounts, 1 = none.
-	Penalty float64  `json:"penalty"`
-	State   State    `json:"state"`
-	Tags    []string `json:"tags"`
+	// Strength is the momentum reading, 0-100, before any risk discount. The
+	// board is ordered by it: a coin in the middle of a move is shown even
+	// when its risk flags are up, instead of being buried.
+	Strength float64 `json:"strength"`
+	// Risk is the product of the risk discounts, 1 = none.
+	Risk float64 `json:"risk"`
+	// Score is Strength × Risk, the health-adjusted reading.
+	Score float64 `json:"score"`
+	// Parts of Strength, all 0-1.
+	Speed       float64  `json:"speed"`
+	Volume      float64  `json:"volume"`
+	OpenInt     float64  `json:"open_interest"`
+	Structure   float64  `json:"structure"`
+	RelStrength float64  `json:"rel_strength"`
+	State       State    `json:"state"`
+	Tags        []string `json:"tags"`
 }
 
 // Board is one screening pass.
@@ -85,4 +91,7 @@ type Input struct {
 	OIChange1h float64
 	OIKnown    bool
 	Funding    float64
+	// BTCChange24h is the market's own 24h change, so a coin can be scored on
+	// what it did beyond the market.
+	BTCChange24h float64
 }

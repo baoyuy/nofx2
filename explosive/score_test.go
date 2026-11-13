@@ -76,10 +76,10 @@ func TestEvaluatePenalisesChasing(t *testing.T) {
 	hours := trendBars(150, 100, 0.3)
 	in.Bars1h = hours
 	e20 := ema(closes(hours), 20)
-	in.Price = e20 * 1.10 // 10% above the short EMA
+	in.Price = e20 * 1.25 // 25% above the short EMA: vertical, not a trend
 	row, _ := Evaluate(in)
-	if row.Penalty > 0.61 {
-		t.Fatalf("chase penalty missing: %+v", row)
+	if row.Risk > 0.71 {
+		t.Fatalf("chase discount missing: %+v", row)
 	}
 	if row.State != StateOverheated {
 		t.Fatalf("state = %s, want overheated", row.State)
@@ -91,13 +91,27 @@ func TestEvaluatePenalisesChasing(t *testing.T) {
 
 func TestEvaluatePenalisesHotFunding(t *testing.T) {
 	in := strongInput()
-	in.Funding = 0.001 // 0.1% per 8h
+	in.Funding = 0.002 // 0.2% per 8h
 	row, _ := Evaluate(in)
-	if row.Penalty > 0.81 || !hasTag(row.Tags, TagFundingHot) {
+	if row.Risk > 0.71 || !hasTag(row.Tags, TagFundingHot) {
 		t.Fatalf("funding penalty missing: %+v", row)
 	}
 	if row.State != StateOverheated {
 		t.Fatalf("state = %s, want overheated", row.State)
+	}
+}
+
+func TestRelativeStrengthRanksTheRealMover(t *testing.T) {
+	big := strongInput()
+	big.Change24h = 120
+	big.BTCChange24h = 1.5
+	small := strongInput()
+	small.Change24h = 4
+	small.BTCChange24h = 1.5
+	a, _ := Evaluate(big)
+	b, _ := Evaluate(small)
+	if a.Strength <= b.Strength {
+		t.Fatalf("a coin far ahead of BTC must score higher: %.1f vs %.1f", a.Strength, b.Strength)
 	}
 }
 

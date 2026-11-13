@@ -8,10 +8,11 @@ import (
 // Weights of the four score parts. They are an initial guess: the ranking is
 // recorded and measured against forward returns before anything trades on it.
 const (
-	wSpeed     = 0.30
-	wVolume    = 0.25
-	wOI        = 0.25
-	wStructure = 0.20
+	wSpeed     = 0.25
+	wVolume    = 0.20
+	wOI        = 0.20
+	wStructure = 0.15
+	wRel       = 0.20
 )
 
 const (
@@ -26,9 +27,11 @@ const (
 
 	// Gates and thresholds.
 	MinVolume24h    = 20_000_000 // USDT of 24h turnover
-	MaxDistanceHigh = 8.0        // % below the 24h high
-	fundingHot      = 0.0005     // 0.05% per 8h: longs are crowded
-	distanceChase   = 8.0        // % above EMA20
+	MaxDistanceHigh = 8.0        // % below the 24h high: a coin already rolled over
+	fundingHot      = 0.001      // 0.1% per 8h: longs are crowded
+	distanceChase   = 20.0       // % above EMA20: a vertical move, not a trend
+	relFull         = 50.0       // 50 points over BTC's 24h change scores full
+	oiDrainRisk     = -0.01      // 1h open-interest drain that marks a move suspect
 	rsiHot          = 85.0
 	minBars5m       = 25
 	minBars1h       = 120
@@ -47,6 +50,7 @@ const (
 	TagHoldEMA    = "hold_ema"
 	TagFundingHot = "funding_hot"
 	TagChase      = "chase"
+	TagOIDrain    = "oi_drain"
 	TagFading     = "fading"
 )
 
@@ -250,21 +254,22 @@ func Evaluate(in Input) (Row, bool) {
 	// breakout is. The RSI discount only applies once the move is older.
 	since := breakoutBars(in.Bars1h)
 	fresh := since >= 0 && since <= maxBarsSinceBreakout+3
-	penalty := 1.0
+	risk := 1.0
 	if in.Funding > fundingHot {
-		penalty *= 0.8
+		risk *= 0.7
 		tags = append(tags, TagFundingHot)
 	}
 	if dist > distanceChase {
-		// Chasing is the failure mode this board exists to avoid: a coin
-		// already far above its short EMA has to fall well below a fresh
-		// breakout to rank.
-		penalty *= 0.45
+		risk *= 0.7
 		tags = append(tags, TagChase)
+	}
+	if in.OIKnown && in.OIChange1h < oiDrainRisk {
+		risk *= 0.85
+		tags = append(tags, TagOIDrain)
 	}
 	if !fresh {
 		if r := rsi(closes(in.Bars1h), 14); r > rsiHot {
-			penalty *= 0.7
+			risk *= 0.8
 		}
 	}
 	if vr >= 1.5 {
@@ -285,7 +290,9 @@ func Evaluate(in Input) (Row, bool) {
 		distHigh = (high24 - in.Price) / high24 * 100
 	}
 
-	score := 100 * (wSpeed*speed + wVolume*volScore + wOI*oi + wStructure*structure) * penalty
+	rel := clamp01((in.Change24h - in.BTCChange24h) / relFull)
+	strength := 100 * (wSpeed*speed + wVolume*volScore + wOI*oi + wStructure*structure + wRel*rel)
+	score := strength * risk
 
 	state := StateAccelerating
 	switch {
@@ -302,7 +309,7 @@ func Evaluate(in Input) (Row, bool) {
 		Symbol: in.Symbol, Price: in.Price, Change24h: in.Change24h, Change5m: ret5, Change15m: ret15,
 		Volume24h: in.Volume24h, VolRatio: vr, OIChange1h: in.OIChange1h, OIKnown: in.OIKnown, Funding: in.Funding,
 		ATRPct: atr, DistanceHigh: distHigh, EMA20: e20, EMA60: e60, EMA120: e120,
-		Score: score, Speed: speed, Volume: volScore, OpenInt: oi, Structure: structure, Penalty: penalty,
-		State: state, Tags: tags,
+		Strength: strength, Risk: risk, Score: score, Speed: speed, Volume: volScore, OpenInt: oi,
+		Structure: structure, RelStrength: rel, State: state, Tags: tags,
 	}, true
 }

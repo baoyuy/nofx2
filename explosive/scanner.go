@@ -73,6 +73,9 @@ func (s *Screener) Board(ctx context.Context, refresh bool) (Board, error) {
 	cached, at := s.board, s.boardAt
 	s.mu.Unlock()
 	if !refresh && !at.IsZero() && time.Since(at) < boardTTL {
+		if len(cached.Rows) > maxBoardRows {
+			cached.Rows = cached.Rows[:maxBoardRows]
+		}
 		return cached, nil
 	}
 	v, err, _ := s.flight.Do("board", func() (any, error) {
@@ -87,6 +90,9 @@ func (s *Screener) Board(ctx context.Context, refresh bool) (Board, error) {
 	s.mu.Lock()
 	s.board, s.boardAt = board, time.Now()
 	s.mu.Unlock()
+	if len(board.Rows) > maxBoardRows {
+		board.Rows = board.Rows[:maxBoardRows]
+	}
 	return board, nil
 }
 
@@ -236,6 +242,13 @@ func (s *Screener) scan(ctx context.Context) (Board, error) {
 		}
 		candidates = append(candidates, t)
 	}
+	btcChange := 0.0
+	for _, t := range tickers {
+		if t.Symbol == "BTCUSDT" {
+			btcChange = t.ChangePct
+			break
+		}
+	}
 	board := Board{Scanned: len(tickers), Candidates: len(candidates), FetchedAt: time.Now()}
 	sort.SliceStable(candidates, func(a, b int) bool { return candidates[a].ChangePct > candidates[b].ChangePct })
 	if len(candidates) > candidateLimit {
@@ -306,6 +319,7 @@ func (s *Screener) scan(ctx context.Context) (Board, error) {
 			row, ok := Evaluate(Input{
 				Symbol: o.t.Symbol, Price: o.t.Price, Change24h: o.t.ChangePct, Volume24h: o.t.QuoteVolume,
 				Bars5m: o.bars, Bars1h: hourly, OIChange1h: oi, OIKnown: oiErr == nil, Funding: funding[o.t.Symbol],
+				BTCChange24h: btcChange,
 			})
 			out[i] = refined{row: row, ok: ok}
 		}(i, o)
@@ -319,15 +333,22 @@ func (s *Screener) scan(ctx context.Context) (Board, error) {
 		}
 		rows = append(rows, r.row)
 	}
-	sort.SliceStable(rows, func(a, b int) bool { return rows[a].Score > rows[b].Score })
-	if len(rows) > maxBoardRows {
-		rows = rows[:maxBoardRows]
-	}
+	// Ordered by momentum, not by the risk-adjusted score: burying a coin
+	// that is in the middle of a move is exactly what this board must not do.
+	sort.SliceStable(rows, func(a, b int) bool { return rows[a].Strength > rows[b].Strength })
 	board.Rows = rows
 	if len(rows) == 0 {
 		board.Reason = "no coin passed the gates"
 	}
 	return board, nil
+}
+
+// ScanAll runs a pass and returns every refined row, not just the top of the
+// board. Probes and backtests use it to see where a coin placed.
+func (s *Screener) ScanAll(ctx context.Context) (Board, error) {
+	scanCtx, cancel := context.WithTimeout(ctx, scanTimeout)
+	defer cancel()
+	return s.scan(scanCtx)
 }
 
 // preScore ranks stage-one candidates by the two parts that need only 5m

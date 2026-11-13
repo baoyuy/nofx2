@@ -24,14 +24,18 @@ export interface ExplosiveRow {
   ema20: number
   ema60: number
   ema120: number
+  /** momentum, 0-100, before risk discounts: the board is sorted by this */
+  strength: number
+  /** product of the risk discounts, 1 = none */
+  risk: number
+  /** strength × risk */
   score: number
-  /** 0-1 parts of the score */
+  /** 0-1 parts of strength */
   speed: number
   volume: number
   open_interest: number
   structure: number
-  /** product of the overheated discounts, 1 = none */
-  penalty: number
+  rel_strength: number
   state: ExplosiveState
   tags: string[]
 }

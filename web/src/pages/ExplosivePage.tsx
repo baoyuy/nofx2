@@ -34,6 +34,7 @@ const tagLabel = (language: string, tag: string) =>
     breakout: tr(language, '突破', 'Breakout'),
     volume: tr(language, '放量', 'Volume'),
     oi: tr(language, 'OI 增', 'OI up'),
+    oi_drain: tr(language, 'OI 流出', 'OI draining'),
     aligned: tr(language, '多头排列', 'EMA uptrend'),
     hold_ema: tr(language, '站上 EMA20', 'Above EMA20'),
     funding_hot: tr(language, '费率过热', 'Hot funding'),
@@ -50,19 +51,16 @@ function compact(v: number): string {
   return v.toFixed(0)
 }
 
-function ScoreBar({ score, penalty }: { score: number; penalty: number }) {
-  const color = score >= 70 ? BN.up : score >= 40 ? '#b45309' : '#94a3b8'
+function StrengthBar({ strength }: { strength: number }) {
+  const color = strength >= 55 ? BN.up : strength >= 35 ? '#b45309' : '#94a3b8'
   return (
     <div className="flex items-center gap-2">
       <div className="h-1.5 w-14 overflow-hidden rounded bg-[rgba(25,36,52,0.08)]">
-        <div className="h-full" style={{ width: `${Math.min(100, score)}%`, background: color }} />
+        <div className="h-full" style={{ width: `${Math.min(100, strength)}%`, background: color }} />
       </div>
       <span className="w-7 text-right text-xs font-semibold tabular-nums" style={{ color }}>
-        {score.toFixed(0)}
+        {strength.toFixed(0)}
       </span>
-      {penalty < 1 ? (
-        <span className="text-[10px] text-nofx-danger">×{penalty.toFixed(2)}</span>
-      ) : null}
     </div>
   )
 }
@@ -148,8 +146,8 @@ export function ExplosivePage() {
         <p className={`${ui.muted} leading-relaxed`}>
           {tr(
             language,
-            '按"速度 / 量能 / 持仓量 / 结构"四维打分，不是按 24 小时涨幅排序。涨幅榜里已经走完的币会被结构和过热项压低；刚突破、放量、持仓量同步增加的币排前面。数据每 15 秒刷新。',
-            'Ranked on speed, participation, open interest and structure, not on 24h change. Coins that already ran get pushed down by the structure and overheated parts; a fresh breakout with volume and rising open interest ranks first. Refreshes every 15s.'
+            '按"速度 / 量能 / 持仓量 / 结构 / 相对强度"算爆发力，榜单按爆发力排序——正在爆的币不会被藏起来。资金费率过热、追高、OI 流出只作为风险标注，并给出扣风险后的"健康分"。数据每 15 秒刷新。',
+            'Strength combines speed, participation, open interest, structure and relative strength, and the board is ordered by it: a coin in the middle of a move is never buried. Hot funding, chasing and open-interest drain are shown as risk and rolled into a separate health score. Refreshes every 15s.'
           )}
         </p>
       </section>
@@ -169,7 +167,8 @@ export function ExplosivePage() {
                 <tr>
                   <th className="py-1.5 font-normal">#</th>
                   <th className="font-normal">{tr(language, '币种', 'Coin')}</th>
-                  <th className="font-normal">{tr(language, '分数', 'Score')}</th>
+                  <th className="font-normal">{tr(language, '爆发力', 'Strength')}</th>
+                  <th className="text-right font-normal">{tr(language, '健康分', 'Health')}</th>
                   <th className="font-normal">{tr(language, '状态', 'State')}</th>
                   <th className="text-right font-normal">24h</th>
                   <th className="text-right font-normal">5m</th>
@@ -195,7 +194,18 @@ export function ExplosivePage() {
                     <td className="py-1.5 text-nofx-text-muted tabular-nums">{i + 1}</td>
                     <td className="font-medium">{r.symbol.replace('USDT', '')}</td>
                     <td>
-                      <ScoreBar score={r.score} penalty={r.penalty} />
+                      <StrengthBar strength={r.strength} />
+                    </td>
+                    <td
+                      className="text-right tabular-nums"
+                      title={tr(
+                        language,
+                        `风险系数 ${r.risk.toFixed(2)}：费率、追高、OI 流出会打折`,
+                        `Risk factor ${r.risk.toFixed(2)}: funding, chasing and open-interest drain discount it`
+                      )}
+                      style={{ color: r.risk < 0.8 ? BN.down : undefined }}
+                    >
+                      {r.score.toFixed(0)}
                     </td>
                     <td>
                       <span
@@ -282,13 +292,14 @@ export function ExplosivePage() {
           {row ? (
             <section className={ui.panel}>
               <h3 className={`${ui.muted} mb-2`}>
-                {tr(language, '分数构成', 'Score parts')}
+                {tr(language, '爆发力构成', 'Strength parts')}
               </h3>
-              <div className="grid grid-cols-4 gap-2 text-xs">
+              <div className="grid grid-cols-5 gap-2 text-xs">
                 <Part label={tr(language, '速度', 'Speed')} value={row.speed} />
                 <Part label={tr(language, '量能', 'Volume')} value={row.volume} />
                 <Part label={tr(language, '持仓量', 'OI')} value={row.open_interest} />
                 <Part label={tr(language, '结构', 'Structure')} value={row.structure} />
+                <Part label={tr(language, '相对强度', 'Rel. str.')} value={row.rel_strength} />
               </div>
               <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
                 <div className="flex justify-between">

@@ -34,12 +34,14 @@ const row = {
   ema20: 143,
   ema60: 138,
   ema120: 130,
+  strength: 88,
+  risk: 1,
   score: 88,
   speed: 1,
   volume: 0.7,
   open_interest: 0.7,
   structure: 1,
-  penalty: 1,
+  rel_strength: 0.4,
   state: 'starting' as const,
   tags: ['breakout', 'volume', 'oi'],
 }
@@ -68,7 +70,7 @@ describe('explosive board', () => {
       </LanguageProvider>
     )
     expect((await screen.findAllByText('SOL')).length).toBeGreaterThan(0)
-    expect(screen.getByText('88')).toBeTruthy()
+    expect(screen.getAllByText('88').length).toBeGreaterThan(0)
     expect(screen.getByText('+18.40%')).toBeTruthy()
     expect(screen.getByText('3.2')).toBeTruthy()
     expect(screen.getByText('+2.10%')).toBeTruthy()
