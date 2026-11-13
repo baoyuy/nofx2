@@ -233,3 +233,34 @@ func TestSellingOffCutsStrength(t *testing.T) {
 		t.Fatalf("state = %s tags=%v, want falling", b.State, b.Tags)
 	}
 }
+
+func TestPullbackFromHighIsGradedNotFiltered(t *testing.T) {
+	in := strongInput()
+	hours := trendBars(150, 100, 0.3)
+	in.Bars1h = hours
+	high := 0.0
+	for _, b := range hours[len(hours)-24:] {
+		high = math.Max(high, b.High)
+	}
+	// 9% under the 24h high: a leader taking a breather.
+	in.Price = high * 0.91
+	row, ok := Evaluate(in)
+	if !ok {
+		t.Fatal("a pullback must still produce a row")
+	}
+	if row.DistanceHigh < 8 || row.DistanceHigh > 10 {
+		t.Fatalf("distance high = %.2f", row.DistanceHigh)
+	}
+	if row.Risk >= 1 || !hasTag(row.Tags, TagOffHigh) {
+		t.Fatalf("pullback must be a graded risk: risk=%.2f tags=%v", row.Risk, row.Tags)
+	}
+}
+
+func TestPreScoreKeepsTheConsolidatingLeader(t *testing.T) {
+	flat := flatBars(60, 100, 1000)
+	leader := preScore(flat, 300, 1)
+	mover := preScore(flat, 3, 1)
+	if leader <= mover {
+		t.Fatalf("a +300%% leader resting must outrank a +3%% mover: %.3f vs %.3f", leader, mover)
+	}
+}

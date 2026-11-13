@@ -27,12 +27,15 @@ const (
 	oiDrain = 0.05
 
 	// Gates and thresholds.
-	MinVolume24h    = 20_000_000 // USDT of 24h turnover
-	MaxDistanceHigh = 8.0        // % below the 24h high: a coin already rolled over
-	fundingHot      = 0.001      // 0.1% per 8h: longs are crowded
-	distanceChase   = 20.0       // % above EMA20: a vertical move, not a trend
-	relFull         = 50.0       // 50 points over BTC's 24h change scores full
-	oiDrainRisk     = -0.01      // 1h open-interest drain that marks a move suspect
+	MinVolume24h = 20_000_000 // USDT of 24h turnover
+	// MaxDistanceHigh only drops a coin that gave back nearly the whole run.
+	// A leader resting 8-10% under its high is consolidating, not broken: that
+	// is scored as risk below, not filtered out.
+	MaxDistanceHigh = 25.0
+	fundingHot      = 0.001 // 0.1% per 8h: longs are crowded
+	distanceChase   = 20.0  // % above EMA20: a vertical move, not a trend
+	relFull         = 50.0  // 50 points over BTC's 24h change scores full
+	oiDrainRisk     = -0.01 // 1h open-interest drain that marks a move suspect
 	rsiHot          = 85.0
 	minBars5m       = 25
 	minBars1h       = 120
@@ -54,6 +57,7 @@ const (
 	TagOIDrain    = "oi_drain"
 	TagFading     = "fading"
 	TagFalling    = "falling"
+	TagOffHigh    = "off_high"
 )
 
 func clamp01(v float64) float64 { return math.Max(0, math.Min(1, v)) }
@@ -301,6 +305,17 @@ func Evaluate(in Input) (Row, bool) {
 	if e20 > 0 {
 		dist = (in.Price - e20) / e20 * 100
 	}
+	high24 := 0.0
+	if n := len(in.Bars1h); n > 0 {
+		for i := max(0, n-24); i < n; i++ {
+			high24 = math.Max(high24, in.Bars1h[i].High)
+		}
+	}
+	distHigh := 0.0
+	if high24 > 0 {
+		distHigh = (high24 - in.Price) / high24 * 100
+	}
+
 	// A fresh breakout is allowed to look overbought on RSI: that is what a
 	// breakout is. The RSI discount only applies once the move is older.
 	since := breakoutBars(in.Bars1h)
@@ -318,6 +333,18 @@ func Evaluate(in Input) (Row, bool) {
 		risk *= 0.85
 		tags = append(tags, TagOIDrain)
 	}
+	// Distance from the 24h high is graded, not a gate: a leader taking a
+	// breather keeps its place and shows the pullback as a risk.
+	if distHigh > 18 {
+		risk *= 0.65
+		tags = append(tags, TagOffHigh)
+	} else if distHigh > 10 {
+		risk *= 0.8
+		tags = append(tags, TagOffHigh)
+	} else if distHigh > 5 {
+		risk *= 0.9
+		tags = append(tags, TagOffHigh)
+	}
 	if !fresh {
 		if r := rsi(closes(in.Bars1h), 14); r > rsiHot {
 			risk *= 0.8
@@ -328,17 +355,6 @@ func Evaluate(in Input) (Row, bool) {
 	}
 	if in.OIKnown && in.OIChange1h >= 0.01 {
 		tags = append(tags, TagOI)
-	}
-
-	high24 := 0.0
-	if n := len(in.Bars1h); n > 0 {
-		for i := max(0, n-24); i < n; i++ {
-			high24 = math.Max(high24, in.Bars1h[i].High)
-		}
-	}
-	distHigh := 0.0
-	if high24 > 0 {
-		distHigh = (high24 - in.Price) / high24 * 100
 	}
 
 	rel := clamp01((in.Change24h - in.BTCChange24h) / relFull)

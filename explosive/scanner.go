@@ -31,7 +31,7 @@ const (
 	// candidateLimit is how many of the day's top gainers get 5m candles;
 	// refineLimit how many of those get 1h candles and open interest.
 	candidateLimit = 40
-	refineLimit    = 16
+	refineLimit    = 24
 	fetchWorkers   = 24
 	maxBoardRows   = 20
 	scanTimeout    = 45 * time.Second
@@ -478,7 +478,7 @@ func (s *Screener) scan(ctx context.Context) (map[string]symbolSnapshot, map[str
 				return
 			}
 			s.live.Seed(t.Symbol, kline5m, bars)
-			one[i] = stageOne{t: t, bars: bars, pre: preScore(bars)}
+			one[i] = stageOne{t: t, bars: bars, pre: preScore(bars, t.ChangePct, btcChange)}
 		}(i, t)
 	}
 	wg.Wait()
@@ -540,9 +540,10 @@ func (s *Screener) scan(ctx context.Context) (map[string]symbolSnapshot, map[str
 	return snaps, watched, len(tickers), len(candidates), btcChange, nil
 }
 
-// preScore ranks stage-one candidates by the two parts that need only 5m
-// candles: speed and volume.
-func preScore(bars []Kline) float64 {
+// preScore ranks stage-one candidates before the heavier requests. It keeps
+// relative strength at 40% so a leader that is consolidating after a big run
+// is not dropped in favour of a coin that only just ticked up.
+func preScore(bars []Kline, change24h, btcChange float64) float64 {
 	cl := closes(bars)
 	if len(cl) < 2 {
 		return 0
@@ -550,5 +551,6 @@ func preScore(bars []Kline) float64 {
 	ret := (cl[len(cl)-1]/cl[len(cl)-2] - 1) * 100
 	speed := clamp01((ret / max(atrPct(bars, 14), 0.05)) / speedFull)
 	vol := clamp01((volumeRatio(bars) - 1) / (volumeFull - 1))
-	return wSpeed*speed + wVolume*vol
+	rel := clamp01((change24h - btcChange) / 150)
+	return 0.35*speed + 0.25*vol + 0.40*rel
 }
