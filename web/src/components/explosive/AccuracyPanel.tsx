@@ -10,6 +10,12 @@ const signedPct = (v: number) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%`
 
 const MIN_SAMPLES = 30
 
+const bandName = (language: string, band: string) => {
+  if (band === 'top5') return tr(language, '前 5 名', 'Top 5')
+  if (band === 'rest') return tr(language, '其余', 'The rest')
+  return band
+}
+
 function BandTable({
   language,
   rows,
@@ -47,7 +53,7 @@ function BandTable({
           const thin = r.samples < MIN_SAMPLES
           return (
             <tr key={r.band} className="border-t border-[rgba(25,36,52,0.14)]">
-              <td className="py-1 font-medium">{r.band}</td>
+              <td className="py-1 font-medium">{bandName(language, r.band)}</td>
               <td className="text-right tabular-nums">{r.samples}</td>
               <td className="text-right tabular-nums">{thin ? '—' : pct(r.up_1h)}</td>
               <td className="text-right tabular-nums">{thin ? '—' : pct(r.up_4h)}</td>
@@ -132,7 +138,7 @@ export function AccuracyPanel({ language }: { language: string }) {
             </h3>
             <BandTable language={language} rows={data.top} first={tr(language, '分组', 'Group')} />
           </div>
-          {data.tags.length ? (
+          {(data.tags ?? []).length ? (
             <div>
               <h3 className={`${ui.muted} mb-1`}>
                 {tr(language, '按触发标签', 'By signal tag')}
@@ -147,7 +153,7 @@ export function AccuracyPanel({ language }: { language: string }) {
                   </tr>
                 </thead>
                 <tbody className="text-nofx-text">
-                  {data.tags.map((t) => (
+                  {(data.tags ?? []).map((t) => (
                     <tr key={t.tag} className="border-t border-[rgba(25,36,52,0.14)]">
                       <td className="py-1">{tagLabel(language, t.tag)}</td>
                       <td className="text-right tabular-nums">{t.samples}</td>

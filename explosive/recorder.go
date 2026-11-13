@@ -167,19 +167,20 @@ func (r *Recorder) evaluate(ctx context.Context, now time.Time) error {
 					dd = math.Min(dd, b.Low/row.Price-1)
 				}
 			}
-			benchRet := 0.0
+			var benchRet *float64
 			if from, ok := benchClose[nearestBar(benchClose, row.TS*1000)]; ok {
 				if to, ok := benchClose[nearestBar(benchClose, endMs)]; ok && from > 0 {
-					benchRet = to/from - 1
+					v := to/from - 1
+					benchRet = &v
 				}
 			}
 			switch h.name {
 			case "1h":
-				row.Ret1h, row.Bench1h, row.MaxDD1h, row.Done1h = &ret, &benchRet, &dd, true
+				row.Ret1h, row.Bench1h, row.MaxDD1h, row.Done1h = &ret, benchRet, &dd, true
 			case "4h":
-				row.Ret4h, row.Bench4h, row.MaxDD4h, row.Done4h = &ret, &benchRet, &dd, true
+				row.Ret4h, row.Bench4h, row.MaxDD4h, row.Done4h = &ret, benchRet, &dd, true
 			case "24h":
-				row.Ret24h, row.Bench24h, row.MaxDD24h, row.Done24h = &ret, &benchRet, &dd, true
+				row.Ret24h, row.Bench24h, row.MaxDD24h, row.Done24h = &ret, benchRet, &dd, true
 			}
 			if err := r.store.UpdateSignal(row); err != nil {
 				return err
@@ -243,13 +244,16 @@ type Accuracy struct {
 }
 
 type accAcc struct {
-	n, up1, up4, up24, beat4, sustained int
-	excess, dd                          float64
+	// Each horizon has its own denominator: a row can have a 1h result while
+	// its 4h result is still pending.
+	n1, n4, n24                      int
+	up1, up4, up24, beat4, sustained int
+	excess, dd                       float64
 }
 
 func (a *accAcc) add(row store.ExplosiveSignal) {
 	if row.Ret4h != nil {
-		a.n++
+		a.n4++
 		if *row.Ret4h > 0 {
 			a.up4++
 		}
@@ -266,26 +270,36 @@ func (a *accAcc) add(row store.ExplosiveSignal) {
 			a.sustained++
 		}
 	}
-	if row.Ret1h != nil && *row.Ret1h > 0 {
-		a.up1++
+	if row.Ret1h != nil {
+		a.n1++
+		if *row.Ret1h > 0 {
+			a.up1++
+		}
 	}
-	if row.Ret24h != nil && *row.Ret24h > 0 {
-		a.up24++
+	if row.Ret24h != nil {
+		a.n24++
+		if *row.Ret24h > 0 {
+			a.up24++
+		}
 	}
 }
 
 func (a *accAcc) stat(band string) BandStat {
-	s := BandStat{Band: band, Samples: a.n}
-	if a.n == 0 {
+	s := BandStat{Band: band, Samples: a.n4}
+	if a.n1 > 0 {
+		s.Up1h = float64(a.up1) / float64(a.n1)
+	}
+	if a.n24 > 0 {
+		s.Up24h = float64(a.up24) / float64(a.n24)
+	}
+	if a.n4 == 0 {
 		return s
 	}
-	s.Up1h = float64(a.up1) / float64(a.n)
-	s.Up4h = float64(a.up4) / float64(a.n)
-	s.Up24h = float64(a.up24) / float64(a.n)
-	s.Beat4h = float64(a.beat4) / float64(a.n)
-	s.AvgExcess4h = a.excess / float64(a.n)
-	s.AvgDD4h = a.dd / float64(a.n)
-	s.Sustained = float64(a.sustained) / float64(a.n)
+	s.Up4h = float64(a.up4) / float64(a.n4)
+	s.Beat4h = float64(a.beat4) / float64(a.n4)
+	s.AvgExcess4h = a.excess / float64(a.n4)
+	s.AvgDD4h = a.dd / float64(a.n4)
+	s.Sustained = float64(a.sustained) / float64(a.n4)
 	return s
 }
 
@@ -349,6 +363,7 @@ func (r *Recorder) Accuracy(days int, now time.Time) (Accuracy, error) {
 		acc.Bands = append(acc.Bands, bands[b].stat(b))
 	}
 	acc.Top = []BandStat{top.stat("top5"), rest.stat("rest")}
+	acc.Tags = make([]TagStat, 0, len(tags))
 	for t, a := range tags {
 		s := a.stat(t)
 		acc.Tags = append(acc.Tags, TagStat{Tag: t, Samples: s.Samples, Up4h: s.Up4h, Sustained: s.Sustained})

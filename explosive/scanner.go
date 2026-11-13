@@ -61,8 +61,9 @@ type Screener struct {
 
 	mu         sync.Mutex
 	snaps      map[string]symbolSnapshot
+	watched    map[string]bool // symbols that passed the gates this pass
 	scanned    int
-	candidates int
+	count      int // candidates that passed the gates
 	fullAt     time.Time
 	btcChange  float64
 	refreshing bool
@@ -140,12 +141,13 @@ func (s *Screener) refresh(ctx context.Context) error {
 
 		scanCtx, cancel := context.WithTimeout(ctx, scanTimeout)
 		defer cancel()
-		snaps, scanned, candidates, btc, err := s.scan(scanCtx)
+		snaps, watched, scanned, count, btc, err := s.scan(scanCtx)
 		if err != nil {
 			return nil, err
 		}
 		s.mu.Lock()
-		s.snaps, s.scanned, s.candidates, s.btcChange, s.fullAt = snaps, scanned, candidates, btc, time.Now()
+		s.snaps, s.watched, s.scanned, s.count = snaps, watched, scanned, count
+		s.btcChange, s.fullAt = btc, time.Now()
 		s.mu.Unlock()
 		return nil, nil
 	})
@@ -179,8 +181,13 @@ func (s *Screener) hotWithoutSnapshot() bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A scan just ran: the missing symbol is one the gates or the ranking
+	// dropped, and re-scanning immediately would never add it.
+	if time.Since(s.fullAt) < 10*time.Second {
+		return false
+	}
 	for _, p := range top {
-		if _, ok := s.snaps[p.symbol]; !ok {
+		if !s.watched[p.symbol] {
 			return true
 		}
 	}
@@ -191,11 +198,11 @@ func (s *Screener) hotWithoutSnapshot() bool {
 // cheap and never touches the network. limit <= 0 keeps every row.
 func (s *Screener) build(limit int) Board {
 	s.mu.Lock()
-	snaps, scanned, candidates, fullAt, btc, refreshing := s.snaps, s.scanned, s.candidates, s.fullAt, s.btcChange, s.refreshing
+	snaps, scanned, candidates, fullAt, btc, refreshing := s.snaps, s.scanned, s.count, s.fullAt, s.btcChange, s.refreshing
 	s.mu.Unlock()
 
 	liveFresh := s.live.Fresh(liveMaxAge)
-	statsFresh := s.live.StatsFresh(statsPoll)
+	statsFresh := s.live.StatsFresh(2 * statsPoll)
 	if statsFresh {
 		if v := s.live.BTCChange(); !math.IsNaN(v) {
 			btc = v
@@ -273,7 +280,7 @@ func (s *Screener) get(ctx context.Context, path string, out any) error {
 // tickers lists every contract with its 24h change and turnover, from the
 // live feed when it is fresh and from REST otherwise.
 func (s *Screener) tickers(ctx context.Context) ([]ticker, error) {
-	if s.live.Fresh(liveMaxAge) && s.live.StatsFresh(statsPoll) {
+	if s.live.Fresh(liveMaxAge) && s.live.StatsFresh(2*statsPoll) {
 		snapshot := s.live.Snapshot()
 		out := make([]ticker, 0, len(snapshot))
 		for symbol, t := range snapshot {
@@ -414,10 +421,10 @@ func num(raw json.RawMessage) float64 {
 }
 
 // scan runs one expensive pass and returns per-symbol snapshots.
-func (s *Screener) scan(ctx context.Context) (map[string]symbolSnapshot, int, int, float64, error) {
+func (s *Screener) scan(ctx context.Context) (map[string]symbolSnapshot, map[string]bool, int, int, float64, error) {
 	tickers, err := s.tickers(ctx)
 	if err != nil {
-		return nil, 0, 0, 0, err
+		return nil, nil, 0, 0, 0, err
 	}
 	btcChange := 0.0
 	for _, t := range tickers {
@@ -447,7 +454,7 @@ func (s *Screener) scan(ctx context.Context) (map[string]symbolSnapshot, int, in
 		candidates = candidates[:candidateLimit]
 	}
 	if len(candidates) == 0 {
-		return map[string]symbolSnapshot{}, len(tickers), 0, btcChange, nil
+		return map[string]symbolSnapshot{}, map[string]bool{}, len(tickers), 0, btcChange, nil
 	}
 
 	// Stage one: 5m candles, to rank by speed and volume before spending the
@@ -516,8 +523,10 @@ func (s *Screener) scan(ctx context.Context) (map[string]symbolSnapshot, int, in
 
 	snaps := make(map[string]symbolSnapshot, len(out))
 	candidateSymbols := make([]string, 0, len(kept))
+	watched := make(map[string]bool, len(kept))
 	for _, o := range kept {
 		candidateSymbols = append(candidateSymbols, o.t.Symbol)
+		watched[o.t.Symbol] = true
 	}
 	refinedSymbols := make([]string, 0, len(out))
 	for _, r := range out {
@@ -528,7 +537,7 @@ func (s *Screener) scan(ctx context.Context) (map[string]symbolSnapshot, int, in
 	}
 	// Keep the kline streams in step with what the board watches.
 	s.live.SetSymbols(candidateSymbols, refinedSymbols)
-	return snaps, len(tickers), len(candidates), btcChange, nil
+	return snaps, watched, len(tickers), len(candidates), btcChange, nil
 }
 
 // preScore ranks stage-one candidates by the two parts that need only 5m

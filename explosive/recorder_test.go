@@ -143,3 +143,61 @@ func TestAccuracyGroupsByStrength(t *testing.T) {
 		t.Fatalf("top/rest: %+v", acc.Top)
 	}
 }
+
+func TestAccuracyUsesPerHorizonDenominators(t *testing.T) {
+	r := testRecorder(t)
+	now := time.Now()
+	ts := now.Add(-30 * time.Minute).Unix()
+	up := 0.01
+	down := -0.01
+	// Only the 1h result is in; there is no 4h sample for these rows.
+	err := r.store.SaveSignals([]store.ExplosiveSignal{
+		{TS: ts, Symbol: "A", Strength: 85, Rank: 1, Ret1h: &up, Done1h: true},
+		{TS: ts, Symbol: "B", Strength: 85, Rank: 2, Ret1h: &down, Done1h: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acc, err := r.Accuracy(30, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	high := acc.Bands[0]
+	if high.Samples != 0 {
+		t.Fatalf("4h samples: %+v", high)
+	}
+	if math.Abs(high.Up1h-0.5) > 1e-9 {
+		t.Fatalf("1h rate must use its own denominator: %+v", high)
+	}
+	if high.Up4h != 0 || high.Sustained != 0 {
+		t.Fatalf("4h stats without samples: %+v", high)
+	}
+	if acc.Tags == nil {
+		t.Fatal("tags must serialise as an array, not null")
+	}
+}
+
+func TestHotGainersDoNotCauseAnEndlessRescan(t *testing.T) {
+	s := New()
+	now := time.Now()
+	s.live.m = map[string]liveTicker{
+		"HOTUSDT": {Price: 1, ChangePct: 40, QuoteVolume: 80e6, At: now},
+	}
+	s.live.updatedAt, s.live.statsAt = now, now
+	s.fullAt = now.Add(-time.Minute)
+	s.watched = map[string]bool{}
+	if !s.hotWithoutSnapshot() {
+		t.Fatal("a hot gainer the pass never saw should trigger a rescan")
+	}
+	// The symbol passed the gates but the ranking dropped it: re-scanning
+	// would never add it either, so it must not loop.
+	s.watched = map[string]bool{"HOTUSDT": true}
+	if s.hotWithoutSnapshot() {
+		t.Fatal("a seen candidate must not trigger rescans")
+	}
+	s.watched = map[string]bool{}
+	s.fullAt = now.Add(-2 * time.Second)
+	if s.hotWithoutSnapshot() {
+		t.Fatal("a scan that just ran must not be repeated")
+	}
+}

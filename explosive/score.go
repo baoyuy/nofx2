@@ -383,6 +383,11 @@ func formingBar(bars []Kline, price float64, interval time.Duration, now time.Ti
 	out := make([]Kline, len(bars), len(bars)+1)
 	copy(out, bars)
 	if now.UnixMilli() >= last.Time+step {
+		// After a long outage do not invent a bar across the gap: the jump
+		// from an old close would read as a huge move.
+		if now.UnixMilli() > last.Time+3*step {
+			return bars
+		}
 		return append(out, Kline{
 			Time: last.Time + step, Open: last.Close,
 			High: math.Max(last.Close, price), Low: math.Min(last.Close, price), Close: price,
