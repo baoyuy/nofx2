@@ -215,6 +215,7 @@ func (s *Server) setupRoutes() {
 		s.registerPlanning(api, protected)
 		s.registerMarketRoutes(api, protected)
 		s.registerCoinPoolRoutes(protected)
+		s.registerExplosiveRoutes(protected)
 		s.registerMarketBoardRoutes(protected)
 		s.registerCopyTradeRoutes(protected)
 		s.registerMirrorRoutes(protected)

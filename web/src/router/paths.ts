@@ -2,6 +2,7 @@ export type Page =
   | 'planning'
   | 'market'
   | 'coin-pool'
+  | 'explosive'
   | 'copy-trade'
   | 'competition'
   | 'traders'
@@ -31,6 +32,7 @@ export const ROUTES = {
   strategyMarket: '/strategy-market',
   market: '/market',
   coinPool: '/coin-pool',
+  explosive: '/explosive',
   copyTrade: '/copy-trade',
 } as const
 
@@ -38,6 +40,7 @@ export const PAGE_PATHS: Record<Page, string> = {
   planning: ROUTES.planning,
   market: ROUTES.market,
   'coin-pool': ROUTES.coinPool,
+  explosive: ROUTES.explosive,
   'copy-trade': ROUTES.copyTrade,
   competition: ROUTES.competition,
   traders: ROUTES.traders,

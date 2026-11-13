@@ -24,6 +24,7 @@ import { SettingsPage } from '../pages/SettingsPage'
 import { FreeStrategyPage } from '../pages/FreeStrategyPage'
 import { MarketPage } from '../pages/MarketPage'
 import { CoinPoolPage } from '../pages/CoinPoolPage'
+import { ExplosivePage } from '../pages/ExplosivePage'
 import { CopyTradePage } from '../pages/CopyTradePage'
 import { TradingPlanningPage } from '../pages/TradingPlanningPage'
 import { TerminalDashboard } from '../components/terminal/TerminalDashboard'
@@ -537,6 +538,18 @@ export function AppRoutes() {
             isAuthenticated ? (
               <AppChrome currentPage="coin-pool" animateContent>
                 <CoinPoolPage />
+              </AppChrome>
+            ) : (
+              <Navigate to={ROUTES.login} replace />
+            )
+          }
+        />
+        <Route
+          path={ROUTES.explosive}
+          element={
+            isAuthenticated ? (
+              <AppChrome currentPage="explosive" animateContent>
+                <ExplosivePage />
               </AppChrome>
             ) : (
               <Navigate to={ROUTES.login} replace />

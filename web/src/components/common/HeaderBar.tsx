@@ -73,6 +73,12 @@ export default function HeaderBar({
       auth: true,
     },
     {
+      page: 'explosive',
+      path: ROUTES.explosive,
+      label: language === 'zh' ? '爆发榜' : 'Explosive',
+      auth: true,
+    },
+    {
       page: 'coin-pool',
       path: ROUTES.coinPool,
       label: language === 'zh' ? '币池' : 'Coin pool',
