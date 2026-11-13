@@ -34,8 +34,10 @@ func main() {
 		if err == nil {
 			second := time.Now()
 			board, err = explosive.Shared.Board(ctx, false)
-			fmt.Printf("cold=%s warm=%s age=%ds\n",
-				second.Sub(start).Round(time.Millisecond), time.Since(second).Round(time.Millisecond), board.AgeSeconds)
+			if !*jsonOut {
+				fmt.Printf("cold=%s warm=%s age=%ds\n",
+					second.Sub(start).Round(time.Millisecond), time.Since(second).Round(time.Millisecond), board.AgeSeconds)
+			}
 		}
 	}
 	if err != nil {

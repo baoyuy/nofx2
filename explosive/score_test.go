@@ -1,7 +1,9 @@
 package explosive
 
 import (
+	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -180,4 +182,30 @@ func hasTag(tags []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestEmptyTagsMarshalAsArray guards the page: a nil slice marshals to null
+// and the table maps over tags, so a coin with no signal must still send [].
+func TestEmptyTagsMarshalAsArray(t *testing.T) {
+	// Flat bars and a price below them: no breakout, no alignment, no volume,
+	// no open-interest gain — a reading with no tag at all.
+	in := Input{
+		Symbol: "X", Price: 99, Volume24h: 50e6,
+		Bars5m: flatBars(60, 100, 1000), Bars1h: flatBars(150, 100, 1000),
+		OIKnown: true,
+	}
+	row, ok := Evaluate(in)
+	if !ok {
+		t.Fatal("expected a row")
+	}
+	if row.Tags == nil || len(row.Tags) != 0 {
+		t.Fatalf("tags = %v, want an empty array", row.Tags)
+	}
+	b, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"tags":[]`) {
+		t.Fatalf("tags must be an array, got %s", b)
+	}
 }

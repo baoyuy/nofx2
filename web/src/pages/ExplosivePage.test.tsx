@@ -46,9 +46,18 @@ const row = {
   tags: ['breakout', 'volume', 'oi'],
 }
 
+const noTags = {
+  ...row,
+  symbol: 'NULLUSDT',
+  score: 40,
+  strength: 40,
+  // The API used to send null here and the table crashed on tags.slice.
+  tags: null as unknown as string[],
+}
+
 beforeEach(() => {
   mocks.board.mockResolvedValue({
-    rows: [row],
+    rows: [row, noTags],
     scanned: 400,
     candidates: 30,
     fetched_at: new Date().toISOString(),
@@ -71,8 +80,10 @@ describe('explosive board', () => {
     )
     expect((await screen.findAllByText('SOL')).length).toBeGreaterThan(0)
     expect(screen.getAllByText('88').length).toBeGreaterThan(0)
-    expect(screen.getByText('+18.40%')).toBeTruthy()
-    expect(screen.getByText('3.2')).toBeTruthy()
-    expect(screen.getByText('+2.10%')).toBeTruthy()
+    expect(screen.getAllByText('+18.40%').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('3.2').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('+2.10%').length).toBeGreaterThan(0)
+    // The null-tags row still rendered instead of taking the page down.
+    expect((await screen.findAllByText('NULL')).length).toBeGreaterThan(0)
   })
 })

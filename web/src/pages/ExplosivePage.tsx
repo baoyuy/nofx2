@@ -240,7 +240,7 @@ export function ExplosivePage() {
                     <td className="text-right tabular-nums">{r.distance_high.toFixed(1)}%</td>
                     <td>
                       <span className="flex flex-wrap gap-1">
-                        {r.tags.slice(0, 3).map((t) => (
+                        {(r.tags ?? []).slice(0, 3).map((t) => (
                           <span key={t} className="rounded bg-nofx-bg-deeper px-1 text-[10px] text-nofx-text-muted">
                             {tagLabel(language, t)}
                           </span>

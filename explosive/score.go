@@ -238,7 +238,8 @@ func Evaluate(in Input) (Row, bool) {
 		oi = oiScore(in.OIChange1h)
 	}
 
-	structure, tags := 0.3, []string(nil)
+	// Always a non-nil slice: a nil one marshals to null and the page maps it.
+	structure, tags := 0.3, []string{}
 	var e20, e60, e120 float64
 	if len(in.Bars1h) >= minBars1h {
 		var stags []string
