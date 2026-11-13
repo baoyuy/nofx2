@@ -45,6 +45,12 @@ export interface ExplosiveBoard {
   scanned: number
   candidates: number
   fetched_at: string
+  /** age of the candle/open-interest data, seconds */
+  age_seconds?: number
+  /** the slow data is older than its refresh cycle */
+  stale?: boolean
+  /** a background refresh is running */
+  refreshing?: boolean
   reason?: string
 }
 

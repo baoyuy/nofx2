@@ -76,6 +76,12 @@ type Board struct {
 	Scanned    int       `json:"scanned"`
 	Candidates int       `json:"candidates"`
 	FetchedAt  time.Time `json:"fetched_at"`
+	// AgeSeconds is the age of the expensive data (candles, open interest).
+	// Prices and 24h changes come from the live feed and are fresher.
+	AgeSeconds int  `json:"age_seconds"`
+	Stale      bool `json:"stale"`
+	// Refreshing is true while a background pass is running.
+	Refreshing bool `json:"refreshing"`
 	// Reason explains an empty board caused by missing data.
 	Reason string `json:"reason,omitempty"`
 }

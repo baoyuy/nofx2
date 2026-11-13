@@ -87,7 +87,7 @@ export function ExplosivePage() {
   const { data, error, mutate, isValidating } = useSWR(
     'market/explosive',
     () => explosiveApi.board(),
-    { refreshInterval: 15000, revalidateOnFocus: false }
+    { refreshInterval: 3000, revalidateOnFocus: false, keepPreviousData: true }
   )
   const rows = data?.rows || []
   const current = selected || rows[0]?.symbol || ''
@@ -127,6 +127,16 @@ export function ExplosivePage() {
                 `扫描 ${data.scanned} 个合约，${data.candidates} 个通过初筛`,
                 `${data.scanned} contracts scanned, ${data.candidates} passed the gates`
               )}
+              {typeof data.age_seconds === 'number'
+                ? tr(
+                    language,
+                    ` · K 线与持仓量 ${data.age_seconds} 秒前`,
+                    ` · candles and open interest ${data.age_seconds}s old`
+                  )
+                : ''}
+              {data.refreshing
+                ? tr(language, ' · 后台刷新中', ' · refreshing')
+                : ''}
             </span>
           ) : null}
           <button
@@ -146,8 +156,8 @@ export function ExplosivePage() {
         <p className={`${ui.muted} leading-relaxed`}>
           {tr(
             language,
-            '按"速度 / 量能 / 持仓量 / 结构 / 相对强度"算爆发力，榜单按爆发力排序——正在爆的币不会被藏起来。资金费率过热、追高、OI 流出只作为风险标注，并给出扣风险后的"健康分"。数据每 15 秒刷新。',
-            'Strength combines speed, participation, open interest, structure and relative strength, and the board is ordered by it: a coin in the middle of a move is never buried. Hot funding, chasing and open-interest drain are shown as risk and rolled into a separate health score. Refreshes every 15s.'
+            '按"速度 / 量能 / 持仓量 / 结构 / 相对强度"算爆发力，榜单按爆发力排序——正在爆的币不会被藏起来。资金费率过热、追高、OI 流出只作为风险标注，并给出扣风险后的"健康分"。价格和 24h 涨幅来自实时行情，3 秒更新一次；K 线、持仓量和评分每分钟在后台重算，页面不会等待。',
+            'Strength combines speed, participation, open interest, structure and relative strength, and the board is ordered by it: a coin in the middle of a move is never buried. Hot funding, chasing and open-interest drain are shown as risk and rolled into a separate health score. Prices and 24h change stream in every 3s; candles, open interest and scores recompute in the background once a minute, so the page never waits.'
           )}
         </p>
       </section>

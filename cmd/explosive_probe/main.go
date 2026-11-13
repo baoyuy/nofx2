@@ -28,7 +28,15 @@ func main() {
 	if *all || *symbol != "" {
 		board, err = explosive.Shared.ScanAll(ctx)
 	} else {
+		// First read may wait for a cold scan; the second shows the warm cost
+		// the page actually pays on every refresh.
 		board, err = explosive.Shared.Board(ctx, true)
+		if err == nil {
+			second := time.Now()
+			board, err = explosive.Shared.Board(ctx, false)
+			fmt.Printf("cold=%s warm=%s age=%ds\n",
+				second.Sub(start).Round(time.Millisecond), time.Since(second).Round(time.Millisecond), board.AgeSeconds)
+		}
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "scan failed: %v\n", err)
@@ -40,7 +48,7 @@ func main() {
 		_ = enc.Encode(board)
 		return
 	}
-	fmt.Printf("scanned=%d candidates=%d rows=%d took=%s\n",
+	fmt.Printf("scanned=%d candidates=%d rows=%d total=%s\n",
 		board.Scanned, board.Candidates, len(board.Rows), time.Since(start).Round(time.Second))
 	if board.Reason != "" {
 		fmt.Printf("reason: %s\n", board.Reason)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -21,31 +22,55 @@ import (
 )
 
 const (
-	// boardTTL is how long a scan is reused. The page polls faster than this;
-	// callers with refresh=1 force a new pass.
+	// boardTTL is how often the expensive pass (candles and open interest) is
+	// refreshed. The board itself is rebuilt from those snapshots plus the
+	// live feed on every read, so callers never wait for a scan.
 	boardTTL = 60 * time.Second
+	// liveMaxAge is how old a websocket tick may be before REST is used.
+	liveMaxAge = 10 * time.Second
 	// candidateLimit is how many of the day's top gainers get 5m candles;
-	// refineLimit how many of those get 1h candles and open interest. Both
-	// bound the request budget of one scan.
+	// refineLimit how many of those get 1h candles and open interest.
 	candidateLimit = 40
-	refineLimit    = 24
-	fetchWorkers   = 16
+	refineLimit    = 16
+	fetchWorkers   = 24
 	maxBoardRows   = 20
 	scanTimeout    = 45 * time.Second
 )
 
-// Screener builds the board from Binance public futures data. All calls go
-// through the shared API scheduler, so they share its budget with the rest of
-// the system.
+// symbolSnapshot is what the last expensive pass learned about one coin. The
+// score is recomputed from it with the live price, so a page refresh costs no
+// requests.
+type symbolSnapshot struct {
+	Bars5m     []Kline
+	Bars1h     []Kline
+	OIChange1h float64
+	OIKnown    bool
+	Funding    float64
+	Price      float64
+	Change24h  float64
+	Volume24h  float64
+}
+
+// Screener builds the board from Binance public futures data. The websocket
+// feed keeps prices live; candles, open interest and funding are refreshed on
+// a slower cycle in the background.
 type Screener struct {
 	BaseURL string
 	HTTP    *http.Client
+	live    *LiveTickers
 
-	mu        sync.Mutex
-	board     Board
-	boardAt   time.Time
+	mu         sync.Mutex
+	snaps      map[string]symbolSnapshot
+	scanned    int
+	candidates int
+	fullAt     time.Time
+	btcChange  float64
+	refreshing bool
+
 	funding   map[string]float64
 	fundingAt time.Time
+
+	startOnce sync.Once
 	flight    singleflight.Group
 }
 
@@ -54,6 +79,7 @@ func New() *Screener {
 	return &Screener{
 		BaseURL: "https://fapi.binance.com",
 		HTTP:    &http.Client{Timeout: 15 * time.Second},
+		live:    newLiveTickers(),
 	}
 }
 
@@ -67,33 +93,113 @@ type ticker struct {
 	QuoteVolume float64
 }
 
-// Board returns the ranked rows, reusing a recent scan unless refresh is set.
+// Board returns the current rows. A cold screener waits for the first pass;
+// afterwards a read rebuilds from the cached snapshots and the live feed, and
+// a stale snapshot is refreshed in the background. refresh asks for that
+// background pass explicitly without making the caller wait.
 func (s *Screener) Board(ctx context.Context, refresh bool) (Board, error) {
+	s.startOnce.Do(func() { s.live.Start(context.Background()) })
+
 	s.mu.Lock()
-	cached, at := s.board, s.boardAt
+	cold := s.fullAt.IsZero()
+	stale := cold || time.Since(s.fullAt) > boardTTL
+	refreshing := s.refreshing
 	s.mu.Unlock()
-	if !refresh && !at.IsZero() && time.Since(at) < boardTTL {
-		if len(cached.Rows) > maxBoardRows {
-			cached.Rows = cached.Rows[:maxBoardRows]
+
+	if cold {
+		if err := s.refresh(ctx); err != nil {
+			return Board{}, err
 		}
-		return cached, nil
+	} else if (stale || refresh) && !refreshing {
+		go func() { _ = s.refresh(context.Background()) }()
 	}
-	v, err, _ := s.flight.Do("board", func() (any, error) {
-		scanCtx, cancel := context.WithTimeout(context.Background(), scanTimeout)
-		defer cancel()
-		return s.scan(scanCtx)
-	})
-	if err != nil {
+	return s.build(maxBoardRows), nil
+}
+
+// ScanAll runs a pass synchronously and returns every refined row, for probes
+// and backtests.
+func (s *Screener) ScanAll(ctx context.Context) (Board, error) {
+	s.startOnce.Do(func() { s.live.Start(context.Background()) })
+	if err := s.refresh(ctx); err != nil {
 		return Board{}, err
 	}
-	board := v.(Board)
+	return s.build(0), nil
+}
+
+// refresh runs one expensive pass. Concurrent callers share it.
+func (s *Screener) refresh(ctx context.Context) error {
+	_, err, _ := s.flight.Do("scan", func() (any, error) {
+		s.mu.Lock()
+		s.refreshing = true
+		s.mu.Unlock()
+		defer func() {
+			s.mu.Lock()
+			s.refreshing = false
+			s.mu.Unlock()
+		}()
+
+		scanCtx, cancel := context.WithTimeout(ctx, scanTimeout)
+		defer cancel()
+		snaps, scanned, candidates, btc, err := s.scan(scanCtx)
+		if err != nil {
+			return nil, err
+		}
+		s.mu.Lock()
+		s.snaps, s.scanned, s.candidates, s.btcChange, s.fullAt = snaps, scanned, candidates, btc, time.Now()
+		s.mu.Unlock()
+		return nil, nil
+	})
+	return err
+}
+
+// build recomputes the rows from the cached snapshots and live prices. It is
+// cheap and never touches the network. limit <= 0 keeps every row.
+func (s *Screener) build(limit int) Board {
 	s.mu.Lock()
-	s.board, s.boardAt = board, time.Now()
+	snaps, scanned, candidates, fullAt, btc, refreshing := s.snaps, s.scanned, s.candidates, s.fullAt, s.btcChange, s.refreshing
 	s.mu.Unlock()
-	if len(board.Rows) > maxBoardRows {
-		board.Rows = board.Rows[:maxBoardRows]
+
+	liveFresh := s.live.Fresh(liveMaxAge)
+	if liveFresh {
+		if v := s.live.BTCChange(); !math.IsNaN(v) {
+			btc = v
+		}
 	}
-	return board, nil
+
+	rows := make([]Row, 0, len(snaps))
+	for symbol, snap := range snaps {
+		price, change, volume := snap.Price, snap.Change24h, snap.Volume24h
+		if liveFresh {
+			if t, ok := s.live.Get(symbol); ok {
+				price, change, volume = t.Price, t.ChangePct, t.QuoteVolume
+			}
+		}
+		row, ok := Evaluate(Input{
+			Symbol: symbol, Price: price, Change24h: change, Volume24h: volume,
+			Bars5m: snap.Bars5m, Bars1h: snap.Bars1h, OIChange1h: snap.OIChange1h, OIKnown: snap.OIKnown,
+			Funding: snap.Funding, BTCChange24h: btc,
+		})
+		if !ok || row.DistanceHigh > MaxDistanceHigh {
+			continue
+		}
+		rows = append(rows, row)
+	}
+	// Ordered by momentum, not by the risk-adjusted score: burying a coin
+	// that is in the middle of a move is exactly what this board must not do.
+	sort.SliceStable(rows, func(a, b int) bool { return rows[a].Strength > rows[b].Strength })
+	if limit > 0 && len(rows) > limit {
+		rows = rows[:limit]
+	}
+
+	board := Board{Rows: rows, Scanned: scanned, Candidates: candidates, FetchedAt: fullAt, Refreshing: refreshing}
+	if !fullAt.IsZero() {
+		board.AgeSeconds = int(time.Since(fullAt).Seconds())
+		board.Stale = board.AgeSeconds > int(boardTTL.Seconds())
+	}
+	if len(rows) == 0 && !fullAt.IsZero() {
+		board.Reason = "no coin passed the gates"
+	}
+	return board
 }
 
 func (s *Screener) get(ctx context.Context, path string, out any) error {
@@ -112,8 +218,19 @@ func (s *Screener) get(ctx context.Context, path string, out any) error {
 	return json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(out)
 }
 
-// tickers lists every USDT perpetual with its 24h change and turnover.
+// tickers lists every contract with its 24h change and turnover, from the
+// live feed when it is fresh and from REST otherwise.
 func (s *Screener) tickers(ctx context.Context) ([]ticker, error) {
+	if s.live.Fresh(liveMaxAge) {
+		snapshot := s.live.Snapshot()
+		out := make([]ticker, 0, len(snapshot))
+		for symbol, t := range snapshot {
+			out = append(out, ticker{Symbol: symbol, Price: t.Price, ChangePct: t.ChangePct, QuoteVolume: t.QuoteVolume})
+		}
+		if len(out) > 0 {
+			return out, nil
+		}
+	}
 	var rows []struct {
 		Symbol, LastPrice, PriceChangePercent, QuoteVolume string
 	}
@@ -220,11 +337,18 @@ func num(raw json.RawMessage) float64 {
 	return f
 }
 
-// scan runs one full pass.
-func (s *Screener) scan(ctx context.Context) (Board, error) {
+// scan runs one expensive pass and returns per-symbol snapshots.
+func (s *Screener) scan(ctx context.Context) (map[string]symbolSnapshot, int, int, float64, error) {
 	tickers, err := s.tickers(ctx)
 	if err != nil {
-		return Board{}, err
+		return nil, 0, 0, 0, err
+	}
+	btcChange := 0.0
+	for _, t := range tickers {
+		if t.Symbol == "BTCUSDT" {
+			btcChange = t.ChangePct
+			break
+		}
 	}
 	// Gates first: liquid, rising, crypto-only markets.
 	candidates := make([]ticker, 0, len(tickers))
@@ -242,21 +366,12 @@ func (s *Screener) scan(ctx context.Context) (Board, error) {
 		}
 		candidates = append(candidates, t)
 	}
-	btcChange := 0.0
-	for _, t := range tickers {
-		if t.Symbol == "BTCUSDT" {
-			btcChange = t.ChangePct
-			break
-		}
-	}
-	board := Board{Scanned: len(tickers), Candidates: len(candidates), FetchedAt: time.Now()}
 	sort.SliceStable(candidates, func(a, b int) bool { return candidates[a].ChangePct > candidates[b].ChangePct })
 	if len(candidates) > candidateLimit {
 		candidates = candidates[:candidateLimit]
 	}
 	if len(candidates) == 0 {
-		board.Reason = "no liquid gainer right now"
-		return board, nil
+		return map[string]symbolSnapshot{}, len(tickers), 0, btcChange, nil
 	}
 
 	// Stage one: 5m candles, to rank by speed and volume before spending the
@@ -293,16 +408,13 @@ func (s *Screener) scan(ctx context.Context) (Board, error) {
 	if len(kept) > refineLimit {
 		kept = kept[:refineLimit]
 	}
-	if len(kept) == 0 {
-		board.Reason = "candle data unavailable for the gainers"
-		return board, nil
-	}
 
 	// Stage two: the trend frame and open interest.
 	funding := s.fundingRates(ctx)
 	type refined struct {
-		row Row
-		ok  bool
+		symbol string
+		snap   symbolSnapshot
+		ok     bool
 	}
 	out := make([]refined, len(kept))
 	for i, o := range kept {
@@ -316,39 +428,21 @@ func (s *Screener) scan(ctx context.Context) (Board, error) {
 				return
 			}
 			oi, oiErr := s.oiChange1h(ctx, o.t.Symbol)
-			row, ok := Evaluate(Input{
-				Symbol: o.t.Symbol, Price: o.t.Price, Change24h: o.t.ChangePct, Volume24h: o.t.QuoteVolume,
-				Bars5m: o.bars, Bars1h: hourly, OIChange1h: oi, OIKnown: oiErr == nil, Funding: funding[o.t.Symbol],
-				BTCChange24h: btcChange,
-			})
-			out[i] = refined{row: row, ok: ok}
+			out[i] = refined{symbol: o.t.Symbol, ok: true, snap: symbolSnapshot{
+				Bars5m: o.bars, Bars1h: hourly, OIChange1h: oi, OIKnown: oiErr == nil,
+				Funding: funding[o.t.Symbol], Price: o.t.Price, Change24h: o.t.ChangePct, Volume24h: o.t.QuoteVolume,
+			}}
 		}(i, o)
 	}
 	wg.Wait()
 
-	rows := make([]Row, 0, len(out))
+	snaps := make(map[string]symbolSnapshot, len(out))
 	for _, r := range out {
-		if !r.ok || r.row.DistanceHigh > MaxDistanceHigh {
-			continue
+		if r.ok {
+			snaps[r.symbol] = r.snap
 		}
-		rows = append(rows, r.row)
 	}
-	// Ordered by momentum, not by the risk-adjusted score: burying a coin
-	// that is in the middle of a move is exactly what this board must not do.
-	sort.SliceStable(rows, func(a, b int) bool { return rows[a].Strength > rows[b].Strength })
-	board.Rows = rows
-	if len(rows) == 0 {
-		board.Reason = "no coin passed the gates"
-	}
-	return board, nil
-}
-
-// ScanAll runs a pass and returns every refined row, not just the top of the
-// board. Probes and backtests use it to see where a coin placed.
-func (s *Screener) ScanAll(ctx context.Context) (Board, error) {
-	scanCtx, cancel := context.WithTimeout(ctx, scanTimeout)
-	defer cancel()
-	return s.scan(scanCtx)
+	return snaps, len(tickers), len(candidates), btcChange, nil
 }
 
 // preScore ranks stage-one candidates by the two parts that need only 5m
