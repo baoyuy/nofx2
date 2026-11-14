@@ -11,6 +11,7 @@ import {
   type MainIndicator,
   type SubIndicator,
 } from '../components/market/BinanceChart'
+import { DEFAULT_LINE_KINDS, LINE_META, type LineKind, type LineKinds } from '../utils/chartAnalysis'
 import { AiPanel } from '../components/market/AiPanel'
 import { AutoPanel } from '../components/market/AutoPanel'
 import {
@@ -52,7 +53,8 @@ export function MarketPage() {
     const saved = loadPref('main', 'MA') as MainIndicator
     return mains.includes(saved) ? saved : 'MA'
   })
-  const [autoLines, setAutoLines] = useState(true)
+  const [lineKinds, setLineKinds] = useState<LineKinds>(DEFAULT_LINE_KINDS)
+  const [showLinePanel, setShowLinePanel] = useState(false)
   const [subs, setSubs] = useState<SubIndicator[]>(() =>
     loadPref('subs', 'VOL,MACD')
       .split(',')
@@ -281,14 +283,31 @@ export function MarketPage() {
               <span className="mx-2 h-4 w-px bg-[rgba(25,36,52,0.14)]" />
               <button
                 type="button"
-                aria-pressed={autoLines}
-                className={tab(autoLines)}
-                onClick={() => setAutoLines((v) => !v)}
-                title={tr(language, '自动画支撑/阻力、趋势线、通道、斐波那契', 'Auto support/resistance, trend, channel, Fibonacci')}
+                aria-pressed={showLinePanel}
+                className={tab(showLinePanel)}
+                onClick={() => setShowLinePanel((v) => !v)}
+                title={tr(language, '选择要画的线', 'Choose which lines to draw')}
               >
-                {tr(language, '自动划线', 'Auto lines')}
+                {tr(language, '划线设置', 'Lines')}
               </button>
             </div>
+            {showLinePanel ? (
+              <div className="mt-2 grid grid-cols-1 gap-x-4 gap-y-1 rounded-lg border border-[rgba(25,36,52,0.12)] p-2 text-xs sm:grid-cols-2 lg:grid-cols-3">
+                {(Object.keys(LINE_META) as LineKind[]).map((k) => (
+                  <label key={k} className="flex cursor-pointer items-start gap-2 py-0.5" title={LINE_META[k].desc}>
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={lineKinds[k]}
+                      onChange={(e) => setLineKinds((prev) => ({ ...prev, [k]: e.target.checked }))}
+                    />
+                    <span className="inline-block h-2.5 w-2.5 flex-none rounded-full" style={{ background: LINE_META[k].color }} />
+                    <span className="text-nofx-text">{LINE_META[k].label}</span>
+                    <span className="text-nofx-text-muted">{LINE_META[k].desc}</span>
+                  </label>
+                ))}
+              </div>
+            ) : null}
             {loadError && candles.length === 0 ? (
               <div
                 role="alert"
@@ -312,7 +331,7 @@ export function MarketPage() {
                 subs={subs}
                 levels={levels}
                 resetKey={key}
-                autoLines={autoLines}
+                lineKinds={lineKinds}
                 height={440 + subs.length * 110}
               />
             )}

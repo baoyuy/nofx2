@@ -23,7 +23,13 @@ import {
   type Time,
   type UTCTimestamp,
 } from 'lightweight-charts'
-import { analyzeChart, type ChartAnalysis } from '../../utils/chartAnalysis'
+import {
+  DEFAULT_LINE_KINDS,
+  LINE_META,
+  analyzeChart,
+  type ChartAnalysis,
+  type LineKinds,
+} from '../../utils/chartAnalysis'
 import {
   boll,
   ema,
@@ -82,8 +88,8 @@ interface Props {
   overlay?: (p: ChartProjector) => ReactNode
   resetKey: string // changes when symbol/interval changes, to refit the view
   height?: number
-  /** Auto-drawn support/resistance, trend, channel and Fibonacci lines. */
-  autoLines?: boolean
+  /** Which auto-drawn line kinds to show. */
+  lineKinds?: LineKinds
 }
 
 /** Maps candle time and price to pixels in the K-line pane. */
@@ -214,7 +220,7 @@ export function BinanceChart({
   overlay,
   resetKey,
   height = 620,
-  autoLines = true,
+  lineKinds = DEFAULT_LINE_KINDS,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -570,8 +576,8 @@ export function BinanceChart({
   // Re-project after every view move and data change (the chart updates
   // its coordinates synchronously in setData and range changes).
   const [proj, setProj] = useState<ChartProjector | null>(null)
-  const hasOverlay = Boolean(overlay || autoLines)
-  const analysis = useMemo(() => (autoLines ? analyzeChart(candles) : null), [autoLines, candles])
+  const hasOverlay = Boolean(overlay || Object.values(lineKinds).some(Boolean))
+  const analysis = useMemo(() => analyzeChart(candles), [candles])
   useEffect(() => {
     const chart = chartRef.current
     const s = seriesRef.current
@@ -601,7 +607,7 @@ export function BinanceChart({
           style={{ width: proj.width, height: proj.height }}
         >
           {overlay?.(proj)}
-          {analysis ? <AutoLines proj={proj} data={analysis} /> : null}
+          {analysis ? <AutoLines proj={proj} data={analysis} kinds={lineKinds} /> : null}
         </div>
       ) : null}
       {legends.map((items, i) => (
@@ -621,45 +627,55 @@ export function BinanceChart({
   )
 }
 
-const SR_COLOR = { s: '#2e8b57', r: '#d6433a', trend: '#7c3aed', channel: '#295be8', fib: '#d97706' }
-
-/** Draws the analysed levels and lines in chart pixel space. */
-function AutoLines({ proj, data }: { proj: ChartProjector; data: ChartAnalysis }) {
+/** Draws the analysed lines in chart pixel space, only the enabled kinds. */
+function AutoLines({ proj, data, kinds }: { proj: ChartProjector; data: ChartAnalysis; kinds: LineKinds }) {
   const W = proj.width
   const nodes: ReactNode[] = []
-  const price = (v: number) => (v >= 100 ? v.toFixed(2) : v.toFixed(5))
+  const fmt = (v: number) => (v >= 100 ? v.toFixed(2) : v.toFixed(5))
 
   const hline = (key: string, value: number, color: string, label: string, dashed = false) => {
     const y = proj.y(value)
     if (y == null) return
     nodes.push(
       <g key={key}>
-        <line x1={0} x2={W} y1={y} y2={y} stroke={color} strokeWidth={1} strokeDasharray={dashed ? '4 4' : undefined} opacity={0.75} />
-        <text x={W - 4} y={y - 3} textAnchor="end" fontSize={9} fill={color} opacity={0.9}>
-          {label} {price(value)}
+        <line x1={0} x2={W} y1={y} y2={y} stroke={color} strokeWidth={1} strokeDasharray={dashed ? '5 4' : undefined} opacity={0.8} />
+        <text x={W - 4} y={y - 3} textAnchor="end" fontSize={9} fill={color} opacity={0.95}>
+          {label} {fmt(value)}
         </text>
       </g>
     )
   }
-  const seg = (key: string, a: { time: number; price: number }, b: { time: number; price: number }, color: string, dashed = false) => {
+  const seg = (key: string, a: { time: number; price: number }, b: { time: number; price: number }, color: string, label?: string, dashed = false) => {
     const x1 = proj.x(a.time)
     const y1 = proj.y(a.price)
     const x2 = proj.x(b.time)
     const y2 = proj.y(b.price)
     if (x1 == null || y1 == null || x2 == null || y2 == null) return
     nodes.push(
-      <line key={key} x1={x1} y1={y1} x2={x2} y2={y2} stroke={color} strokeWidth={1.5} strokeDasharray={dashed ? '6 4' : undefined} opacity={0.85} />
+      <line key={key} x1={x1} y1={y1} x2={x2} y2={y2} stroke={color} strokeWidth={1.5} strokeDasharray={dashed ? '6 4' : undefined} opacity={0.9} />
     )
+    if (label) {
+      nodes.push(
+        <text key={`${key}-t`} x={Math.min(Math.max(x2, 20), W - 4)} y={y2 - 4} textAnchor="end" fontSize={9} fill={color} opacity={0.95}>
+          {label}
+        </text>
+      )
+    }
   }
 
-  data.resistances.forEach((l, i) => hline(`r${i}`, l.price, SR_COLOR.r, `R${i + 1}`))
-  data.supports.forEach((l, i) => hline(`s${i}`, l.price, SR_COLOR.s, `S${i + 1}`))
-  data.fib?.levels.forEach((l) => hline(`f${l.ratio}`, l.price, SR_COLOR.fib, `${(l.ratio * 100).toFixed(1)}%`, true))
-  if (data.trend) seg('trend', data.trend.a, data.trend.b, SR_COLOR.trend)
-  if (data.channel) {
-    seg('chU', data.channel.upper[0], data.channel.upper[1], SR_COLOR.channel, true)
-    seg('chL', data.channel.lower[0], data.channel.lower[1], SR_COLOR.channel, true)
+  if (kinds.resistance) data.resistances.forEach((l, i) => hline(`r${i}`, l.price, LINE_META.resistance.color, '阻力'))
+  if (kinds.support) data.supports.forEach((l, i) => hline(`s${i}`, l.price, LINE_META.support.color, '支撑'))
+  if (kinds.fib) data.fib?.levels.forEach((l) => hline(`f${l.ratio}`, l.price, LINE_META.fib.color, `${(l.ratio * 100).toFixed(1)}%`, true))
+  if (kinds.horizontal) data.horizontals.forEach((v, i) => hline(`h${i}`, v, LINE_META.horizontal.color, '整数', true))
+  if (kinds.neckline && data.neckline) hline('neckline', data.neckline.price, LINE_META.neckline.color, '颈线', true)
+  if (kinds.trend && data.trend) seg('trend', data.trend.a, data.trend.b, LINE_META.trend.color, '趋势')
+  if (kinds.channel && data.channel) {
+    seg('chU', data.channel.upper.a, data.channel.upper.b, LINE_META.channel.color, '通道', true)
+    seg('chL', data.channel.lower.a, data.channel.lower.b, LINE_META.channel.color, undefined, true)
   }
+  if (kinds.gann && data.gann) data.gann.forEach((g, i) => seg(`gann${i}`, g.a, g.b, LINE_META.gann.color, i === 1 ? '江恩' : undefined, true))
+  if (kinds.pitchfork && data.pitchfork) data.pitchfork.forEach((g, i) => seg(`pf${i}`, g.a, g.b, LINE_META.pitchfork.color, i === 1 ? '音叉' : undefined, true))
+
   return (
     <svg width={W} height={proj.height} className="absolute inset-0" aria-hidden>
       {nodes}
