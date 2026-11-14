@@ -46,6 +46,12 @@ function BandTable({
           <th className="text-right font-normal">
             {tr(language, '持续率', 'Sustained')}
           </th>
+          <th className="text-right font-normal" title={tr(language, '4 小时内再涨 20% 以上的比例', 'share that rose 20%+ within 4h')}>
+            {tr(language, '涨20%', '+20%')}
+          </th>
+          <th className="text-right font-normal" title={tr(language, '4 小时内跌 15% 以上的比例', 'share that fell 15%+ within 4h')}>
+            {tr(language, '跌15%', '-15%')}
+          </th>
         </tr>
       </thead>
       <tbody className="text-nofx-text">
@@ -63,6 +69,12 @@ function BandTable({
               <td className="text-right tabular-nums">{thin ? '—' : signedPct(r.avg_dd_4h)}</td>
               <td className="text-right font-semibold tabular-nums">
                 {thin ? '—' : pct(r.sustained)}
+              </td>
+              <td className="text-right tabular-nums" style={{ color: r.big_up >= 0.12 ? '#16a34a' : undefined }}>
+                {thin ? '—' : pct(r.big_up)}
+              </td>
+              <td className="text-right tabular-nums" style={{ color: r.big_down >= 0.15 ? '#dc2626' : undefined }}>
+                {thin ? '—' : pct(r.big_down)}
               </td>
             </tr>
           )

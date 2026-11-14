@@ -225,6 +225,11 @@ type BandStat struct {
 	AvgDD4h     float64 `json:"avg_dd_4h"`
 	// Sustained is the share that rose over 4h without a 3% drawdown.
 	Sustained float64 `json:"sustained"`
+	// Tail probabilities: how often the call went on to a big move, and how
+	// often it fell hard. These answer "can it explode" far better than the
+	// mean, which a handful of outliers dominate.
+	BigUp   float64 `json:"big_up"`   // remaining >= +20%
+	BigDown float64 `json:"big_down"` // remaining <= -15%
 }
 
 // TagStat is one signal tag's measured outcome.
@@ -250,6 +255,7 @@ type accAcc struct {
 	// its 4h result is still pending.
 	n1, n4, n24                      int
 	up1, up4, up24, beat4, sustained int
+	bigUp, bigDown                   int
 	excess, dd                       float64
 }
 
@@ -270,6 +276,12 @@ func (a *accAcc) add(row store.ExplosiveSignal) {
 		}
 		if *row.Ret4h > 0 && row.MaxDD4h != nil && *row.MaxDD4h > sustainedFloor {
 			a.sustained++
+		}
+		if *row.Ret4h >= 0.20 {
+			a.bigUp++
+		}
+		if *row.Ret4h <= -0.15 {
+			a.bigDown++
 		}
 	}
 	if row.Ret1h != nil {
@@ -302,6 +314,8 @@ func (a *accAcc) stat(band string) BandStat {
 	s.AvgExcess4h = a.excess / float64(a.n4)
 	s.AvgDD4h = a.dd / float64(a.n4)
 	s.Sustained = float64(a.sustained) / float64(a.n4)
+	s.BigUp = float64(a.bigUp) / float64(a.n4)
+	s.BigDown = float64(a.bigDown) / float64(a.n4)
 	return s
 }
 

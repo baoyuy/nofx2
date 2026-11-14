@@ -89,6 +89,10 @@ export interface BandStat {
   avg_dd_4h: number
   /** rose over 4h without a 3% drawdown */
   sustained: number
+  /** 4h return >= +20% */
+  big_up: number
+  /** 4h return <= -15% */
+  big_down: number
 }
 
 export interface TagStat {

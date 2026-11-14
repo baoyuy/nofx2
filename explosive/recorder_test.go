@@ -201,3 +201,31 @@ func TestHotGainersDoNotCauseAnEndlessRescan(t *testing.T) {
 		t.Fatal("a scan that just ran must not be repeated")
 	}
 }
+
+func TestAccuracyReportsTailProbabilities(t *testing.T) {
+	r := testRecorder(t)
+	now := time.Now()
+	ts := now.Add(-5 * time.Hour).Unix()
+	bench := 0.0
+	dd := -0.01
+	big := 0.30
+	small := 0.02
+	crash := -0.20
+	err := r.store.SaveSignals([]store.ExplosiveSignal{
+		{TS: ts, Symbol: "A", PredictedRemaining: 15, Rank: 1, Ret4h: &big, Bench4h: &bench, MaxDD4h: &dd, Done4h: true},
+		{TS: ts, Symbol: "B", PredictedRemaining: 15, Rank: 2, Ret4h: &small, Bench4h: &bench, MaxDD4h: &dd, Done4h: true},
+		{TS: ts, Symbol: "C", PredictedRemaining: 15, Rank: 3, Ret4h: &crash, Bench4h: &bench, MaxDD4h: &dd, Done4h: true},
+		{TS: ts, Symbol: "D", PredictedRemaining: 15, Rank: 4, Ret4h: &small, Bench4h: &bench, MaxDD4h: &dd, Done4h: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acc, err := r.Accuracy(30, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := acc.Bands[0]
+	if b.Samples != 4 || b.BigUp != 0.25 || b.BigDown != 0.25 {
+		t.Fatalf("tail probabilities: %+v", b)
+	}
+}
