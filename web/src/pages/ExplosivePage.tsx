@@ -124,11 +124,18 @@ export function ExplosivePage() {
     () => explosiveApi.board(),
     { refreshInterval: 2000, revalidateOnFocus: false, keepPreviousData: true, dedupingInterval: 1200 }
   )
-  const rows = data?.rows || []
+  const ambushRows = data?.rows || []
   const blasted = data?.blasted || []
   const radar = data?.radar || []
+  // Everything on the board: ambush coins plus the ones that already ran
+  // (they show an "已爆发" tag instead of disappearing).
+  const rows = useMemo(() => {
+    const merged = [...ambushRows, ...blasted]
+    merged.sort((a, b) => (b.predicted_final ?? 0) - (a.predicted_final ?? 0))
+    return merged
+  }, [ambushRows, blasted])
   const current = selected || rows[0]?.symbol || ''
-  const allRows = useMemo(() => [...rows, ...radar, ...blasted], [rows, radar, blasted])
+  const allRows = useMemo(() => [...rows, ...radar], [rows, radar])
   const row = useMemo(() => allRows.find((r) => r.symbol === current) || null, [allRows, current])
 
   const { data: candles = [] } = useSWR(
@@ -270,6 +277,11 @@ export function ExplosivePage() {
           title={tr(language, `可交易性：${r.tradability}`, `Tradability: ${r.tradability}`)}
           style={{ background: r.tradability === 'good' ? BN.up : r.tradability === 'fair' ? '#b45309' : BN.down }}
         />
+        {r.ran ? (
+          <span className="rounded bg-nofx-danger/15 px-1 text-[10px] font-semibold text-nofx-danger" title={tr(language, '今日已涨 50% 以上，不宜追高', 'Up 50%+ today; not an entry')}>
+            {tr(language, '已爆发', 'RAN')}
+          </span>
+        ) : null}
         {r.reversal ? (
           <span
             className="rounded bg-[#7c3aed]/15 px-1 text-[10px] font-semibold text-[#7c3aed]"
