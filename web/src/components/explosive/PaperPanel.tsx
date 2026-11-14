@@ -86,6 +86,7 @@ function TradesTable({ language, trades, closed }: { language: string; trades: P
           {trades.map((t) => (
             <tr key={t.id} className={`border-t ${ui.border}`}>
               <td className="px-2 py-1.5 font-medium">{t.symbol.replace('USDT', '')}</td>
+              <td className="px-2">{t.side === 'short' ? '空' : '多'}</td>
               <td className="px-2 text-right tabular-nums">{price(t.entry_price)}</td>
               <td className="px-2 text-right tabular-nums">{closed ? price(t.exit_price) : '—'}</td>
               <td className="px-2 text-right tabular-nums">{Math.round(t.notional)}</td>
@@ -112,6 +113,7 @@ function OpenTable({ language, positions }: { language: string; positions: OpenP
         <thead className="text-left text-xs text-nofx-text-muted">
           <tr>
             <th className="px-2 py-1.5 font-normal">{tr(language, '币种', 'Coin')}</th>
+            <th className="px-2 font-normal">{tr(language, '方向', 'Side')}</th>
             <th className="px-2 text-right font-normal">{tr(language, '入场价', 'Entry')}</th>
             <th className="px-2 text-right font-normal">{tr(language, '现价', 'Now')}</th>
             <th className="px-2 text-right font-normal">{tr(language, '止损', 'Stop')}</th>
@@ -145,7 +147,7 @@ function OpenTable({ language, positions }: { language: string; positions: OpenP
   )
 }
 
-function SettingsForm({ language, settings, onSaved }: { language: string; settings: PaperSettings; onSaved: () => void }) {
+function SettingsForm({ language, accountId, settings, onSaved }: { language: string; accountId: number; settings: PaperSettings; onSaved: () => void }) {
   const [s, setS] = useState<PaperSettings>(settings)
   const [busy, setBusy] = useState(false)
   useEffect(() => setS(settings), [settings])
@@ -153,7 +155,7 @@ function SettingsForm({ language, settings, onSaved }: { language: string; setti
   const save = async () => {
     setBusy(true)
     try {
-      await explosiveApi.updatePaperSettings(s)
+      await explosiveApi.updatePaperSettings({ ...s, account_id: accountId })
       onSaved()
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e))
@@ -224,6 +226,19 @@ function SettingsForm({ language, settings, onSaved }: { language: string; setti
         {field(tr(language, '平仓冷却', 'Cooldown'), tr(language, '同一币平仓后等几分钟才能再买', 'minutes before re-entering the same coin'), 'cooldown_min', 1, 0, 1440, tr(language, '分钟', 'min'))}
         {field(tr(language, '移动止损启动', 'Trail start'), tr(language, '浮盈超过几倍 ATR 后开始移动止损', 'start trailing after +N ATR'), 'trail_start_atr', 0.1, 0.1, 5, '×ATR')}
         {field(tr(language, '移动止损回撤', 'Trail gap'), tr(language, '移动止损跟在最高价后面几倍 ATR', 'trail this many ATR behind the high'), 'trail_atr', 0.1, 0.1, 5, '×ATR')}
+        {field(tr(language, '首段止盈', 'TP1'), tr(language, '分批止盈的第一段目标（×ATR）', 'first partial take-profit in ATR'), 'tp1_atr', 0.1, 0.3, 10, '×ATR')}
+        {fieldPct(tr(language, '首段比例', 'TP1 fraction'), tr(language, '第一段平掉多少仓位', 'fraction closed at TP1'), 'tp1_fraction', 5, 10, 100)}
+        {field(tr(language, '做空涨幅下限', 'Short min gain'), tr(language, '今日涨幅超过多少才考虑做空（需开启做空）', 'day gain % before a fade short'), 'short_min_gain', 1, 0, 100, '%')}
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+        <label className="flex items-center gap-2" title={tr(language, '涨幅高但 5m 转弱时开空（逆势，风险高）', 'Short high-gain coins that are rolling over (counter-trend, risky)')}>
+          <input type="checkbox" checked={!!s.allow_short} onChange={(e) => setS((p) => ({ ...p, allow_short: e.target.checked }))} />
+          {tr(language, '允许做空', 'Allow shorts')}
+        </label>
+        <label className="flex items-center gap-2" title={tr(language, '到首段止盈先平一部分，剩余仓位跑满第二目标', 'Close part at TP1, let the rest run to TP2')}>
+          <input type="checkbox" checked={!!s.partial_tp} onChange={(e) => setS((p) => ({ ...p, partial_tp: e.target.checked }))} />
+          {tr(language, '分批止盈', 'Partial take-profit')}
+        </label>
       </div>
       <label className="mt-2 flex items-center gap-2 text-xs" title={tr(language, '勾选：量能突增和 OI 增加都要满足（严格）；不勾：满足其一即可（宽松）', 'Checked: need BOTH volume spike and OI rise (strict). Unchecked: either one (loose).')}>
         <input
@@ -259,7 +274,7 @@ export function PaperPanel({ language }: { language: string }) {
     refreshInterval: 10000,
     revalidateOnFocus: false,
   })
-  const { data: settings, mutate: mutSettings } = useSWR('market/explosive/paper/settings', () => explosiveApi.paperSettings(), {
+  const { data: settings, mutate: mutSettings } = useSWR(['market/explosive/paper/settings', accId], () => explosiveApi.paperSettings(accId), {
     revalidateOnFocus: false,
   })
   const { data, error, mutate } = useSWR(['market/explosive/paper', accId], () => explosiveApi.paper(accId), {
@@ -347,6 +362,7 @@ export function PaperPanel({ language }: { language: string }) {
           <div className="mb-2">
             <SettingsForm
               language={language}
+              accountId={accId}
               settings={settings}
               onSaved={() => {
                 void mutSettings()

@@ -99,7 +99,8 @@ func (s *Server) handleExplosivePaperGetSettings(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{})
 		return
 	}
-	c.JSON(http.StatusOK, s.explosivePaper.Settings())
+	accID, _ := strconv.ParseInt(c.DefaultQuery("account_id", "0"), 10, 64)
+	c.JSON(http.StatusOK, s.explosivePaper.Settings(accID))
 }
 
 func (s *Server) handleExplosivePaperUpdateSettings(c *gin.Context) {
@@ -112,7 +113,7 @@ func (s *Server) handleExplosivePaperUpdateSettings(c *gin.Context) {
 		SafeBadRequest(c, "Invalid request parameters")
 		return
 	}
-	c.JSON(http.StatusOK, s.explosivePaper.UpdateSettings(req))
+	c.JSON(http.StatusOK, s.explosivePaper.UpdateSettings(req.AccountID, req))
 }
 
 func (s *Server) recorder() *explosive.Recorder {

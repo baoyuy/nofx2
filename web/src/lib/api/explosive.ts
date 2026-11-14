@@ -169,6 +169,7 @@ export interface PaperEquityPoint {
 export interface OpenPosition {
   id: number
   symbol: string
+  side: string
   entry_price: number
   current_price: number
   stop_price: number
@@ -186,6 +187,7 @@ export interface OpenPosition {
 
 export interface PaperSettings {
   id: number
+  account_id: number
   risk_pct: number
   stop_atr: number
   target_atr: number
@@ -204,6 +206,11 @@ export interface PaperSettings {
   cooldown_min: number
   trail_start_atr: number
   trail_atr: number
+  allow_short: boolean
+  short_min_gain: number
+  partial_tp: boolean
+  tp1_atr: number
+  tp1_fraction: number
   updated_at: number
 }
 
@@ -262,10 +269,10 @@ export const explosiveApi = {
     return unwrap(r, 'Failed to load paper account')
   },
 
-  async paperSettings(): Promise<PaperSettings> {
+  async paperSettings(accountId = 0): Promise<PaperSettings> {
     const r = await httpClient.request<PaperSettings>(
       `${API_BASE}/market/explosive/paper/settings`,
-      { silent: true, timeout: 20000 }
+      { params: { account_id: accountId }, silent: true, timeout: 20000 }
     )
     return unwrap(r, 'Failed to load paper settings')
   },

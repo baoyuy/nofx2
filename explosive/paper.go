@@ -34,6 +34,11 @@ type PaperConfig struct {
 	GainMin           float64
 	GainMax           float64
 	OIRequired        bool
+	AllowShort        bool
+	ShortMinGain      float64
+	PartialTP         bool
+	TP1ATR            float64
+	TP1Fraction       float64
 }
 
 // DefaultPaperConfig is a conservative short-term long-only rule.
@@ -45,6 +50,7 @@ func DefaultPaperConfig() PaperConfig {
 		MinVolSpike: 3, Leverage: 5, SlippageBps: 5, MaxVolumePct: 0.01, MaxGrossX: 1.0,
 		DailyLossLimitPct: 3, CooldownMin: 30, TrailStartATR: 1.0, TrailATR: 0.8,
 		GainMin: 0.02, GainMax: 0.30, OIRequired: false,
+		AllowShort: false, ShortMinGain: 0.15, PartialTP: true, TP1ATR: 1.5, TP1Fraction: 0.5,
 	}
 }
 
@@ -60,139 +66,148 @@ type PaperTrader struct {
 }
 
 func NewPaperTrader(st *store.PaperStore, cfg PaperConfig) *PaperTrader {
-	p := &PaperTrader{cfg: cfg, store: st, lastPrices: make(map[string]float64)}
-	p.applyStoredSettings()
-	return p
+	return &PaperTrader{cfg: cfg, store: st, lastPrices: make(map[string]float64)}
 }
 
-// applyStoredSettings overlays the user-tuned 量化 settings onto the defaults.
-// A zero risk means "never saved", so the defaults stay.
-func (p *PaperTrader) applyStoredSettings() {
-	s, err := p.store.GetSettings()
-	if err != nil || s.RiskPct <= 0 {
-		return
-	}
-	p.cfg.RiskPerTrade = s.RiskPct / 100
-	if s.StopATR > 0 {
-		p.cfg.StopATR = s.StopATR
-	}
-	if s.TargetATR > 0 {
-		p.cfg.TargetATR = s.TargetATR
-	}
-	if s.MaxPositions > 0 {
-		p.cfg.MaxPositions = s.MaxPositions
-	}
-	if s.MaxNotionalX > 0 {
-		p.cfg.MaxNotionalX = s.MaxNotionalX
-	}
-	if s.MinVolSpike > 0 {
-		p.cfg.MinVolSpike = s.MinVolSpike
-	}
-	if s.Leverage > 0 {
-		p.cfg.Leverage = s.Leverage
-	}
-	if s.SlippageBps > 0 {
-		p.cfg.SlippageBps = s.SlippageBps
-	}
-	if s.MaxVolumePct > 0 {
-		p.cfg.MaxVolumePct = s.MaxVolumePct
-	}
-	if s.MaxGrossX > 0 {
-		p.cfg.MaxGrossX = s.MaxGrossX
-	}
-	if s.DailyLossLimitPct > 0 {
-		p.cfg.DailyLossLimitPct = s.DailyLossLimitPct
-	}
-	if s.CooldownMin > 0 {
-		p.cfg.CooldownMin = s.CooldownMin
-	}
-	if s.TrailStartATR > 0 {
-		p.cfg.TrailStartATR = s.TrailStartATR
-	}
-	if s.TrailATR > 0 {
-		p.cfg.TrailATR = s.TrailATR
-	}
-	if s.TimeStopHours > 0 {
-		p.cfg.TimeStopHours = s.TimeStopHours
-	}
-	if s.GainMinPct > 0 {
-		p.cfg.GainMin = s.GainMinPct / 100
-	}
-	if s.GainMaxPct > 0 {
-		p.cfg.GainMax = s.GainMaxPct / 100
-	}
-	p.cfg.OIRequired = s.OIRequired
-}
-
-// Settings returns the effective rule settings for the UI.
-func (p *PaperTrader) Settings() store.ExplosivePaperSettings {
-	s, _ := p.store.GetSettings()
+// overlaySettings applies saved settings on top of a base config.
+func overlaySettings(base PaperConfig, s store.ExplosivePaperSettings) PaperConfig {
 	if s.RiskPct <= 0 {
-		s = store.ExplosivePaperSettings{
-			ID: 1, RiskPct: p.cfg.RiskPerTrade * 100, StopATR: p.cfg.StopATR,
-			TargetATR: p.cfg.TargetATR, MaxPositions: p.cfg.MaxPositions,
-			MaxNotionalX: p.cfg.MaxNotionalX, MinVolSpike: p.cfg.MinVolSpike,
-			TimeStopHours: p.cfg.TimeStopHours,
-			GainMinPct:    p.cfg.GainMin * 100, GainMaxPct: p.cfg.GainMax * 100,
-			OIRequired: p.cfg.OIRequired,
+		return base
+	}
+	base.RiskPerTrade = s.RiskPct / 100
+	set := func(dst *float64, v float64) {
+		if v > 0 {
+			*dst = v
 		}
 	}
-	if s.GainMinPct <= 0 {
-		s.GainMinPct = p.cfg.GainMin * 100
+	set(&base.StopATR, s.StopATR)
+	set(&base.TargetATR, s.TargetATR)
+	set(&base.MaxNotionalX, s.MaxNotionalX)
+	set(&base.MinVolSpike, s.MinVolSpike)
+	set(&base.TimeStopHours, s.TimeStopHours)
+	set(&base.Leverage, s.Leverage)
+	set(&base.SlippageBps, s.SlippageBps)
+	set(&base.MaxVolumePct, s.MaxVolumePct)
+	set(&base.MaxGrossX, s.MaxGrossX)
+	set(&base.DailyLossLimitPct, s.DailyLossLimitPct)
+	set(&base.CooldownMin, s.CooldownMin)
+	set(&base.TrailStartATR, s.TrailStartATR)
+	set(&base.TrailATR, s.TrailATR)
+	if s.ShortMinGain > 0 {
+		base.ShortMinGain = s.ShortMinGain / 100
 	}
-	if s.GainMaxPct <= 0 {
-		s.GainMaxPct = p.cfg.GainMax * 100
+	set(&base.TP1ATR, s.TP1ATR)
+	if s.TP1Fraction > 0 && s.TP1Fraction <= 1 {
+		base.TP1Fraction = s.TP1Fraction
+	}
+	if s.MaxPositions > 0 {
+		base.MaxPositions = s.MaxPositions
+	}
+	if s.GainMinPct > 0 {
+		base.GainMin = s.GainMinPct / 100
+	}
+	if s.GainMaxPct > 0 {
+		base.GainMax = s.GainMaxPct / 100
+	}
+	base.OIRequired = s.OIRequired
+	base.AllowShort = s.AllowShort
+	base.PartialTP = s.PartialTP
+	return base
+}
+
+// cfgFor returns the effective config for one account: its own settings, else
+// the default account's, else the built-in defaults.
+func (p *PaperTrader) cfgFor(accID int64) PaperConfig {
+	if s, err := p.store.GetSettings(accID); err == nil && s.RiskPct > 0 {
+		return overlaySettings(p.cfg, s)
+	}
+	if accID != 0 {
+		if s, err := p.store.GetSettings(0); err == nil && s.RiskPct > 0 {
+			return overlaySettings(p.cfg, s)
+		}
+	}
+	return p.cfg
+}
+
+// Settings returns the effective rule settings for one account.
+func (p *PaperTrader) Settings(accID int64) store.ExplosivePaperSettings {
+	s, _ := p.store.GetSettings(accID)
+	if s.RiskPct <= 0 && accID != 0 {
+		if g, err := p.store.GetSettings(0); err == nil && g.RiskPct > 0 {
+			s = g
+		}
+	}
+	cfg := p.cfgFor(accID)
+	if s.RiskPct <= 0 {
+		s = store.ExplosivePaperSettings{}
+	}
+	if s.RiskPct <= 0 {
+		s.RiskPct = cfg.RiskPerTrade * 100
+	}
+	if s.StopATR <= 0 {
+		s.StopATR = cfg.StopATR
+	}
+	if s.TargetATR <= 0 {
+		s.TargetATR = cfg.TargetATR
+	}
+	if s.MaxPositions <= 0 {
+		s.MaxPositions = cfg.MaxPositions
+	}
+	if s.MaxNotionalX <= 0 {
+		s.MaxNotionalX = cfg.MaxNotionalX
+	}
+	if s.MinVolSpike <= 0 {
+		s.MinVolSpike = cfg.MinVolSpike
+	}
+	if s.TimeStopHours <= 0 {
+		s.TimeStopHours = cfg.TimeStopHours
 	}
 	if s.Leverage <= 0 {
-		s.Leverage = p.cfg.Leverage
+		s.Leverage = cfg.Leverage
 	}
 	if s.SlippageBps <= 0 {
-		s.SlippageBps = p.cfg.SlippageBps
+		s.SlippageBps = cfg.SlippageBps
 	}
 	if s.MaxVolumePct <= 0 {
-		s.MaxVolumePct = p.cfg.MaxVolumePct
+		s.MaxVolumePct = cfg.MaxVolumePct
 	}
 	if s.MaxGrossX <= 0 {
-		s.MaxGrossX = p.cfg.MaxGrossX
+		s.MaxGrossX = cfg.MaxGrossX
 	}
 	if s.DailyLossLimitPct <= 0 {
-		s.DailyLossLimitPct = p.cfg.DailyLossLimitPct
+		s.DailyLossLimitPct = cfg.DailyLossLimitPct
 	}
 	if s.CooldownMin <= 0 {
-		s.CooldownMin = p.cfg.CooldownMin
+		s.CooldownMin = cfg.CooldownMin
 	}
 	if s.TrailStartATR <= 0 {
-		s.TrailStartATR = p.cfg.TrailStartATR
+		s.TrailStartATR = cfg.TrailStartATR
 	}
 	if s.TrailATR <= 0 {
-		s.TrailATR = p.cfg.TrailATR
+		s.TrailATR = cfg.TrailATR
 	}
-	if s.SlippageBps <= 0 {
-		s.SlippageBps = p.cfg.SlippageBps
+	if s.ShortMinGain <= 0 {
+		s.ShortMinGain = cfg.ShortMinGain * 100
 	}
-	if s.MaxVolumePct <= 0 {
-		s.MaxVolumePct = p.cfg.MaxVolumePct
+	if s.TP1ATR <= 0 {
+		s.TP1ATR = cfg.TP1ATR
 	}
-	if s.MaxGrossX <= 0 {
-		s.MaxGrossX = p.cfg.MaxGrossX
+	if s.TP1Fraction <= 0 {
+		s.TP1Fraction = cfg.TP1Fraction
 	}
-	if s.DailyLossLimitPct <= 0 {
-		s.DailyLossLimitPct = p.cfg.DailyLossLimitPct
+	if s.GainMinPct <= 0 {
+		s.GainMinPct = cfg.GainMin * 100
 	}
-	if s.CooldownMin <= 0 {
-		s.CooldownMin = p.cfg.CooldownMin
+	if s.GainMaxPct <= 0 {
+		s.GainMaxPct = cfg.GainMax * 100
 	}
-	if s.TrailStartATR <= 0 {
-		s.TrailStartATR = p.cfg.TrailStartATR
-	}
-	if s.TrailATR <= 0 {
-		s.TrailATR = p.cfg.TrailATR
-	}
+	s.AccountID = accID
 	return s
 }
 
-// UpdateSettings saves user-tuned rule settings and applies them immediately.
-func (p *PaperTrader) UpdateSettings(v store.ExplosivePaperSettings) store.ExplosivePaperSettings {
+// UpdateSettings saves one account's rule settings and applies them.
+func (p *PaperTrader) UpdateSettings(accID int64, v store.ExplosivePaperSettings) store.ExplosivePaperSettings {
+	v.ID, v.AccountID = 0, accID
 	if v.RiskPct < 0.1 {
 		v.RiskPct = 0.1
 	}
@@ -228,12 +243,6 @@ func (p *PaperTrader) UpdateSettings(v store.ExplosivePaperSettings) store.Explo
 	}
 	if v.Leverage > 20 {
 		v.Leverage = 20
-	}
-	if v.GainMinPct < 0 {
-		v.GainMinPct = 0
-	}
-	if v.GainMaxPct <= v.GainMinPct {
-		v.GainMaxPct = v.GainMinPct + 5
 	}
 	if v.SlippageBps < 0 {
 		v.SlippageBps = 0
@@ -271,12 +280,24 @@ func (p *PaperTrader) UpdateSettings(v store.ExplosivePaperSettings) store.Explo
 	if v.TrailATR <= 0 {
 		v.TrailATR = 0.8
 	}
+	if v.GainMinPct < 0 {
+		v.GainMinPct = 0
+	}
+	if v.GainMaxPct <= v.GainMinPct {
+		v.GainMaxPct = v.GainMinPct + 5
+	}
+	if v.ShortMinGain < 0 {
+		v.ShortMinGain = 0
+	}
+	if v.TP1ATR <= 0 {
+		v.TP1ATR = 1.5
+	}
+	if v.TP1Fraction <= 0 || v.TP1Fraction > 1 {
+		v.TP1Fraction = 0.5
+	}
 	v.UpdatedAt = time.Now().UnixMilli()
 	_ = p.store.SaveSettings(&v)
-	p.mu.Lock()
-	p.applyStoredSettings()
-	p.mu.Unlock()
-	return v
+	return p.Settings(accID)
 }
 
 // StartPaper migrates storage, runs the engine until ctx ends, and returns it.
@@ -286,7 +307,7 @@ func StartPaper(ctx context.Context, st *store.PaperStore) *PaperTrader {
 		return nil
 	}
 	p := NewPaperTrader(st, DefaultPaperConfig())
-	logger.Infof("📝 Explosive paper engine started: default equity=%.0f risk=%.2f%% stop=%.1fATR target=%.1fATR",
+	logger.Infof("📝 Explosive paper engine started: equity=%.0f risk=%.2f%% stop=%.1fATR target=%.1fATR",
 		p.cfg.DefaultEquity, p.cfg.RiskPerTrade*100, p.cfg.StopATR, p.cfg.TargetATR)
 	go func() {
 		t := time.NewTicker(p.cfg.Tick)
@@ -302,6 +323,32 @@ func StartPaper(ctx context.Context, st *store.PaperStore) *PaperTrader {
 		}
 	}()
 	return p
+}
+
+func (p *PaperTrader) tick(ctx context.Context) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	board, err := Shared.Board(ctx, false)
+	if err != nil {
+		return
+	}
+	pm := p.priceMap(board)
+	priceOf := func(sym string) float64 {
+		if v, ok := pm[sym]; ok && v > 0 {
+			p.lastPrices[sym] = v
+			return v
+		}
+		if v, ok := Shared.Price(sym); ok && v > 0 {
+			p.lastPrices[sym] = v
+			return v
+		}
+		return 0
+	}
+	now := time.Now()
+	for _, acc := range p.accountList() {
+		p.processAccount(acc, board, priceOf, now)
+	}
+	p.lastTick = now
 }
 
 func (p *PaperTrader) priceMap(b Board) map[string]float64 {
@@ -325,8 +372,6 @@ type paperAccount struct {
 	start float64
 }
 
-// accountList returns the default account (id 0) and every enabled configured
-// paper account.
 func (p *PaperTrader) accountList() []paperAccount {
 	out := []paperAccount{{id: 0, name: "默认模拟盘", start: p.cfg.DefaultEquity}}
 	rows, _ := p.store.Accounts()
@@ -343,39 +388,13 @@ func (p *PaperTrader) accountList() []paperAccount {
 	return out
 }
 
-func (p *PaperTrader) tick(ctx context.Context) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	board, err := Shared.Board(ctx, false)
-	if err != nil {
-		return
-	}
-	p.applyStoredSettings()
-	pm := p.priceMap(board)
-	priceOf := func(sym string) float64 {
-		if v, ok := pm[sym]; ok && v > 0 {
-			p.lastPrices[sym] = v
-			return v
-		}
-		if v, ok := Shared.Price(sym); ok && v > 0 {
-			p.lastPrices[sym] = v
-			return v
-		}
-		return 0
-	}
-	now := time.Now()
-	for _, acc := range p.accountList() {
-		p.processAccount(acc, board, priceOf, now)
-	}
-	p.lastTick = now
-}
-
 func (p *PaperTrader) processAccount(acc paperAccount, board Board, priceOf func(string) float64, now time.Time) {
-	lev := p.cfg.Leverage
+	cfg := p.cfgFor(acc.id)
+	lev := cfg.Leverage
 	if lev < 1 {
 		lev = 1
 	}
-	slip := p.cfg.SlippageBps / 10000
+	slip := cfg.SlippageBps / 10000
 	realized, _ := p.store.RealizedTotal(acc.id)
 	open, _ := p.store.OpenTrades(acc.id)
 	openEntryFees := 0.0
@@ -392,48 +411,116 @@ func (p *PaperTrader) processAccount(acc paperAccount, board Board, priceOf func
 			} else {
 				stillOpen[t.Symbol] = true
 				gross += t.Notional
-				unrealized += (t.Entry - t.Entry) * t.Quantity
 				continue
 			}
 		}
+		isShort := t.Side == "short"
 		atrFrac := t.ATRPct / 100
-		if t.Extreme < t.Entry {
+		if t.Extreme <= 0 {
 			t.Extreme = t.Entry
 		}
-		if pr > t.Extreme {
+		if isShort {
+			if pr < t.Extreme {
+				t.Extreme = pr
+			}
+		} else if pr > t.Extreme {
 			t.Extreme = pr
 		}
-		// Trailing stop: after the trade runs TrailStartATR in favour, trail
-		// the stop TrailATR behind the best price.
-		if atrFrac > 0 && (t.Extreme/t.Entry-1) >= p.cfg.TrailStartATR*atrFrac {
-			if ns := t.Extreme * (1 - p.cfg.TrailATR*atrFrac); ns > t.Stop {
-				t.Stop = ns
-				_ = p.store.SaveTrade(t)
+		// Trailing stop.
+		if atrFrac > 0 {
+			if isShort {
+				if (1 - t.Extreme/t.Entry) >= cfg.TrailStartATR*atrFrac {
+					if ns := t.Extreme * (1 + cfg.TrailATR*atrFrac); ns < t.Stop {
+						t.Stop = ns
+						_ = p.store.SaveTrade(t)
+					}
+				}
+			} else if (t.Extreme/t.Entry - 1) >= cfg.TrailStartATR*atrFrac {
+				if ns := t.Extreme * (1 - cfg.TrailATR*atrFrac); ns > t.Stop {
+					t.Stop = ns
+					_ = p.store.SaveTrade(t)
+				}
 			}
 		}
 		liq := t.Entry * (1 - 1/lev)
+		if isShort {
+			liq = t.Entry * (1 + 1/lev)
+		}
+
+		// Partial take-profit at TP1: close a fraction and move the stop to
+		// breakeven; the rest runs to TP2 (Target).
+		if cfg.PartialTP && !t.PartialTaken && t.TP1 > 0 && t.Quantity > 0 {
+			hit := (!isShort && pr >= t.TP1) || (isShort && pr <= t.TP1)
+			if hit {
+				qtyClose := t.InitialQuantity * cfg.TP1Fraction
+				if qtyClose > t.Quantity {
+					qtyClose = t.Quantity
+				}
+				feeShare := t.Fee * cfg.TP1Fraction
+				pnl := (t.TP1 - t.Entry) * qtyClose
+				if isShort {
+					pnl = (t.Entry - t.TP1) * qtyClose
+				}
+				pnl -= feeShare + qtyClose*t.TP1*cfg.FeeRate
+				t.PartialRealized += pnl
+				t.Fee -= feeShare
+				t.Quantity -= qtyClose
+				t.PartialTaken = true
+				if isShort {
+					if t.Stop > t.Entry {
+						t.Stop = t.Entry
+					}
+				} else if t.Stop < t.Entry {
+					t.Stop = t.Entry
+				}
+				_ = p.store.SaveTrade(t)
+				realized += pnl
+			}
+		}
+
 		exit := ""
 		fill := 0.0
-		switch {
-		case pr <= liq:
-			// Liquidation: margin is gone; fill worse than the stop.
-			exit, fill = "liquidated", liq*(1-slip)
-		case pr <= t.Stop:
-			exit = "stop"
-			if pr < t.Stop {
-				fill = pr // gap through the stop
-			} else {
-				fill = t.Stop
+		if isShort {
+			switch {
+			case pr >= liq:
+				exit, fill = "liquidated", liq*(1+slip)
+			case pr >= t.Stop:
+				exit = "stop"
+				if pr > t.Stop {
+					fill = pr
+				} else {
+					fill = t.Stop
+				}
+				fill *= 1 + slip
+			case pr <= t.Target:
+				exit, fill = "target", t.Target
+			case now.Sub(time.UnixMilli(t.OpenedAt)).Hours() >= cfg.TimeStopHours:
+				exit, fill = "time", pr*(1+slip)
 			}
-			fill *= 1 - slip
-		case pr >= t.Target:
-			exit, fill = "target", t.Target // limit fill at target
-		case now.Sub(time.UnixMilli(t.OpenedAt)).Hours() >= p.cfg.TimeStopHours:
-			exit, fill = "time", pr*(1-slip)
+		} else {
+			switch {
+			case pr <= liq:
+				exit, fill = "liquidated", liq*(1-slip)
+			case pr <= t.Stop:
+				exit = "stop"
+				if pr < t.Stop {
+					fill = pr
+				} else {
+					fill = t.Stop
+				}
+				fill *= 1 - slip
+			case pr >= t.Target:
+				exit, fill = "target", t.Target
+			case now.Sub(time.UnixMilli(t.OpenedAt)).Hours() >= cfg.TimeStopHours:
+				exit, fill = "time", pr*(1-slip)
+			}
 		}
-		if exit != "" {
-			exitFee := t.Quantity * fill * p.cfg.FeeRate
+		if exit != "" && t.Quantity > 0 {
+			exitFee := t.Quantity * fill * cfg.FeeRate
 			pnl := (fill-t.Entry)*t.Quantity - t.Fee - exitFee
+			if isShort {
+				pnl = (t.Entry-fill)*t.Quantity - t.Fee - exitFee
+			}
 			t.Status, t.ClosedAt, t.ExitPrice, t.ExitReason = "closed", now.UnixMilli(), fill, exit
 			t.Fee += exitFee
 			t.Realized = pnl
@@ -444,18 +531,20 @@ func (p *PaperTrader) processAccount(acc paperAccount, board Board, priceOf func
 		stillOpen[t.Symbol] = true
 		gross += t.Notional
 		openEntryFees += t.Fee
-		unrealized += (pr - t.Entry) * t.Quantity
+		u := (pr - t.Entry) * t.Quantity
+		if isShort {
+			u = (t.Entry - pr) * t.Quantity
+		}
+		unrealized += u
 	}
 
 	equity := acc.start + realized + unrealized - openEntryFees
 
-	// Daily loss circuit breaker (Beijing calendar day): once today's loss
-	// (realised + floating) reaches the limit, stop opening new trades.
 	halted := ""
-	if p.cfg.DailyLossLimitPct > 0 {
+	if cfg.DailyLossLimitPct > 0 {
 		dayStart := startOfDayMs(now)
 		realizedToday, _ := p.store.RealizedSince(acc.id, dayStart)
-		limit := acc.start * p.cfg.DailyLossLimitPct / 100
+		limit := acc.start * cfg.DailyLossLimitPct / 100
 		if realizedToday+unrealized-openEntryFees <= -limit {
 			halted = "daily_loss_limit"
 		}
@@ -464,15 +553,24 @@ func (p *PaperTrader) processAccount(acc paperAccount, board Board, priceOf func
 
 	openCount := len(stillOpen)
 	for _, r := range board.Rows {
-		if halted != "" || openCount >= p.cfg.MaxPositions {
+		if halted != "" || openCount >= cfg.MaxPositions {
 			break
 		}
-		if stillOpen[r.Symbol] || !p.entryOK(r) {
+		if stillOpen[r.Symbol] {
 			continue
 		}
-		if p.cfg.CooldownMin > 0 {
+		side := ""
+		if p.entryOK(r, cfg) {
+			side = "long"
+		} else if cfg.AllowShort && r.DayGain >= cfg.ShortMinGain && r.Change5m < 0 && r.Price > 0 {
+			side = "short"
+		}
+		if side == "" {
+			continue
+		}
+		if cfg.CooldownMin > 0 {
 			if last, _ := p.store.LastClosedAt(acc.id, r.Symbol); last > 0 &&
-				now.Sub(time.UnixMilli(last)).Minutes() < p.cfg.CooldownMin {
+				now.Sub(time.UnixMilli(last)).Minutes() < cfg.CooldownMin {
 				continue
 			}
 		}
@@ -480,32 +578,43 @@ func (p *PaperTrader) processAccount(acc paperAccount, board Board, priceOf func
 		if atrFrac <= 0 || r.Price <= 0 {
 			continue
 		}
-		stopDist := p.cfg.StopATR * atrFrac
+		stopDist := cfg.StopATR * atrFrac
 		if stopDist <= 0 || stopDist >= 1 {
 			continue
 		}
-		entry := r.Price * (1 + slip) // taker entry slips against us
-		notional := (equity * p.cfg.RiskPerTrade) / stopDist
-		if capN := equity * p.cfg.MaxNotionalX; notional > capN {
+		entry := r.Price * (1 + slip)
+		if side == "short" {
+			entry = r.Price * (1 - slip)
+		}
+		notional := (equity * cfg.RiskPerTrade) / stopDist
+		if capN := equity * cfg.MaxNotionalX; notional > capN {
 			notional = capN
 		}
-		if r.Volume24h > 0 && p.cfg.MaxVolumePct > 0 {
-			if capV := r.Volume24h * p.cfg.MaxVolumePct; notional > capV {
+		if r.Volume24h > 0 && cfg.MaxVolumePct > 0 {
+			if capV := r.Volume24h * cfg.MaxVolumePct; notional > capV {
 				notional = capV
 			}
 		}
-		if capG := equity*p.cfg.MaxGrossX - gross; notional > capG {
+		if capG := equity*cfg.MaxGrossX - gross; notional > capG {
 			notional = capG
 		}
 		if notional < 10 {
 			continue
 		}
 		qty := notional / entry
-		fee := notional * p.cfg.FeeRate
+		fee := notional * cfg.FeeRate
+		stop := entry * (1 - stopDist)
+		target := entry * (1 + cfg.TargetATR*atrFrac)
+		tp1 := entry * (1 + cfg.TP1ATR*atrFrac)
+		if side == "short" {
+			stop = entry * (1 + stopDist)
+			target = entry * (1 - cfg.TargetATR*atrFrac)
+			tp1 = entry * (1 - cfg.TP1ATR*atrFrac)
+		}
 		t := &store.ExplosivePaperTrade{
-			AccountID: acc.id, Symbol: r.Symbol, Side: "long", OpenedAt: now.UnixMilli(),
-			Entry: entry, Quantity: qty, Notional: notional,
-			Stop: entry * (1 - stopDist), Target: entry * (1 + p.cfg.TargetATR*atrFrac),
+			AccountID: acc.id, Symbol: r.Symbol, Side: side, OpenedAt: now.UnixMilli(),
+			Entry: entry, Quantity: qty, InitialQuantity: qty, Notional: notional,
+			Stop: stop, Target: target, TP1: tp1,
 			ATRPct: r.ATRPct, RiskUSD: notional * stopDist, Fee: fee, Extreme: entry,
 			VolSpike: r.VolSpike1h, OIPct: r.OIChange1h, DayGain: r.DayGain, Status: "open",
 		}
@@ -517,7 +626,7 @@ func (p *PaperTrader) processAccount(acc paperAccount, board Board, priceOf func
 		openCount++
 		gross += notional
 		openEntryFees += fee
-		logger.Infof("📝 paper[%s] open %s @%.6f stop=%.6f target=%.6f risk=%.1fUSD", acc.name, r.Symbol, t.Entry, t.Stop, t.Target, t.RiskUSD)
+		logger.Infof("📝 paper[%s] %s %s @%.6f stop=%.6f target=%.6f", acc.name, side, r.Symbol, entry, stop, target)
 	}
 
 	equity = acc.start + realized + unrealized - openEntryFees
@@ -534,16 +643,16 @@ func startOfDayMs(now time.Time) int64 {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, cst).UnixMilli()
 }
 
-func (p *PaperTrader) entryOK(r Row) bool {
+func (p *PaperTrader) entryOK(r Row, cfg PaperConfig) bool {
 	if r.Price <= 0 || r.ATRPct <= 0 {
 		return false
 	}
-	if r.DayGain < p.cfg.GainMin || r.DayGain > p.cfg.GainMax {
+	if r.DayGain < cfg.GainMin || r.DayGain > cfg.GainMax {
 		return false
 	}
-	volOK := r.VolSpike1h >= p.cfg.MinVolSpike
+	volOK := r.VolSpike1h >= cfg.MinVolSpike
 	oiOK := r.OIKnown && r.OIChange1h > 0
-	if p.cfg.OIRequired {
+	if cfg.OIRequired {
 		return volOK && oiOK
 	}
 	return volOK || oiOK
@@ -580,6 +689,7 @@ type ExplosivePaperView struct {
 type OpenPositionView struct {
 	ID            int64   `json:"id"`
 	Symbol        string  `json:"symbol"`
+	Side          string  `json:"side"`
 	Entry         float64 `json:"entry_price"`
 	Current       float64 `json:"current_price"`
 	Stop          float64 `json:"stop_price"`
@@ -623,7 +733,8 @@ func (p *PaperTrader) Snapshot(accID int64) ExplosivePaperView {
 	defer p.mu.Unlock()
 	name, start := p.startFor(accID)
 	v := ExplosivePaperView{AccountID: accID, Label: name, StartingEquity: start}
-	lev := p.cfg.Leverage
+	cfg := p.cfgFor(accID)
+	lev := cfg.Leverage
 	if lev <= 0 {
 		lev = 1
 	}
@@ -650,7 +761,7 @@ func (p *PaperTrader) Snapshot(accID int64) ExplosivePaperView {
 			upPct = (cur/t.Entry - 1) * 100
 		}
 		v.Open = append(v.Open, OpenPositionView{
-			ID: t.ID, Symbol: t.Symbol, Entry: t.Entry, Current: cur,
+			ID: t.ID, Symbol: t.Symbol, Side: t.Side, Entry: t.Entry, Current: cur,
 			Stop: t.Stop, Target: t.Target, Quantity: t.Quantity, Notional: t.Notional,
 			RiskUSD: t.RiskUSD, ATRPct: t.ATRPct, Unrealized: up, UnrealizedPct: upPct,
 			Margin: t.Notional / lev, Stale: stale, OpenedAt: t.OpenedAt,
@@ -690,7 +801,7 @@ func (p *PaperTrader) Snapshot(accID int64) ExplosivePaperView {
 	v.Halted = p.halted
 	if !p.lastTick.IsZero() {
 		v.LastTick = p.lastTick.UnixMilli()
-		v.EngineStale = time.Since(p.lastTick) > 3*p.cfg.Tick
+		v.EngineStale = time.Since(p.lastTick) > 3*cfg.Tick
 	} else {
 		v.EngineStale = true
 	}
@@ -699,13 +810,14 @@ func (p *PaperTrader) Snapshot(accID int64) ExplosivePaperView {
 	}
 	v.ReturnPct = (v.Equity/start - 1) * 100
 	v.Config = map[string]float64{
-		"risk_per_trade_pct": p.cfg.RiskPerTrade * 100,
-		"stop_atr":           p.cfg.StopATR,
-		"target_atr":         p.cfg.TargetATR,
-		"max_positions":      float64(p.cfg.MaxPositions),
-		"min_vol_spike":      p.cfg.MinVolSpike,
-		"time_stop_hours":    p.cfg.TimeStopHours,
-		"leverage":           p.cfg.Leverage,
+		"risk_per_trade_pct": cfg.RiskPerTrade * 100,
+		"stop_atr":           cfg.StopATR,
+		"target_atr":         cfg.TargetATR,
+		"max_positions":      float64(cfg.MaxPositions),
+		"min_vol_spike":      cfg.MinVolSpike,
+		"time_stop_hours":    cfg.TimeStopHours,
+		"leverage":           cfg.Leverage,
+		"tp1_atr":            cfg.TP1ATR,
 	}
 	return v
 }

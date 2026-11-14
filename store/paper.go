@@ -1,6 +1,9 @@
 package store
 
-import "gorm.io/gorm"
+import (
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
 
 // ExplosivePaperAccount is one simulated account the board's rule engine runs.
 // It can reference a configured exchange account (ExchangeID) and carries its
@@ -23,18 +26,22 @@ type ExplosivePaperTrade struct {
 	Symbol    string `gorm:"column:symbol;index" json:"symbol"`
 	Side      string `gorm:"column:side" json:"side"`
 
-	OpenedAt int64   `gorm:"column:opened_at;index" json:"opened_at"`
-	Entry    float64 `gorm:"column:entry_price" json:"entry_price"`
-	Quantity float64 `gorm:"column:quantity" json:"quantity"`
-	Notional float64 `gorm:"column:notional" json:"notional"`
-	Stop     float64 `gorm:"column:stop_price" json:"stop_price"`
-	Target   float64 `gorm:"column:target_price" json:"target_price"`
-	ATRPct   float64 `gorm:"column:atr_pct" json:"atr_pct"`
-	Extreme  float64 `gorm:"column:extreme" json:"extreme"` // best price since entry (trailing stop)
-	RiskUSD  float64 `gorm:"column:risk_usd" json:"risk_usd"`
-	VolSpike float64 `gorm:"column:vol_spike" json:"vol_spike"`
-	OIPct    float64 `gorm:"column:oi_pct" json:"oi_pct"`
-	DayGain  float64 `gorm:"column:day_gain" json:"day_gain"`
+	OpenedAt        int64   `gorm:"column:opened_at;index" json:"opened_at"`
+	Entry           float64 `gorm:"column:entry_price" json:"entry_price"`
+	Quantity        float64 `gorm:"column:quantity" json:"quantity"`
+	Notional        float64 `gorm:"column:notional" json:"notional"`
+	Stop            float64 `gorm:"column:stop_price" json:"stop_price"`
+	Target          float64 `gorm:"column:target_price" json:"target_price"`
+	ATRPct          float64 `gorm:"column:atr_pct" json:"atr_pct"`
+	Extreme         float64 `gorm:"column:extreme" json:"extreme"` // best price since entry (trailing stop)
+	InitialQuantity float64 `gorm:"column:initial_quantity" json:"initial_quantity"`
+	TP1             float64 `gorm:"column:tp1" json:"tp1"`
+	PartialTaken    bool    `gorm:"column:partial_taken" json:"partial_taken"`
+	PartialRealized float64 `gorm:"column:partial_realized" json:"partial_realized"`
+	RiskUSD         float64 `gorm:"column:risk_usd" json:"risk_usd"`
+	VolSpike        float64 `gorm:"column:vol_spike" json:"vol_spike"`
+	OIPct           float64 `gorm:"column:oi_pct" json:"oi_pct"`
+	DayGain         float64 `gorm:"column:day_gain" json:"day_gain"`
 
 	Status     string  `gorm:"column:status;index" json:"status"` // open | closed
 	ClosedAt   int64   `gorm:"column:closed_at" json:"closed_at"`
@@ -109,7 +116,7 @@ func (s *PaperStore) EquitySeries(accountID int64, limit int) ([]ExplosivePaperE
 func (s *PaperStore) RealizedTotal(accountID int64) (float64, error) {
 	var sum float64
 	err := s.db.Model(&ExplosivePaperTrade{}).Where("account_id = ? AND status = ?", accountID, "closed").
-		Select("COALESCE(SUM(realized_pnl),0)").Scan(&sum).Error
+		Select("COALESCE(SUM(realized_pnl + partial_realized),0)").Scan(&sum).Error
 	return sum, err
 }
 
@@ -120,11 +127,12 @@ func (s *PaperStore) ClosedStats(accountID int64) (n, wins int, winSum, lossSum 
 	}
 	n = len(rows)
 	for _, r := range rows {
-		if r.Realized >= 0 {
+		pnl := r.Realized + r.PartialRealized
+		if pnl >= 0 {
 			wins++
-			winSum += r.Realized
+			winSum += pnl
 		} else {
-			lossSum += r.Realized
+			lossSum += pnl
 		}
 	}
 	return
@@ -133,7 +141,8 @@ func (s *PaperStore) ClosedStats(accountID int64) (n, wins int, winSum, lossSum 
 // ExplosivePaperSettings is the single row (id=1) of rule parameters the user
 // can tune from the 量化 settings panel.
 type ExplosivePaperSettings struct {
-	ID            int64   `gorm:"column:id;primaryKey" json:"id"`
+	ID            int64   `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
+	AccountID     int64   `gorm:"column:account_id;uniqueIndex" json:"account_id"`
 	RiskPct       float64 `gorm:"column:risk_pct" json:"risk_pct"`             // per-trade risk, percent
 	StopATR       float64 `gorm:"column:stop_atr" json:"stop_atr"`             // stop distance in ATR
 	TargetATR     float64 `gorm:"column:target_atr" json:"target_atr"`         // take-profit distance in ATR
@@ -152,6 +161,11 @@ type ExplosivePaperSettings struct {
 	CooldownMin       float64 `gorm:"column:cooldown_min" json:"cooldown_min"`                 // wait after closing a symbol
 	TrailStartATR     float64 `gorm:"column:trail_start_atr" json:"trail_start_atr"`           // start trailing after +N ATR
 	TrailATR          float64 `gorm:"column:trail_atr" json:"trail_atr"`                       // trail this many ATR behind the high
+	AllowShort        bool    `gorm:"column:allow_short" json:"allow_short"`
+	ShortMinGain      float64 `gorm:"column:short_min_gain" json:"short_min_gain"`
+	PartialTP         bool    `gorm:"column:partial_tp" json:"partial_tp"`
+	TP1ATR            float64 `gorm:"column:tp1_atr" json:"tp1_atr"`
+	TP1Fraction       float64 `gorm:"column:tp1_fraction" json:"tp1_fraction"`
 	// Entry gates for the coin's day gain and the OI confirmation.
 	GainMinPct float64 `gorm:"column:gain_min_pct" json:"gain_min_pct"`
 	GainMaxPct float64 `gorm:"column:gain_max_pct" json:"gain_max_pct"`
@@ -161,18 +175,28 @@ type ExplosivePaperSettings struct {
 	UpdatedAt  int64 `gorm:"column:updated_at" json:"updated_at"`
 }
 
-func (s *PaperStore) GetSettings() (ExplosivePaperSettings, error) {
+func (s *PaperStore) GetSettings(accountID int64) (ExplosivePaperSettings, error) {
 	var out ExplosivePaperSettings
-	err := s.db.Where("id = ?", 1).First(&out).Error
+	err := s.db.Where("account_id = ?", accountID).First(&out).Error
 	if err == gorm.ErrRecordNotFound {
-		return ExplosivePaperSettings{ID: 1}, nil
+		return ExplosivePaperSettings{AccountID: accountID}, nil
 	}
 	return out, err
 }
 
 func (s *PaperStore) SaveSettings(v *ExplosivePaperSettings) error {
-	v.ID = 1
-	return s.db.Save(v).Error
+	v.ID = 0
+	return s.db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "account_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"risk_pct", "stop_atr", "target_atr", "max_positions", "max_notional_x",
+			"min_vol_spike", "time_stop_hours", "leverage", "slippage_bps",
+			"max_volume_pct", "max_gross_x", "daily_loss_limit_pct", "cooldown_min",
+			"trail_start_atr", "trail_atr", "gain_min_pct", "gain_max_pct",
+			"oi_required", "allow_short", "short_min_gain", "partial_tp", "tp1_atr",
+			"tp1_fraction", "updated_at",
+		}),
+	}).Create(v).Error
 }
 
 // LastClosedAt returns the close time of the most recent closed trade for the
@@ -189,6 +213,6 @@ func (s *PaperStore) RealizedSince(accountID int64, sinceMs int64) (float64, err
 	var sum float64
 	err := s.db.Model(&ExplosivePaperTrade{}).
 		Where("account_id = ? AND status = ? AND closed_at >= ?", accountID, "closed", sinceMs).
-		Select("COALESCE(SUM(realized_pnl),0)").Scan(&sum).Error
+		Select("COALESCE(SUM(realized_pnl + partial_realized),0)").Scan(&sum).Error
 	return sum, err
 }
