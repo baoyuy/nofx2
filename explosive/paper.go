@@ -46,7 +46,91 @@ type PaperTrader struct {
 }
 
 func NewPaperTrader(st *store.PaperStore, cfg PaperConfig) *PaperTrader {
-	return &PaperTrader{cfg: cfg, store: st}
+	p := &PaperTrader{cfg: cfg, store: st}
+	p.applyStoredSettings()
+	return p
+}
+
+// applyStoredSettings overlays the user-tuned 量化 settings onto the defaults.
+// A zero risk means "never saved", so the defaults stay.
+func (p *PaperTrader) applyStoredSettings() {
+	s, err := p.store.GetSettings()
+	if err != nil || s.RiskPct <= 0 {
+		return
+	}
+	p.cfg.RiskPerTrade = s.RiskPct / 100
+	if s.StopATR > 0 {
+		p.cfg.StopATR = s.StopATR
+	}
+	if s.TargetATR > 0 {
+		p.cfg.TargetATR = s.TargetATR
+	}
+	if s.MaxPositions > 0 {
+		p.cfg.MaxPositions = s.MaxPositions
+	}
+	if s.MaxNotionalX > 0 {
+		p.cfg.MaxNotionalX = s.MaxNotionalX
+	}
+	if s.MinVolSpike > 0 {
+		p.cfg.MinVolSpike = s.MinVolSpike
+	}
+	if s.TimeStopHours > 0 {
+		p.cfg.TimeStopHours = s.TimeStopHours
+	}
+}
+
+// Settings returns the effective rule settings for the UI.
+func (p *PaperTrader) Settings() store.ExplosivePaperSettings {
+	s, _ := p.store.GetSettings()
+	if s.RiskPct <= 0 {
+		s = store.ExplosivePaperSettings{
+			ID: 1, RiskPct: p.cfg.RiskPerTrade * 100, StopATR: p.cfg.StopATR,
+			TargetATR: p.cfg.TargetATR, MaxPositions: p.cfg.MaxPositions,
+			MaxNotionalX: p.cfg.MaxNotionalX, MinVolSpike: p.cfg.MinVolSpike,
+			TimeStopHours: p.cfg.TimeStopHours,
+		}
+	}
+	return s
+}
+
+// UpdateSettings saves user-tuned rule settings and applies them immediately.
+func (p *PaperTrader) UpdateSettings(v store.ExplosivePaperSettings) store.ExplosivePaperSettings {
+	if v.RiskPct < 0.1 {
+		v.RiskPct = 0.1
+	}
+	if v.RiskPct > 5 {
+		v.RiskPct = 5
+	}
+	if v.StopATR < 0.3 {
+		v.StopATR = 0.3
+	}
+	if v.TargetATR < 0.5 {
+		v.TargetATR = 0.5
+	}
+	if v.MaxPositions < 1 {
+		v.MaxPositions = 1
+	}
+	if v.MaxPositions > 8 {
+		v.MaxPositions = 8
+	}
+	if v.MaxNotionalX < 0.1 {
+		v.MaxNotionalX = 0.1
+	}
+	if v.MaxNotionalX > 2 {
+		v.MaxNotionalX = 2
+	}
+	if v.MinVolSpike < 0 {
+		v.MinVolSpike = 0
+	}
+	if v.TimeStopHours < 0.5 {
+		v.TimeStopHours = 0.5
+	}
+	v.UpdatedAt = time.Now().UnixMilli()
+	_ = p.store.SaveSettings(&v)
+	p.mu.Lock()
+	p.applyStoredSettings()
+	p.mu.Unlock()
+	return v
 }
 
 // StartPaper migrates storage, runs the engine until ctx ends, and returns it.
@@ -120,6 +204,7 @@ func (p *PaperTrader) tick(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	p.applyStoredSettings()
 	pm := p.priceMap(board)
 	priceOf := func(sym string) float64 {
 		if v, ok := pm[sym]; ok && v > 0 {

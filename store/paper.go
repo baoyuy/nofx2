@@ -60,7 +60,7 @@ type PaperStore struct{ db *gorm.DB }
 func NewPaperStore(db *gorm.DB) *PaperStore { return &PaperStore{db: db} }
 
 func (s *PaperStore) AutoMigrate() error {
-	return s.db.AutoMigrate(&ExplosivePaperAccount{}, &ExplosivePaperTrade{}, &ExplosivePaperEquity{})
+	return s.db.AutoMigrate(&ExplosivePaperAccount{}, &ExplosivePaperTrade{}, &ExplosivePaperEquity{}, &ExplosivePaperSettings{})
 }
 
 func (s *PaperStore) Accounts() ([]ExplosivePaperAccount, error) {
@@ -120,4 +120,32 @@ func (s *PaperStore) ClosedStats(accountID int64) (n, wins int, winSum, lossSum 
 		}
 	}
 	return
+}
+
+// ExplosivePaperSettings is the single row (id=1) of rule parameters the user
+// can tune from the 量化 settings panel.
+type ExplosivePaperSettings struct {
+	ID            int64   `gorm:"column:id;primaryKey" json:"id"`
+	RiskPct       float64 `gorm:"column:risk_pct" json:"risk_pct"`             // per-trade risk, percent
+	StopATR       float64 `gorm:"column:stop_atr" json:"stop_atr"`             // stop distance in ATR
+	TargetATR     float64 `gorm:"column:target_atr" json:"target_atr"`         // take-profit distance in ATR
+	MaxPositions  int     `gorm:"column:max_positions" json:"max_positions"`   // concurrent positions
+	MaxNotionalX  float64 `gorm:"column:max_notional_x" json:"max_notional_x"` // per-trade notional cap × equity
+	MinVolSpike   float64 `gorm:"column:min_vol_spike" json:"min_vol_spike"`   // entry volume-spike gate
+	TimeStopHours float64 `gorm:"column:time_stop_hours" json:"time_stop_hours"`
+	UpdatedAt     int64   `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (s *PaperStore) GetSettings() (ExplosivePaperSettings, error) {
+	var out ExplosivePaperSettings
+	err := s.db.Where("id = ?", 1).First(&out).Error
+	if err == gorm.ErrRecordNotFound {
+		return ExplosivePaperSettings{ID: 1}, nil
+	}
+	return out, err
+}
+
+func (s *PaperStore) SaveSettings(v *ExplosivePaperSettings) error {
+	v.ID = 1
+	return s.db.Save(v).Error
 }

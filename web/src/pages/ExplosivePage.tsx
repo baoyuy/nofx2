@@ -307,7 +307,7 @@ export function ExplosivePage() {
                 {v === 'board'
                   ? tr(language, '榜单', 'Board')
                   : v === 'paper'
-                    ? tr(language, '模拟盘', 'Paper')
+                    ? tr(language, '量化', 'Quant')
                     : tr(language, '准确率', 'Accuracy')}
               </button>
             ))}

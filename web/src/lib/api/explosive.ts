@@ -166,6 +166,18 @@ export interface PaperEquityPoint {
   open_count: number
 }
 
+export interface PaperSettings {
+  id: number
+  risk_pct: number
+  stop_atr: number
+  target_atr: number
+  max_positions: number
+  max_notional_x: number
+  min_vol_spike: number
+  time_stop_hours: number
+  updated_at: number
+}
+
 export interface PaperAccountSummary {
   id: number
   name: string
@@ -215,6 +227,22 @@ export const explosiveApi = {
       { params: { account_id: accountId }, silent: true, timeout: 20000 }
     )
     return unwrap(r, 'Failed to load paper account')
+  },
+
+  async paperSettings(): Promise<PaperSettings> {
+    const r = await httpClient.request<PaperSettings>(
+      `${API_BASE}/market/explosive/paper/settings`,
+      { silent: true, timeout: 20000 }
+    )
+    return unwrap(r, 'Failed to load paper settings')
+  },
+
+  async updatePaperSettings(body: PaperSettings): Promise<PaperSettings> {
+    const r = await httpClient.request<PaperSettings>(
+      `${API_BASE}/market/explosive/paper/settings`,
+      { method: 'PUT', data: body, timeout: 20000 }
+    )
+    return unwrap(r, 'Failed to save paper settings')
   },
 
   async paperAccounts(): Promise<PaperAccountSummary[]> {

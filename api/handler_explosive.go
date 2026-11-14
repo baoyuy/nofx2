@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"nofx/explosive"
+	"nofx/store"
 )
 
 // explosiveScreener is shared by every user: it reads public market data only.
@@ -21,6 +22,8 @@ func (s *Server) registerExplosiveRoutes(protected *gin.RouterGroup) {
 	s.route(protected, "GET", "/market/explosive/paper/accounts", "Paper accounts of the board's rule engine", s.handleExplosivePaperAccounts)
 	s.route(protected, "POST", "/market/explosive/paper/accounts", "Add a paper account from a configured exchange", s.handleExplosivePaperAddAccount)
 	s.route(protected, "DELETE", "/market/explosive/paper/accounts/:id", "Remove a paper account", s.handleExplosivePaperRemoveAccount)
+	s.route(protected, "GET", "/market/explosive/paper/settings", "Rule settings of the paper engine", s.handleExplosivePaperGetSettings)
+	s.route(protected, "PUT", "/market/explosive/paper/settings", "Update the paper engine's rule settings", s.handleExplosivePaperUpdateSettings)
 }
 
 // StartExplosiveRecorder records the board every 15 minutes and fills in what
@@ -89,6 +92,27 @@ func (s *Server) handleExplosivePaperRemoveAccount(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Paper account removed"})
+}
+
+func (s *Server) handleExplosivePaperGetSettings(c *gin.Context) {
+	if s.explosivePaper == nil {
+		c.JSON(http.StatusOK, gin.H{})
+		return
+	}
+	c.JSON(http.StatusOK, s.explosivePaper.Settings())
+}
+
+func (s *Server) handleExplosivePaperUpdateSettings(c *gin.Context) {
+	if s.explosivePaper == nil {
+		SafeError(c, http.StatusServiceUnavailable, "Paper engine not running", nil)
+		return
+	}
+	var req store.ExplosivePaperSettings
+	if err := c.ShouldBindJSON(&req); err != nil {
+		SafeBadRequest(c, "Invalid request parameters")
+		return
+	}
+	c.JSON(http.StatusOK, s.explosivePaper.UpdateSettings(req))
 }
 
 func (s *Server) recorder() *explosive.Recorder {

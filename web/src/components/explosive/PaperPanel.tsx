@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import useSWR from 'swr'
-import { Plus, Trash2, Loader2 } from 'lucide-react'
-import { explosiveApi, type PaperTrade, type PaperAccountSummary } from '../../lib/api/explosive'
+import { Plus, Trash2, Loader2, SlidersHorizontal } from 'lucide-react'
+import { explosiveApi, type PaperTrade, type PaperAccountSummary, type PaperSettings } from '../../lib/api/explosive'
 import { configApi } from '../../lib/api/config'
 import type { Exchange } from '../../types/config'
 import { tr, ui } from '../market/marketUi'
@@ -40,10 +40,13 @@ function EquitySpark({ points }: { points: { equity: number }[] }) {
   )
 }
 
-function Stat({ label, value, color }: { label: string; value: string; color?: string }) {
+function Stat({ label, value, color, hint }: { label: string; value: string; color?: string; hint?: string }) {
   return (
-    <div className="rounded-lg border border-[rgba(25,36,52,0.10)] px-2.5 py-2">
-      <div className={`text-[10px] ${ui.muted}`}>{label}</div>
+    <div className="rounded-lg border border-[rgba(25,36,52,0.10)] px-2.5 py-2" title={hint}>
+      <div className={`flex items-center gap-1 text-[10px] ${ui.muted}`}>
+        {label}
+        {hint ? <span className="cursor-help opacity-60">ⓘ</span> : null}
+      </div>
       <div className="text-sm font-semibold tabular-nums" style={{ color }}>
         {value}
       </div>
@@ -71,11 +74,11 @@ function TradesTable({ language, trades, closed }: { language: string; trades: P
         <thead className="text-left text-xs text-nofx-text-muted">
           <tr>
             <th className="px-2 py-1.5 font-normal">{tr(language, '币种', 'Coin')}</th>
-            <th className="px-2 text-right font-normal">{tr(language, '入场', 'Entry')}</th>
-            <th className="px-2 text-right font-normal">{tr(language, '出场', 'Exit')}</th>
-            <th className="px-2 text-right font-normal">{tr(language, '仓位', 'Notional')}</th>
-            {closed ? <th className="px-2 text-right font-normal">{tr(language, '原因', 'Reason')}</th> : null}
-            <th className="px-2 text-right font-normal">PnL</th>
+            <th className="px-2 text-right font-normal">{tr(language, '入场价', 'Entry')}</th>
+            <th className="px-2 text-right font-normal">{tr(language, '出场价', 'Exit')}</th>
+            <th className="px-2 text-right font-normal">{tr(language, '仓位(USDT)', 'Notional')}</th>
+            {closed ? <th className="px-2 text-right font-normal">{tr(language, '平仓原因', 'Reason')}</th> : null}
+            <th className="px-2 text-right font-normal">{tr(language, '盈亏(USDT)', 'PnL')}</th>
             <th className="px-2 text-right font-normal">{tr(language, '时间', 'Time')}</th>
           </tr>
         </thead>
@@ -102,6 +105,67 @@ function TradesTable({ language, trades, closed }: { language: string; trades: P
   )
 }
 
+function SettingsForm({ language, settings, onSaved }: { language: string; settings: PaperSettings; onSaved: () => void }) {
+  const [s, setS] = useState<PaperSettings>(settings)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => setS(settings), [settings])
+  const num = (k: keyof PaperSettings, v: number) => setS((p) => ({ ...p, [k]: v }))
+  const save = async () => {
+    setBusy(true)
+    try {
+      await explosiveApi.updatePaperSettings(s)
+      onSaved()
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const field = (label: string, hint: string, key: keyof PaperSettings, step: number, min: number, max: number, suffix: string) => (
+    <label className="flex flex-col gap-1 text-xs" title={hint}>
+      <span className={ui.muted}>{label}</span>
+      <div className="flex items-center gap-1">
+        <input
+          type="number"
+          step={step}
+          min={min}
+          max={max}
+          value={Number(s[key] ?? 0)}
+          onChange={(e) => num(key, Number(e.target.value) || 0)}
+          className="w-20 rounded border border-[rgba(25,36,52,0.14)] bg-transparent px-2 py-1 text-right tabular-nums"
+        />
+        <span className={ui.muted}>{suffix}</span>
+      </div>
+    </label>
+  )
+  return (
+    <div className="rounded-lg border border-[rgba(25,36,52,0.12)] p-2.5">
+      <div className="mb-2 flex items-center gap-1 text-xs font-semibold text-nofx-text">
+        <SlidersHorizontal className="h-3.5 w-3.5" />
+        {tr(language, '量化设置（规则参数，保存后立即生效）', 'Quant settings (rule parameters, applied on save)')}
+      </div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {field(tr(language, '单笔风险', 'Risk / trade'), tr(language, '每笔最多亏账户的百分之几，决定仓位大小', 'max % of equity risked per trade'), 'risk_pct', 0.1, 0.1, 5, '%')}
+        {field(tr(language, '止损', 'Stop'), tr(language, '入场价往下几倍 ATR 止损', 'stop distance in ATR'), 'stop_atr', 0.1, 0.3, 5, '×ATR')}
+        {field(tr(language, '止盈', 'Target'), tr(language, '入场价往上几倍 ATR 止盈', 'take-profit distance in ATR'), 'target_atr', 0.1, 0.5, 10, '×ATR')}
+        {field(tr(language, '最大持仓', 'Max positions'), tr(language, '同时最多持有几个币', 'concurrent open trades'), 'max_positions', 1, 1, 8, tr(language, '个', ''))}
+        {field(tr(language, '单币仓位上限', 'Notional cap'), tr(language, '单个币名义仓位最多占权益几倍', 'per-trade notional cap × equity'), 'max_notional_x', 0.1, 0.1, 2, '×权益')}
+        {field(tr(language, '量能阈值', 'Volume gate'), tr(language, '量能突增达到几倍才允许入场', 'enter only if volume spike ≥ this'), 'min_vol_spike', 0.5, 0, 20, 'x')}
+        {field(tr(language, '时间止损', 'Time stop'), tr(language, '持仓超过几小时没触发止损止盈就平仓', 'close after N hours if neither hit'), 'time_stop_hours', 0.5, 0.5, 24, tr(language, '小时', 'h'))}
+      </div>
+      <div className="mt-2 flex items-center gap-2">
+        <button type="button" className={ui.btnGhost} onClick={save} disabled={busy}>
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+          {tr(language, '保存设置', 'Save')}
+        </button>
+        <span className={`text-[11px] ${ui.muted}`}>
+          {tr(language, '提示：盈亏比 = 止盈倍数 ÷ 止损倍数。风险越小越稳，越大越激进。', 'Hint: R:R = target ATR ÷ stop ATR. Smaller risk = safer.')}
+        </span>
+      </div>
+    </div>
+  )
+}
+
 export function PaperPanel({ language }: { language: string }) {
   const [accId, setAccId] = useState(0)
   const [adding, setAdding] = useState(false)
@@ -109,17 +173,20 @@ export function PaperPanel({ language }: { language: string }) {
   const [selEx, setSelEx] = useState('')
   const [startEq, setStartEq] = useState(1000)
   const [busy, setBusy] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
 
-  const { data: accounts = [], mutate: mutAccounts } = useSWR(
-    'market/explosive/paper/accounts',
-    () => explosiveApi.paperAccounts(),
-    { refreshInterval: 20000, revalidateOnFocus: false }
-  )
-  const { data, error, mutate } = useSWR(
-    ['market/explosive/paper', accId],
-    () => explosiveApi.paper(accId),
-    { refreshInterval: 15000, revalidateOnFocus: false, keepPreviousData: true }
-  )
+  const { data: accounts = [], mutate: mutAccounts } = useSWR('market/explosive/paper/accounts', () => explosiveApi.paperAccounts(), {
+    refreshInterval: 20000,
+    revalidateOnFocus: false,
+  })
+  const { data: settings, mutate: mutSettings } = useSWR('market/explosive/paper/settings', () => explosiveApi.paperSettings(), {
+    revalidateOnFocus: false,
+  })
+  const { data, error, mutate } = useSWR(['market/explosive/paper', accId], () => explosiveApi.paper(accId), {
+    refreshInterval: 15000,
+    revalidateOnFocus: false,
+    keepPreviousData: true,
+  })
 
   useEffect(() => {
     if (!adding || exchanges.length) return
@@ -138,7 +205,7 @@ export function PaperPanel({ language }: { language: string }) {
     setBusy(true)
     try {
       const ex = exchanges.find((e) => e.id === selEx)
-      const name = ex ? ex.account_name || ex.name : '模拟账户'
+      const name = ex ? ex.account_name || ex.name : '量化账户'
       const id = await explosiveApi.addPaperAccount({ exchange_id: selEx, name, starting_equity: startEq })
       setAdding(false)
       await mutAccounts()
@@ -151,7 +218,7 @@ export function PaperPanel({ language }: { language: string }) {
     }
   }
   const doRemove = async (id: number) => {
-    if (!confirm(tr(language, '删除这个模拟账户？（历史成交会保留）', 'Remove this paper account? Trade history is kept.'))) return
+    if (!confirm(tr(language, '删除这个量化账户？（历史成交会保留）', 'Remove this quant account? History is kept.'))) return
     setBusy(true)
     try {
       await explosiveApi.removePaperAccount(id)
@@ -170,9 +237,9 @@ export function PaperPanel({ language }: { language: string }) {
     <div className="space-y-4">
       <section className={ui.panel}>
         <div className="mb-2 flex flex-wrap items-center gap-2">
-          <h2 className="text-base font-semibold text-nofx-text">{tr(language, '规则量化模拟盘', 'Rule-based paper account')}</h2>
+          <h2 className="text-base font-semibold text-nofx-text">{tr(language, '量化交易', 'Quant trading')}</h2>
           <span className={`text-xs ${ui.muted}`}>
-            {tr(language, '模拟成交、不花真钱；用来验证这套规则扣费后有没有正期望。', 'Simulated fills, no real money: tests whether the rule has an edge after fees.')}
+            {tr(language, '规则量化、模拟成交、不花真钱；用来验证这套规则扣费后有没有正期望。', 'Rule-based, simulated fills, no real money: tests whether the rule has an edge after fees.')}
           </span>
           <div className="ml-auto flex flex-wrap items-center gap-1">
             {accounts.map((a) => (
@@ -189,8 +256,25 @@ export function PaperPanel({ language }: { language: string }) {
               <Plus className="h-3.5 w-3.5" />
               {tr(language, '添加账户', 'Add account')}
             </button>
+            <button type="button" className={`flex items-center gap-1 ${ui.btnGhost}`} onClick={() => setShowSettings((v) => !v)}>
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              {tr(language, '量化设置', 'Settings')}
+            </button>
           </div>
         </div>
+
+        {showSettings && settings ? (
+          <div className="mb-2">
+            <SettingsForm
+              language={language}
+              settings={settings}
+              onSaved={() => {
+                void mutSettings()
+                void mutate()
+              }}
+            />
+          </div>
+        ) : null}
 
         {adding ? (
           <div className="mb-2 flex flex-wrap items-end gap-2 rounded-lg border border-[rgba(25,36,52,0.12)] p-2 text-xs">
@@ -233,7 +317,7 @@ export function PaperPanel({ language }: { language: string }) {
 
       {error ? (
         <p className={`${ui.panel} text-sm text-nofx-danger`}>
-          {tr(language, '模拟盘加载失败：', 'Could not load paper account: ')}
+          {tr(language, '量化账户加载失败：', 'Could not load quant account: ')}
           {error instanceof Error ? error.message : String(error)}
         </p>
       ) : null}
@@ -245,30 +329,43 @@ export function PaperPanel({ language }: { language: string }) {
               <section className={ui.panel}>
                 <div className="mb-2 flex items-baseline gap-2">
                   <h3 className="text-sm font-semibold text-nofx-text">{data.label}</h3>
-                  <span className={`text-xs ${ui.muted}`}>{tr(language, '起始', 'Start')} {data.starting_equity.toFixed(0)} USDT</span>
+                  <span className={`text-xs ${ui.muted}`}>{tr(language, '起始资金', 'Start')} {data.starting_equity.toFixed(0)} USDT</span>
                 </div>
-                <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6">
-                  <Stat label={tr(language, '当前权益', 'Equity')} value={data.equity.toFixed(2)} />
-                  <Stat label={tr(language, '收益率', 'Return')} value={signedPct(data.return_pct)} color={retColor} />
-                  <Stat label={tr(language, '已实现', 'Realized')} value={money(data.realized)} color={data.realized >= 0 ? BN.up : BN.down} />
-                  <Stat label={tr(language, '未实现', 'Unrealized')} value={money(data.unrealized)} color={data.unrealized >= 0 ? BN.up : BN.down} />
-                  <Stat label={tr(language, '交易数', 'Trades')} value={String(data.trades)} />
-                  <Stat label={tr(language, '胜率', 'Win rate')} value={`${(data.win_rate * 100).toFixed(0)}%`} />
-                  <Stat label={tr(language, '平均盈利', 'Avg win')} value={money(data.avg_win)} color={BN.up} />
-                  <Stat label={tr(language, '平均亏损', 'Avg loss')} value={money(data.avg_loss)} color={BN.down} />
-                  <Stat label={tr(language, '盈亏比', 'Profit factor')} value={data.profit_factor ? data.profit_factor.toFixed(2) : '—'} />
-                  <Stat label={tr(language, '持仓', 'Open')} value={String(data.open_count)} />
-                  <Stat label={tr(language, '单笔风险', 'Risk/trade')} value={`${(data.config?.risk_per_trade_pct ?? 0).toFixed(1)}%`} />
-                  <Stat label={tr(language, '止损/止盈', 'Stop/Target')} value={`${data.config?.stop_atr ?? 0}/${data.config?.target_atr ?? 0} ATR`} />
+
+                <div className={`mb-1 text-[11px] font-semibold ${ui.muted}`}>{tr(language, '账户表现', 'Account')}</div>
+                <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <Stat label={tr(language, '当前权益', 'Equity')} value={`${data.equity.toFixed(2)} U`} hint={tr(language, '账户当前总价值 = 起始 + 已实现 + 浮动盈亏', 'equity = start + realized + unrealized')} />
+                  <Stat label={tr(language, '收益率', 'Return')} value={signedPct(data.return_pct)} color={retColor} hint={tr(language, '相对起始资金的收益率', 'return vs starting equity')} />
+                  <Stat label={tr(language, '已实现盈亏', 'Realized')} value={`${money(data.realized)} U`} color={data.realized >= 0 ? BN.up : BN.down} hint={tr(language, '已平仓交易的盈亏合计（含手续费）', 'closed-trade PnL incl. fees')} />
+                  <Stat label={tr(language, '未实现盈亏', 'Unrealized')} value={`${money(data.unrealized)} U`} color={data.unrealized >= 0 ? BN.up : BN.down} hint={tr(language, '当前持仓的浮动盈亏', 'open-position floating PnL')} />
                 </div>
+
+                <div className={`mb-1 text-[11px] font-semibold ${ui.muted}`}>{tr(language, '交易结果', 'Performance')}</div>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                  <Stat label={tr(language, '交易笔数', 'Trades')} value={String(data.trades)} hint={tr(language, '已平仓的交易笔数', 'closed trades')} />
+                  <Stat label={tr(language, '胜率', 'Win rate')} value={`${(data.win_rate * 100).toFixed(0)}%`} hint={tr(language, '盈利笔数 ÷ 总笔数', 'winning trades ÷ all trades')} />
+                  <Stat label={tr(language, '盈亏比', 'Profit factor')} value={data.profit_factor ? data.profit_factor.toFixed(2) : '—'} hint={tr(language, '总盈利 ÷ 总亏损，>1 才是赚的', 'gross win ÷ gross loss, >1 is profitable')} />
+                  <Stat label={tr(language, '平均盈利', 'Avg win')} value={`${money(data.avg_win)} U`} color={BN.up} hint={tr(language, '每笔盈利交易的平均盈利', 'average winning trade')} />
+                  <Stat label={tr(language, '平均亏损', 'Avg loss')} value={`${money(data.avg_loss)} U`} color={BN.down} hint={tr(language, '每笔亏损交易的平均亏损', 'average losing trade')} />
+                </div>
+
                 <div className="mt-3">
                   <EquitySpark points={data.equity_series} />
                 </div>
+                <p className={`mt-1 text-[11px] ${ui.muted}`}>
+                  {tr(
+                    language,
+                    '说明：胜率=盈利笔数/总笔数；盈亏比=总盈利÷总亏损（>1 才健康）；平均盈利/亏损按每笔平仓计算。规则参数可在「量化设置」里调。',
+                    'Win rate = wins ÷ trades; profit factor = gross win ÷ gross loss (>1 is healthy); avg win/loss per closed trade. Rule params live in Settings.'
+                  )}
+                </p>
               </section>
 
               {data.open.length ? (
                 <section className={ui.panel}>
-                  <h3 className="mb-2 text-sm font-semibold text-nofx-text">{tr(language, '当前持仓', 'Open positions')}</h3>
+                  <h3 className="mb-2 text-sm font-semibold text-nofx-text">
+                    {tr(language, '当前持仓', 'Open positions')} <span className={`text-xs ${ui.muted}`}>({data.open_count})</span>
+                  </h3>
                   <TradesTable language={language} trades={data.open} closed={false} />
                 </section>
               ) : null}
@@ -279,7 +376,7 @@ export function PaperPanel({ language }: { language: string }) {
                   <TradesTable language={language} trades={data.recent.filter((t) => t.status === 'closed').slice(0, 30)} closed />
                 ) : (
                   <p className={`py-4 text-center text-xs ${ui.muted}`}>
-                    {tr(language, '还没有平仓的交易（模拟盘会随行情慢慢积累）。', 'No closed trades yet (builds up over time).')}
+                    {tr(language, '还没有平仓的交易（量化账户会随行情慢慢积累）。', 'No closed trades yet (builds up over time).')}
                   </p>
                 )}
               </section>
