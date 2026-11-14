@@ -192,3 +192,17 @@ func TestIgnitionUsesMultiDayHistory(t *testing.T) {
 		t.Fatalf("short history must return zero: %.2f", v2)
 	}
 }
+
+func TestIgnitionVolumeSpikeIsNormalOnFlatVolume(t *testing.T) {
+	// Constant volume: the 15m ratio must be about 1, not the sum of history.
+	const n = 14 * 24 * 12
+	start := time.Date(2026, 10, 1, 0, 0, 0, 0, Beijing).UnixMilli()
+	series := make([]Bar, n)
+	for i := 0; i < n; i++ {
+		series[i] = Bar{Time: start + int64(i)*5*60*1000, Open: 1, High: 1.001, Low: 0.999, Close: 1, Volume: 10, Quote: 100}
+	}
+	vs, _, _, _ := ignition(series, n-1, 1)
+	if vs < 0.8 || vs > 1.3 {
+		t.Fatalf("flat volume must give a spike near 1.0, got %.2f", vs)
+	}
+}

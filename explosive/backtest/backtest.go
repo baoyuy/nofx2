@@ -320,8 +320,10 @@ func ignition(bars []Bar, gi int, price float64) (volSpike, breakout7d, compress
 	}
 	// Last 15 minutes of quote volume against the 7-day median of 15m buckets.
 	now := 0.0
-	for i := gi - 2; i <= gi && i >= 0; i-- {
-		now += bars[i].Quote
+	for i := gi - 2; i <= gi; i++ {
+		if i >= 0 {
+			now += bars[i].Quote
+		}
 	}
 	buckets := make([]float64, 0, lookback/3+1)
 	for i := from; i+2 < gi; i += 3 {
