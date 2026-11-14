@@ -513,36 +513,6 @@ export function ExplosivePage() {
               )}
             </section>
 
-            {blasted.length ? (
-              <section className={`${ui.panel} min-w-0`}>
-                <div className="mb-2 flex items-baseline gap-2">
-                  <h2 className="text-base font-semibold text-nofx-text">{tr(language, '已爆发', 'Already blasted')}</h2>
-                  <span className={`text-xs ${ui.muted}`}>{tr(language, '今日已涨 50% 以上，不宜再追，仅供参考', 'Up 50%+ today: not an entry, reference only')}</span>
-                </div>
-                <table className="whitespace-nowrap text-sm">
-                  <thead className="text-left text-xs text-nofx-text-muted">
-                    <tr>
-                      <th className="px-2 py-1.5 font-normal">{tr(language, '币种', 'Coin')}</th>
-                      <th className="px-2 text-right font-normal">{tr(language, '今日涨幅', 'Day')}</th>
-                      <th className="px-2 text-right font-normal">{tr(language, '滚动24h', '24h')}</th>
-                      <th className="px-2 text-right font-normal">OI 1h</th>
-                      <th className="px-2 text-right font-normal">{tr(language, '状态', 'State')}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-nofx-text">
-                    {blasted.map((r) => (
-                      <tr key={r.symbol} onClick={() => setSelected(r.symbol)} className={`cursor-pointer border-t ${ui.border} hover:bg-nofx-bg-deeper`}>
-                        <td className="px-2 py-1.5 font-medium">{r.symbol.replace('USDT', '')}</td>
-                        <td className="px-2 text-right tabular-nums" style={{ color: r.day_gain >= 0 ? BN.up : BN.down }}>{signed(r.day_gain * 100)}</td>
-                        <td className="px-2 text-right tabular-nums" style={{ color: r.change_24h >= 0 ? BN.up : BN.down }}>{signed(r.change_24h)}</td>
-                        <td className="px-2 text-right tabular-nums" style={{ color: r.oi_known ? (r.oi_change_1h >= 0 ? BN.up : BN.down) : undefined }}>{r.oi_known ? signed(r.oi_change_1h * 100) : '—'}</td>
-                        <td className="px-2 text-right">{stateBadge(r.state)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </section>
-            ) : null}
           </div>
 
           <aside className="space-y-3 lg:sticky lg:top-4">
