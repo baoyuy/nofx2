@@ -363,3 +363,42 @@ func TestVolumeSpike1hAndRadar(t *testing.T) {
 		t.Fatal("a coin already up 200% in 24h must not be a radar hit")
 	}
 }
+
+func TestRiseHoursCountsFromDayLow(t *testing.T) {
+	day := time.Date(2026, 11, 10, 0, 0, 0, 0, beijing)
+	var bars []Kline
+	for i := 0; i < 12; i++ {
+		p := 100.0
+		if i == 3 { // the day's low sits at 03:00
+			p = 90
+		}
+		bars = append(bars, Kline{Time: day.Add(time.Duration(i) * time.Hour).UnixMilli(), Open: p, High: p, Low: p, Close: p, Volume: 10})
+	}
+	now := day.Add(9 * time.Hour) // 09:00 -> 6h since the 03:00 low
+	if got := riseHours(bars, now); math.Abs(got-6) > 0.01 {
+		t.Fatalf("rise hours = %.2f, want 6", got)
+	}
+}
+
+func TestVolumeSpikeComparesSameHour(t *testing.T) {
+	// Ten days of hourly bars; the 12:00 slot doubled today, which is the only
+	// spike. A raw median would call many daytime hours spiky; same-hour must not.
+	base := time.Date(2026, 10, 1, 0, 0, 0, 0, beijing)
+	var bars []Kline
+	for d := 0; d < 10; d++ {
+		for h := 0; h < 24; h++ {
+			v := 1000.0
+			if h >= 8 && h < 20 { // daytime is busier
+				v = 3000
+			}
+			bars = append(bars, Kline{Time: base.Add(time.Duration(d*24+h) * time.Hour).UnixMilli(), Volume: v})
+		}
+	}
+	if got := volumeSpike1h(bars); math.Abs(got-1.0) > 0.35 {
+		t.Fatalf("quiet daytime bar should be near 1x, got %.2f", got)
+	}
+	bars[len(bars)-1].Volume = 2000 // last bar is a 23:00 slot whose norm is 1000
+	if got := volumeSpike1h(bars); math.Abs(got-2.0) > 0.3 {
+		t.Fatalf("same-hour spike should read about 2x, got %.2f", got)
+	}
+}

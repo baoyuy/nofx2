@@ -30,5 +30,7 @@ export const tagLabel = (language: string, tag: string) =>
     funding_hot: tr(language, '费率过热', 'Hot funding'),
     chase: tr(language, '追高', 'Chasing'),
     fading: tr(language, '量能衰减', 'Fading'),
+    off_high: tr(language, '离高点', 'Off high'),
+    overheated: tr(language, '过热', 'Overheated'),
     falling: tr(language, '正在回落', 'Falling'),
   })[tag] || tag

@@ -54,8 +54,17 @@ type Row struct {
 	// enough to enter (the board's first section).
 	Ran    bool `json:"ran"`
 	Ambush bool `json:"ambush"`
-	// VolSpike1h is the last closed hour's volume against its ~6-day median.
-	// RadarScore combines it with volatility; Radar flags an ignition.
+	// Discovery tracking: when this symbol first reached the board and how
+	// long it has been tracked. IsNew marks a fresh appearance, which is what
+	// "early" means for an ambush.
+	FirstSeenMs int64   `json:"first_seen_ms"`
+	TrackedMin  float64 `json:"tracked_min"`
+	IsNew       bool    `json:"is_new"`
+	// RiseH counts hours since today's low, the real length of the move, not
+	// hours since midnight.
+	RiseH float64 `json:"rise_h"`
+	// VolSpike1h is the last closed hour's volume against the same hour on
+	// prior days, which removes the night/day volume cycle.
 	VolSpike1h float64 `json:"vol_spike_1h"`
 	RadarScore float64 `json:"radar_score"`
 	Radar      bool    `json:"radar"`
@@ -148,6 +157,7 @@ type Input struct {
 	HasDay      bool
 	DayGain     float64
 	ElapsedH    float64
+	RiseH       float64
 	VolumeSlope float64
 	DayHighDist float64
 }

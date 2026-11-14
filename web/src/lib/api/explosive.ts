@@ -32,7 +32,15 @@ export interface ExplosiveRow {
   ran: boolean
   /** still early enough to enter */
   ambush: boolean
-  /** last hour's volume against its ~6-day median */
+  /** first time this symbol appeared on the board (ms) */
+  first_seen_ms: number
+  /** minutes tracked since first seen */
+  tracked_min: number
+  /** appeared within the last ~15 minutes */
+  is_new: boolean
+  /** hours since today's low: the real length of the move */
+  rise_h: number
+  /** last hour's volume against the same hour on prior days */
   vol_spike_1h: number
   /** ignition score: volume spike x volatility */
   radar_score: number

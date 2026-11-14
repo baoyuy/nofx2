@@ -62,7 +62,8 @@ type Screener struct {
 
 	mu         sync.Mutex
 	snaps      map[string]symbolSnapshot
-	watched    map[string]bool // symbols that passed the gates this pass
+	watched    map[string]bool      // symbols that passed the gates this pass
+	seen       map[string]time.Time // first time a symbol reached the board
 	scanned    int
 	count      int // candidates that passed the gates
 	fullAt     time.Time
@@ -82,6 +83,7 @@ func New() *Screener {
 		BaseURL: "https://fapi.binance.com",
 		HTTP:    &http.Client{Timeout: 15 * time.Second},
 		live:    newLiveTickers(),
+		seen:    make(map[string]time.Time),
 	}
 }
 
@@ -243,13 +245,37 @@ func (s *Screener) build(limit int) Board {
 			Bars5m: bars5, Bars1h: bars1,
 			OIChange1h: snap.OIChange1h, OIKnown: snap.OIKnown,
 			Funding: snap.Funding, BTCChange24h: btc,
-			HasDay: hasDay, DayGain: dayGain, ElapsedH: elapsed, VolumeSlope: volSlope, DayHighDist: dayHighDist,
+			HasDay: hasDay, DayGain: dayGain, ElapsedH: elapsed, RiseH: riseHours(bars1, time.Now()),
+			VolumeSlope: volSlope, DayHighDist: dayHighDist,
 		})
 		if !ok || row.DistanceHigh > MaxDistanceHigh {
 			continue
 		}
 		rows = append(rows, row)
 	}
+	// Discovery tracking: stamp the first time each symbol reached the board so
+	// the UI can show what is genuinely new.
+	now := time.Now()
+	s.mu.Lock()
+	present := make(map[string]bool, len(rows))
+	for i := range rows {
+		sym := rows[i].Symbol
+		present[sym] = true
+		if _, ok := s.seen[sym]; !ok {
+			s.seen[sym] = now
+		}
+		first := s.seen[sym]
+		rows[i].FirstSeenMs = first.UnixMilli()
+		rows[i].TrackedMin = now.Sub(first).Minutes()
+		rows[i].IsNew = now.Sub(first) < 15*time.Minute
+	}
+	for sym, t := range s.seen {
+		if !present[sym] && now.Sub(t) > 6*time.Hour {
+			delete(s.seen, sym)
+		}
+	}
+	s.mu.Unlock()
+
 	// Two lists. The ambush list is what the page is for: ranked by where the
 	// coin is expected to END the day, so a coin early in a big move outranks
 	// one that already ran. Coins that already ran are kept apart, not ranked

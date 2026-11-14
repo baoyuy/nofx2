@@ -497,7 +497,7 @@ func Evaluate(in Input) (Row, bool) {
 	return Row{
 		Symbol: in.Symbol, Price: in.Price, Change24h: in.Change24h, Change5m: ret5, Change15m: ret15,
 		PredictedFinal: finalGain * 100, Ran: ran, Ambush: ambush,
-		VolSpike1h: vspike, RadarScore: radarScore, Radar: radar,
+		VolSpike1h: vspike, RadarScore: radarScore, Radar: radar, RiseH: in.RiseH,
 		Volume24h: in.Volume24h, VolRatio: vr, OIChange1h: in.OIChange1h, OIKnown: in.OIKnown, Funding: in.Funding,
 		Change1h: ch1, Change4h: ch4, EMASlope: slope, TakerBuyRatio: takerRatio, RiseEfficiency: efficiency,
 		DayGain: in.DayGain, ElapsedH: in.ElapsedH, VolumeSlope: in.VolumeSlope,
@@ -540,34 +540,76 @@ func formingBar(bars []Kline, price float64, interval time.Duration, now time.Ti
 	return out
 }
 
-// volumeSpike1h compares the last closed hour's volume with the median hour
-// over the prior days. It is the live proxy for the 15m spike validated in the
-// backtest, using the hourly bars the screener already keeps.
+// volumeSpike1h compares the last closed hour's volume with the same hour on
+// prior days, which cancels the night/day volume cycle that made a raw median
+// report almost every coin as spiking.
 func volumeSpike1h(bars []Kline) float64 {
 	if len(bars) < 25 {
 		return 0
 	}
-	cur := bars[len(bars)-1].Volume
-	if cur <= 0 {
+	last := bars[len(bars)-1]
+	if last.Volume <= 0 {
 		return 0
 	}
-	prior := make([]float64, 0, len(bars)-1)
-	from := len(bars) - 1 - 168
-	if from < 0 {
-		from = 0
-	}
-	for i := from; i < len(bars)-1; i++ {
-		if bars[i].Volume > 0 {
-			prior = append(prior, bars[i].Volume)
+	hour := time.UnixMilli(last.Time).In(beijing).Hour()
+	same := make([]float64, 0, 8)
+	all := make([]float64, 0, len(bars))
+	for i := 0; i < len(bars)-1; i++ {
+		if bars[i].Volume <= 0 {
+			continue
+		}
+		all = append(all, bars[i].Volume)
+		if time.UnixMilli(bars[i].Time).In(beijing).Hour() == hour {
+			same = append(same, bars[i].Volume)
 		}
 	}
-	if len(prior) < 20 {
+	base := medianOf(same)
+	if len(same) < 4 {
+		base = medianOf(all)
+	}
+	if base <= 0 {
 		return 0
 	}
-	sort.Float64s(prior)
-	med := prior[len(prior)/2]
-	if med <= 0 {
+	return math.Min(30, last.Volume/base)
+}
+
+func medianOf(v []float64) float64 {
+	if len(v) == 0 {
 		return 0
 	}
-	return math.Min(30, cur/med)
+	sort.Float64s(v)
+	return v[len(v)/2]
+}
+
+// riseHours counts hours since today's lowest bar, the real length of the move
+// rather than hours elapsed since midnight.
+func riseHours(hourly []Kline, now time.Time) float64 {
+	if len(hourly) == 0 {
+		return 0
+	}
+	local := now.In(beijing)
+	start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, beijing).UnixMilli()
+	idx := -1
+	low := math.Inf(1)
+	lowTime := int64(0)
+	for i := range hourly {
+		if hourly[i].Time < start || hourly[i].Low <= 0 {
+			continue
+		}
+		if idx < 0 {
+			idx = i
+		}
+		if hourly[i].Low < low {
+			low = hourly[i].Low
+			lowTime = hourly[i].Time
+		}
+	}
+	if idx < 0 || lowTime == 0 {
+		return 0
+	}
+	h := now.Sub(time.UnixMilli(lowTime)).Hours()
+	if h < 0 {
+		return 0
+	}
+	return h
 }
