@@ -271,6 +271,7 @@ export interface RiskControlConfig {
   min_position_size: number // Min position size in USDT (CODE ENFORCED)
   min_risk_reward_ratio: number // Min take_profit / stop_loss ratio (AI guided)
   min_stop_atr?: number // Stop at least this many ATR14 from price (0 = off), enforced by the program
+  max_stop_atr?: number // Stop at most this many ATR14 from price (0 = off), enforced by the program
   min_confidence: number // Min AI confidence to open position (AI guided)
   min_oi_value_millions?: number // Skip candidates with OI value below this (million USD), 0 = off (CODE ENFORCED)
   profit_protection?: ProfitProtectionConfig

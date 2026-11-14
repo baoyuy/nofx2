@@ -216,8 +216,10 @@ func (p *PaperTrader) CancelStopLossOrders(symbol string) error {
 func (p *PaperTrader) CancelTakeProfitOrders(symbol string) error {
 	return p.clearProtect(symbol, false, true)
 }
-func (p *PaperTrader) CancelAllOrders(symbol string) error  { return p.clearProtect(symbol, true, true) }
-func (p *PaperTrader) CancelStopOrders(symbol string) error { return p.clearProtect(symbol, true, true) }
+func (p *PaperTrader) CancelAllOrders(symbol string) error { return p.clearProtect(symbol, true, true) }
+func (p *PaperTrader) CancelStopOrders(symbol string) error {
+	return p.clearProtect(symbol, true, true)
+}
 
 func (p *PaperTrader) GetOrderStatus(symbol string, orderID string) (map[string]interface{}, error) {
 	id, err := strconv.ParseInt(orderID, 10, 64)

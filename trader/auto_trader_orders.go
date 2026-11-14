@@ -83,6 +83,24 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	if err := validateProtectionPrices(decision.Action, marketData.CurrentPrice, decision.StopLoss, decision.TakeProfit, at.usesSignalManagedExit()); err != nil {
 		return err
 	}
+	// [CODE ENFORCED] Keep the stop inside the ATR band from config (short).
+	if cfg := at.GetStrategyConfig(); cfg != nil {
+		atr := primaryATR(marketData, cfg)
+		if ns := clampStopToATR(false, marketData.CurrentPrice, atr, decision.StopLoss, cfg.RiskControl.MinStopATR, cfg.RiskControl.MaxStopATR); ns != decision.StopLoss {
+			logger.Infof("  ⚙️ Stop adjusted (short) for %s: %.6f → %.6f (ATR14 %.6f)", decision.Symbol, decision.StopLoss, ns, atr)
+			decision.StopLoss = ns
+		}
+	}
+	// [CODE ENFORCED] Keep the stop inside the ATR band from config, whatever
+	// the AI proposed. A fast coin can gap several percent in one candle; this
+	// caps the damage without relying on the model to size the stop.
+	if cfg := at.GetStrategyConfig(); cfg != nil {
+		atr := primaryATR(marketData, cfg)
+		if ns := clampStopToATR(true, marketData.CurrentPrice, atr, decision.StopLoss, cfg.RiskControl.MinStopATR, cfg.RiskControl.MaxStopATR); ns != decision.StopLoss {
+			logger.Infof("  ⚙️ Stop adjusted (long) for %s: %.6f → %.6f (ATR14 %.6f)", decision.Symbol, decision.StopLoss, ns, atr)
+			decision.StopLoss = ns
+		}
+	}
 
 	// Get balance (needed for multiple checks)
 	balance, err := at.trader.GetBalance()
@@ -313,4 +331,26 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 		}
 	}
 	return nil
+}
+
+// primaryATR returns the ATR14 (in price units) of the strategy's primary
+// timeframe, falling back to the intraday / longer-term series when the
+// timeframe data is absent. 0 means unknown and disables the ATR stop band.
+func primaryATR(md *market.Data, cfg *store.StrategyConfig) float64 {
+	if md == nil {
+		return 0
+	}
+	if cfg != nil && md.TimeframeData != nil {
+		tf := cfg.Indicators.Klines.PrimaryTimeframe
+		if series := md.TimeframeData[tf]; series != nil && series.ATR14 > 0 {
+			return series.ATR14
+		}
+	}
+	if md.IntradaySeries != nil && md.IntradaySeries.ATR14 > 0 {
+		return md.IntradaySeries.ATR14
+	}
+	if md.LongerTermContext != nil && md.LongerTermContext.ATR14 > 0 {
+		return md.LongerTermContext.ATR14
+	}
+	return 0
 }

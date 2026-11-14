@@ -2,6 +2,7 @@ package trader
 
 import (
 	"errors"
+	"math"
 	"testing"
 
 	"nofx/kernel"
@@ -219,5 +220,29 @@ func TestEmergencyCloseFailsIfOrderCleanupFails(t *testing.T) {
 	at := &AutoTrader{trader: fake}
 	if err := at.emergencyClosePositionAndVerify("BTCUSDT", "long", 1); err == nil {
 		t.Fatal("expected cleanup error to fail closed")
+	}
+}
+
+func TestClampStopToATRBand(t *testing.T) {
+	cases := []struct {
+		name             string
+		isLong           bool
+		price, atr, stop float64
+		minMult, maxMult float64
+		want             float64
+	}{
+		{"long inside band", true, 100, 1, 98, 1, 3, 98},
+		{"long too tight widened", true, 100, 1, 99.5, 1, 3, 99},
+		{"long too wide tightened", true, 100, 1, 90, 1, 3, 97},
+		{"short inside band", false, 100, 1, 102, 1, 3, 102},
+		{"short too wide tightened", false, 100, 1, 108, 1, 3, 103},
+		{"max off keeps wide", true, 100, 1, 90, 0, 0, 90},
+		{"atr unknown untouched", true, 100, 0, 90, 1, 3, 90},
+	}
+	for _, c := range cases {
+		got := clampStopToATR(c.isLong, c.price, c.atr, c.stop, c.minMult, c.maxMult)
+		if math.Abs(got-c.want) > 1e-9 {
+			t.Fatalf("%s: got %v want %v", c.name, got, c.want)
+		}
 	}
 }

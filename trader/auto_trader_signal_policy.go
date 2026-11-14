@@ -203,3 +203,35 @@ func applyVergexSignalPolicy(
 	}
 	return filtered, blocked
 }
+
+// clampStopToATR keeps a decision's stop within a volatility band: at least
+// minMult×ATR and at most maxMult×ATR from the entry price (0 = that bound is
+// off). It is the program-side guarantee that a fast coin cannot carry a stop
+// the AI set too wide (a single 5m candle can gap -12%) nor a stop so tight
+// that normal noise takes it out. Applies to every coin source.
+func clampStopToATR(isLong bool, price, atr, stop, minMult, maxMult float64) float64 {
+	if price <= 0 || atr <= 0 || stop <= 0 {
+		return stop
+	}
+	dist := price - stop
+	if !isLong {
+		dist = stop - price
+	}
+	if dist < 0 {
+		dist = -dist
+	}
+	minD, maxD := minMult*atr, maxMult*atr
+	if maxD > 0 && minD > maxD {
+		minD = maxD
+	}
+	if minD > 0 && dist < minD {
+		dist = minD
+	}
+	if maxD > 0 && dist > maxD {
+		dist = maxD
+	}
+	if isLong {
+		return price - dist
+	}
+	return price + dist
+}

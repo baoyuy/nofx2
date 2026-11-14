@@ -184,6 +184,16 @@ func (c *StrategyConfig) ClampLimits() {
 	if c.RiskControl.MinStopATR > 5 {
 		c.RiskControl.MinStopATR = 5
 	}
+	if c.RiskControl.MaxStopATR < 0 {
+		c.RiskControl.MaxStopATR = 0
+	}
+	if c.RiskControl.MaxStopATR > 10 {
+		c.RiskControl.MaxStopATR = 10
+	}
+	// A max below the min would make the band empty: lift the min to the max.
+	if c.RiskControl.MaxStopATR > 0 && c.RiskControl.MinStopATR > c.RiskControl.MaxStopATR {
+		c.RiskControl.MinStopATR = c.RiskControl.MaxStopATR
+	}
 	c.RiskControl.ProfitProtection = NormalizeProfitProtection(c.RiskControl.ProfitProtection)
 	if c.CoinSource.SourceType == "copy_trade" || c.CoinSource.CopyTradeContext {
 		c.CoinSource.clampCopyTradeGates()
@@ -1141,10 +1151,13 @@ type RiskControlConfig struct {
 	// Candidates whose open-interest value is below this many million USD are
 	// left out of the AI prompt (CODE ENFORCED). nil = default 15M, 0 = off.
 	MinOIValueMillions *float64 `json:"min_oi_value_millions,omitempty"`
-	// MinStopATR rejects opens whose stop loss is closer to the price than
-	// this many ATR14 of the primary timeframe (0 = off), so normal noise
-	// does not stop the trade out.
+	// MinStopATR widens (or rejects) stops closer than this many ATR14 of the
+	// primary timeframe (0 = off), so normal noise does not stop the trade out.
 	MinStopATR float64 `json:"min_stop_atr,omitempty"`
+	// MaxStopATR tightens stops farther than this many ATR14 from the price
+	// (0 = off). On fast coins this caps a single trade's loss regardless of
+	// what the AI proposes. Enforced by the program on every open.
+	MaxStopATR float64 `json:"max_stop_atr,omitempty"`
 
 	// Optional, price-basis protection for NEW Binance paper positions only.
 	ProfitProtection ProfitProtectionConfig `json:"profit_protection,omitempty"`

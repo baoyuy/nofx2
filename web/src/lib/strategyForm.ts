@@ -20,6 +20,7 @@ export const LIMITS = {
   riskReward: { min: 1, max: 10 },
   // ATR14 multiples; mirrors store ClampLimits.
   minStopATR: { min: 0, max: 5 },
+  maxStopATR: { min: 0, max: 10 },
 } as const
 
 export const DEFAULT_MIN_OI_VALUE = 15
@@ -187,6 +188,7 @@ export interface FreeForm {
   minRiskReward: number
   // Program-enforced: stop at least this many ATR14 from the price; 0 = off.
   minStopATR?: number
+  maxStopATR?: number
   profitProtection?: ProfitProtectionConfig
   customPrompt: string
   // Editable rule sections; undefined keeps the saved ones.
@@ -467,6 +469,7 @@ export function formFromStrategy(strategy: Strategy): FreeForm {
       SAFE_DEFAULTS.minConfidence
     ),
     minStopATR: clampNumber(risk?.min_stop_atr, LIMITS.minStopATR, 0),
+    maxStopATR: clampNumber(risk?.max_stop_atr, LIMITS.maxStopATR, 0),
     profitProtection: normalizeProfitProtection(risk?.profit_protection),
     minRiskReward: clampNumber(
       risk?.min_risk_reward_ratio,
@@ -638,6 +641,7 @@ export function configFromForm(
           DEFAULT_MIN_OI_VALUE,
         min_risk_reward_ratio: form.minRiskReward,
         min_stop_atr: form.minStopATR || 0,
+        max_stop_atr: form.maxStopATR || 0,
         min_confidence: form.minConfidence,
         profit_protection: normalizeProfitProtection(
           form.profitProtection ?? ai?.risk_control.profit_protection

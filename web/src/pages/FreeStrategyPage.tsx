@@ -1523,6 +1523,24 @@ export function FreeStrategyPage() {
                     suffix="ATR"
                   />
                 </Field>
+                <Field
+                  language={language}
+                  enforced="code"
+                  label={text(language, '止损最大距离', 'Max stop distance')}
+                  hint={text(
+                    language,
+                    '止损离现价最多几倍 ATR。AI 想设更宽的止损会被程序自动收紧到这个范围，避免短线妖币一根 K 线暴跌造成大亏。0 表示不限制，短线建议 1.5~2。',
+                    'Stop at most this many ATR from the price. A wider AI stop is tightened into this range by the program, so one fast candle cannot cause a huge loss. 0 = off; 1.5–2 for short-term.'
+                  )}
+                >
+                  <NumberInput
+                    value={form.maxStopATR || 0}
+                    range={LIMITS.maxStopATR}
+                    step={0.5}
+                    onChange={(maxStopATR) => patchForm({ maxStopATR })}
+                    suffix="ATR"
+                  />
+                </Field>
               </div>
               <RiskSummary form={form} language={language} />
               <ProfitProtectionPanel

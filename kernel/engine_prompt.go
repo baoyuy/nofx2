@@ -607,6 +607,14 @@ func writeHardConstraints(sb *strings.Builder, accountEquity float64, riskContro
 		sb.WriteString(fmt.Sprintf("- Min Confidence: ≥%d to open position\n\n", riskControl.MinConfidence))
 	}
 
+	if riskControl.MinStopATR > 0 || riskControl.MaxStopATR > 0 {
+		if zh {
+			sb.WriteString(fmt.Sprintf("- 止损距离（程序强制）：止损价距现价约 %.1f ~ %.1f × ATR14（0 表示该端不限制）；超出范围会被程序自动收紧/放宽。\n", riskControl.MinStopATR, riskControl.MaxStopATR))
+		} else {
+			sb.WriteString(fmt.Sprintf("- Stop Distance (enforced by the program): stop_loss about %.1f-%.1f × ATR14 from price (0 = that bound off); values outside are clamped automatically.\n", riskControl.MinStopATR, riskControl.MaxStopATR))
+		}
+	}
+
 	// Position sizing guidance
 	exampleRatio := btcEthPosValueRatio
 	if singleSymbol {
