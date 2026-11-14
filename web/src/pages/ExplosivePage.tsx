@@ -117,19 +117,37 @@ export function ExplosivePage() {
   const { data, error, mutate, isValidating } = useSWR(
     'market/explosive',
     () => explosiveApi.board(),
-    { refreshInterval: 4000, revalidateOnFocus: false, keepPreviousData: true, dedupingInterval: 3000 }
+    { refreshInterval: 2000, revalidateOnFocus: false, keepPreviousData: true, dedupingInterval: 1200 }
   )
   const rows = data?.rows || []
   const blasted = data?.blasted || []
   const radar = data?.radar || []
   const current = selected || rows[0]?.symbol || ''
-  const row = useMemo(() => rows.find((r) => r.symbol === current) || null, [rows, current])
+  const allRows = useMemo(() => [...rows, ...radar, ...blasted], [rows, radar, blasted])
+  const row = useMemo(() => allRows.find((r) => r.symbol === current) || null, [allRows, current])
 
   const { data: candles = [] } = useSWR(
     current ? ['explosive/klines', current, chartInterval] : null,
     () => api.getMarketKlines(current, chartInterval, 300) as Promise<MarketKline[]>,
-    { revalidateOnFocus: false, dedupingInterval: 60000, keepPreviousData: true }
+    { revalidateOnFocus: false, dedupingInterval: 5000, keepPreviousData: true, refreshInterval: 30000 }
   )
+
+  // The candle series only refreshes every 30s, but the selected coin's price is
+  // live from the board (every 4s). Paint the live price onto the forming last
+  // candle so the chart moves instead of sitting still like an ornament.
+  const liveCandles = useMemo(() => {
+    const p = row?.price ?? 0
+    if (!candles.length || !(p > 0)) return candles
+    const out = candles.slice()
+    const last = out[out.length - 1]
+    out[out.length - 1] = {
+      ...last,
+      close: p,
+      high: Math.max(last.high, p),
+      low: Math.min(last.low, p),
+    }
+    return out
+  }, [candles, row?.price])
 
   // Flag coins that just entered the radar since the previous poll.
   const prevRadar = useRef<Set<string>>(new Set())
@@ -153,7 +171,7 @@ export function ExplosivePage() {
 
   const main: MainIndicator = 'EMA'
   const subs: SubIndicator[] = ['VOL']
-  const last = candles[candles.length - 1]?.close || row?.price || 0
+  const last = liveCandles[liveCandles.length - 1]?.close || row?.price || 0
   const decimals = priceDecimals(last)
   const refresh = () => void mutate(() => explosiveApi.board(true), { revalidate: false })
 
@@ -493,7 +511,11 @@ export function ExplosivePage() {
               <div className="mb-2 flex items-baseline gap-2">
                 <h2 className="text-base font-semibold text-nofx-text">{current ? current.replace('USDT', '') : '--'}</h2>
                 {row ? <PriceTag price={row.price} decimals={decimals} /> : null}
-                <div className="ml-auto flex gap-1">
+                <span className="ml-auto flex items-center gap-1 text-[10px] text-nofx-text-muted" title={tr(language, '最后一根蜡烛随实时价格更新', 'last candle follows the live price')}>
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: BN.up }} />
+                  {tr(language, '实时', 'live')}
+                </span>
+                <div className="flex gap-1">
                   {['5m', '15m', '1h', '4h'].map((iv) => (
                     <button key={iv} type="button" className={`${ui.btnGhost} ${iv === chartInterval ? 'border-nofx-gold text-nofx-gold' : ''}`} onClick={() => setChartInterval(iv)}>
                       {iv}
@@ -501,8 +523,8 @@ export function ExplosivePage() {
                   ))}
                 </div>
               </div>
-              {candles.length ? (
-                <BinanceChart candles={candles} decimals={decimals} main={main} subs={subs} levels={{}} resetKey={`${current}:${chartInterval}`} height={320} />
+              {liveCandles.length ? (
+                <BinanceChart candles={liveCandles} decimals={decimals} main={main} subs={subs} levels={{}} resetKey={`${current}:${chartInterval}`} height={320} />
               ) : (
                 <p className={`py-10 text-center ${ui.muted}`}>{tr(language, '加载 K 线…', 'Loading candles…')}</p>
               )}
