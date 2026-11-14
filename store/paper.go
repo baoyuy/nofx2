@@ -30,6 +30,7 @@ type ExplosivePaperTrade struct {
 	Stop     float64 `gorm:"column:stop_price" json:"stop_price"`
 	Target   float64 `gorm:"column:target_price" json:"target_price"`
 	ATRPct   float64 `gorm:"column:atr_pct" json:"atr_pct"`
+	Extreme  float64 `gorm:"column:extreme" json:"extreme"` // best price since entry (trailing stop)
 	RiskUSD  float64 `gorm:"column:risk_usd" json:"risk_usd"`
 	VolSpike float64 `gorm:"column:vol_spike" json:"vol_spike"`
 	OIPct    float64 `gorm:"column:oi_pct" json:"oi_pct"`
@@ -143,6 +144,14 @@ type ExplosivePaperSettings struct {
 	// Leverage is carried for real-account execution (1-20x). In the paper
 	// account it sets the margin a position would require (notional/leverage).
 	Leverage float64 `gorm:"column:leverage" json:"leverage"`
+	// Cost + risk model.
+	SlippageBps       float64 `gorm:"column:slippage_bps" json:"slippage_bps"`                 // per-fill slippage, basis points
+	MaxVolumePct      float64 `gorm:"column:max_volume_pct" json:"max_volume_pct"`             // notional ≤ 24h volume × this
+	MaxGrossX         float64 `gorm:"column:max_gross_x" json:"max_gross_x"`                   // total notional ≤ equity × this
+	DailyLossLimitPct float64 `gorm:"column:daily_loss_limit_pct" json:"daily_loss_limit_pct"` // stop opening after this daily loss %
+	CooldownMin       float64 `gorm:"column:cooldown_min" json:"cooldown_min"`                 // wait after closing a symbol
+	TrailStartATR     float64 `gorm:"column:trail_start_atr" json:"trail_start_atr"`           // start trailing after +N ATR
+	TrailATR          float64 `gorm:"column:trail_atr" json:"trail_atr"`                       // trail this many ATR behind the high
 	// Entry gates for the coin's day gain and the OI confirmation.
 	GainMinPct float64 `gorm:"column:gain_min_pct" json:"gain_min_pct"`
 	GainMaxPct float64 `gorm:"column:gain_max_pct" json:"gain_max_pct"`
@@ -164,4 +173,22 @@ func (s *PaperStore) GetSettings() (ExplosivePaperSettings, error) {
 func (s *PaperStore) SaveSettings(v *ExplosivePaperSettings) error {
 	v.ID = 1
 	return s.db.Save(v).Error
+}
+
+// LastClosedAt returns the close time of the most recent closed trade for the
+// symbol, used for the re-entry cooldown.
+func (s *PaperStore) LastClosedAt(accountID int64, symbol string) (int64, error) {
+	var out ExplosivePaperTrade
+	err := s.db.Where("account_id = ? AND symbol = ? AND status = ?", accountID, symbol, "closed").
+		Order("closed_at DESC").Limit(1).Find(&out).Error
+	return out.ClosedAt, err
+}
+
+// RealizedSince sums realised PnL closed after sinceMs (daily loss breaker).
+func (s *PaperStore) RealizedSince(accountID int64, sinceMs int64) (float64, error) {
+	var sum float64
+	err := s.db.Model(&ExplosivePaperTrade{}).
+		Where("account_id = ? AND status = ? AND closed_at >= ?", accountID, "closed", sinceMs).
+		Select("COALESCE(SUM(realized_pnl),0)").Scan(&sum).Error
+	return sum, err
 }

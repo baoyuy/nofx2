@@ -126,8 +126,9 @@ function OpenTable({ language, positions }: { language: string; positions: OpenP
             <tr key={p.id} className={`border-t ${ui.border}`}>
               <td className="px-2 py-1.5 font-medium">{p.symbol.replace('USDT', '')}</td>
               <td className="px-2 text-right tabular-nums">{price(p.entry_price)}</td>
-              <td className="px-2 text-right tabular-nums" style={{ color: p.unrealized_pnl >= 0 ? BN.up : BN.down }}>
+              <td className="px-2 text-right tabular-nums" style={{ color: p.unrealized_pnl >= 0 ? BN.up : BN.down, opacity: p.stale ? 0.45 : 1 }}>
                 {price(p.current_price)}
+                {p.stale ? <span className={`ml-1 text-[10px] ${ui.muted}`}>延迟</span> : null}
               </td>
               <td className="px-2 text-right tabular-nums" style={{ color: BN.down }}>{price(p.stop_price)}</td>
               <td className="px-2 text-right tabular-nums" style={{ color: BN.up }}>{price(p.target_price)}</td>
@@ -160,6 +161,23 @@ function SettingsForm({ language, settings, onSaved }: { language: string; setti
       setBusy(false)
     }
   }
+  const fieldPct = (label: string, hint: string, key: keyof PaperSettings, step: number, min: number, max: number) => (
+    <label className="flex flex-col gap-1 text-xs" title={hint}>
+      <span className={ui.muted}>{label}</span>
+      <div className="flex items-center gap-1">
+        <input
+          type="number"
+          step={step}
+          min={min}
+          max={max}
+          value={Number(((s[key] as number) ?? 0) * 100).toFixed(2)}
+          onChange={(e) => num(key, (Number(e.target.value) || 0) / 100)}
+          className="w-20 rounded border border-[rgba(25,36,52,0.14)] bg-transparent px-2 py-1 text-right tabular-nums"
+        />
+        <span className={ui.muted}>%</span>
+      </div>
+    </label>
+  )
   const field = (label: string, hint: string, key: keyof PaperSettings, step: number, min: number, max: number, suffix: string) => (
     <label className="flex flex-col gap-1 text-xs" title={hint}>
       <span className={ui.muted}>{label}</span>
@@ -194,6 +212,18 @@ function SettingsForm({ language, settings, onSaved }: { language: string; setti
         {field(tr(language, '时间止损', 'Time stop'), tr(language, '持仓超过几小时没触发止损止盈就平仓', 'close after N hours if neither hit'), 'time_stop_hours', 0.5, 0.5, 24, tr(language, '小时', 'h'))}
         {field(tr(language, '涨幅下限', 'Min day gain'), tr(language, '今日涨幅至少多少才买', 'minimum day gain to enter'), 'gain_min_pct', 1, 0, 50, '%')}
         {field(tr(language, '涨幅上限', 'Max day gain'), tr(language, '今日涨幅超过多少就不追（太大往往是尾声）', 'skip coins already up more than this'), 'gain_max_pct', 1, 5, 80, '%')}
+      </div>
+      <div className={`mt-3 border-t ${ui.border} pt-2 text-[11px] font-semibold ${ui.muted}`}>
+        {tr(language, '成本与风控（模拟真实成交）', 'Costs & risk (realistic fills)')}
+      </div>
+      <div className="mt-1 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {field(tr(language, '滑点', 'Slippage'), tr(language, '每次成交的滑点，基点（5 = 0.05%）', 'per-fill slippage in bps (5 = 0.05%)'), 'slippage_bps', 1, 0, 100, 'bps')}
+        {fieldPct(tr(language, '流动性上限', 'Liquidity cap'), tr(language, '单笔仓位最多占 24h 成交额的百分比', 'max notional as % of 24h volume'), 'max_volume_pct', 0.1, 0.1, 100)}
+        {field(tr(language, '总敞口上限', 'Gross cap'), tr(language, '所有持仓名义合计最多几倍权益', 'total notional cap × equity'), 'max_gross_x', 0.1, 0.1, 10, '×权益')}
+        {field(tr(language, '日亏损熔断', 'Daily loss stop'), tr(language, '当天亏损达到权益的百分之几就停止开新仓', 'stop opening after this daily loss %'), 'daily_loss_limit_pct', 0.5, 0.1, 50, '%')}
+        {field(tr(language, '平仓冷却', 'Cooldown'), tr(language, '同一币平仓后等几分钟才能再买', 'minutes before re-entering the same coin'), 'cooldown_min', 1, 0, 1440, tr(language, '分钟', 'min'))}
+        {field(tr(language, '移动止损启动', 'Trail start'), tr(language, '浮盈超过几倍 ATR 后开始移动止损', 'start trailing after +N ATR'), 'trail_start_atr', 0.1, 0.1, 5, '×ATR')}
+        {field(tr(language, '移动止损回撤', 'Trail gap'), tr(language, '移动止损跟在最高价后面几倍 ATR', 'trail this many ATR behind the high'), 'trail_atr', 0.1, 0.1, 5, '×ATR')}
       </div>
       <label className="mt-2 flex items-center gap-2 text-xs" title={tr(language, '勾选：量能突增和 OI 增加都要满足（严格）；不勾：满足其一即可（宽松）', 'Checked: need BOTH volume spike and OI rise (strict). Unchecked: either one (loose).')}>
         <input
@@ -370,6 +400,14 @@ export function PaperPanel({ language }: { language: string }) {
           {tr(language, '量化账户加载失败：', 'Could not load quant account: ')}
           {error instanceof Error ? error.message : String(error)}
         </p>
+      ) : null}
+
+      {data && (data.halted || data.engine_stale || data.stale_count > 0) ? (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-600">
+          {data.halted === 'daily_loss_limit' ? <div>⚠ {tr(language, '已触发日亏损熔断，暂停开新仓（次日恢复）', 'Daily loss limit hit — new entries paused until next day.')}</div> : null}
+          {data.engine_stale ? <div>⚠ {tr(language, '引擎心跳超时，数据可能不是最新的', 'Engine heartbeat is stale; data may be out of date.')}</div> : null}
+          {data.stale_count > 0 ? <div>⚠ {data.stale_count} {tr(language, '个持仓价格延迟，盈亏可能不准', 'positions have delayed prices; PnL may be off.')}</div> : null}
+        </div>
       ) : null}
 
       <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_300px]">

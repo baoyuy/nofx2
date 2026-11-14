@@ -180,6 +180,7 @@ export interface OpenPosition {
   unrealized_pnl: number
   unrealized_pct: number
   margin: number
+  stale: boolean
   opened_at: number
 }
 
@@ -196,6 +197,13 @@ export interface PaperSettings {
   gain_max_pct: number
   oi_required: boolean
   leverage: number
+  slippage_bps: number
+  max_volume_pct: number
+  max_gross_x: number
+  daily_loss_limit_pct: number
+  cooldown_min: number
+  trail_start_atr: number
+  trail_atr: number
   updated_at: number
 }
 
@@ -230,6 +238,10 @@ export interface ExplosivePaper {
   recent: PaperTrade[]
   equity_series: PaperEquityPoint[]
   config: Record<string, number>
+  last_tick: number
+  stale_count: number
+  halted: string
+  engine_stale: boolean
   updated_at: number
 }
 
