@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -22,6 +23,7 @@ import {
   type Time,
   type UTCTimestamp,
 } from 'lightweight-charts'
+import { analyzeChart, type ChartAnalysis } from '../../utils/chartAnalysis'
 import {
   boll,
   ema,
@@ -80,6 +82,8 @@ interface Props {
   overlay?: (p: ChartProjector) => ReactNode
   resetKey: string // changes when symbol/interval changes, to refit the view
   height?: number
+  /** Auto-drawn support/resistance, trend, channel and Fibonacci lines. */
+  autoLines?: boolean
 }
 
 /** Maps candle time and price to pixels in the K-line pane. */
@@ -210,6 +214,7 @@ export function BinanceChart({
   overlay,
   resetKey,
   height = 620,
+  autoLines = true,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -565,7 +570,8 @@ export function BinanceChart({
   // Re-project after every view move and data change (the chart updates
   // its coordinates synchronously in setData and range changes).
   const [proj, setProj] = useState<ChartProjector | null>(null)
-  const hasOverlay = Boolean(overlay)
+  const hasOverlay = Boolean(overlay || autoLines)
+  const analysis = useMemo(() => (autoLines ? analyzeChart(candles) : null), [autoLines, candles])
   useEffect(() => {
     const chart = chartRef.current
     const s = seriesRef.current
@@ -589,12 +595,13 @@ export function BinanceChart({
   return (
     <div className="relative w-full" style={{ height, background: BN.bg }}>
       <div ref={containerRef} className="absolute inset-0" />
-      {overlay && proj ? (
+      {hasOverlay && proj ? (
         <div
           className="pointer-events-none absolute left-0 top-0 z-20 overflow-hidden"
           style={{ width: proj.width, height: proj.height }}
         >
-          {overlay(proj)}
+          {overlay?.(proj)}
+          {analysis ? <AutoLines proj={proj} data={analysis} /> : null}
         </div>
       ) : null}
       {legends.map((items, i) => (
@@ -611,5 +618,51 @@ export function BinanceChart({
         </div>
       ))}
     </div>
+  )
+}
+
+const SR_COLOR = { s: '#2e8b57', r: '#d6433a', trend: '#7c3aed', channel: '#295be8', fib: '#d97706' }
+
+/** Draws the analysed levels and lines in chart pixel space. */
+function AutoLines({ proj, data }: { proj: ChartProjector; data: ChartAnalysis }) {
+  const W = proj.width
+  const nodes: ReactNode[] = []
+  const price = (v: number) => (v >= 100 ? v.toFixed(2) : v.toFixed(5))
+
+  const hline = (key: string, value: number, color: string, label: string, dashed = false) => {
+    const y = proj.y(value)
+    if (y == null) return
+    nodes.push(
+      <g key={key}>
+        <line x1={0} x2={W} y1={y} y2={y} stroke={color} strokeWidth={1} strokeDasharray={dashed ? '4 4' : undefined} opacity={0.75} />
+        <text x={W - 4} y={y - 3} textAnchor="end" fontSize={9} fill={color} opacity={0.9}>
+          {label} {price(value)}
+        </text>
+      </g>
+    )
+  }
+  const seg = (key: string, a: { time: number; price: number }, b: { time: number; price: number }, color: string, dashed = false) => {
+    const x1 = proj.x(a.time)
+    const y1 = proj.y(a.price)
+    const x2 = proj.x(b.time)
+    const y2 = proj.y(b.price)
+    if (x1 == null || y1 == null || x2 == null || y2 == null) return
+    nodes.push(
+      <line key={key} x1={x1} y1={y1} x2={x2} y2={y2} stroke={color} strokeWidth={1.5} strokeDasharray={dashed ? '6 4' : undefined} opacity={0.85} />
+    )
+  }
+
+  data.resistances.forEach((l, i) => hline(`r${i}`, l.price, SR_COLOR.r, `R${i + 1}`))
+  data.supports.forEach((l, i) => hline(`s${i}`, l.price, SR_COLOR.s, `S${i + 1}`))
+  data.fib?.levels.forEach((l) => hline(`f${l.ratio}`, l.price, SR_COLOR.fib, `${(l.ratio * 100).toFixed(1)}%`, true))
+  if (data.trend) seg('trend', data.trend.a, data.trend.b, SR_COLOR.trend)
+  if (data.channel) {
+    seg('chU', data.channel.upper[0], data.channel.upper[1], SR_COLOR.channel, true)
+    seg('chL', data.channel.lower[0], data.channel.lower[1], SR_COLOR.channel, true)
+  }
+  return (
+    <svg width={W} height={proj.height} className="absolute inset-0" aria-hidden>
+      {nodes}
+    </svg>
   )
 }

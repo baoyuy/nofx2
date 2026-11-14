@@ -52,6 +52,7 @@ export function MarketPage() {
     const saved = loadPref('main', 'MA') as MainIndicator
     return mains.includes(saved) ? saved : 'MA'
   })
+  const [autoLines, setAutoLines] = useState(true)
   const [subs, setSubs] = useState<SubIndicator[]>(() =>
     loadPref('subs', 'VOL,MACD')
       .split(',')
@@ -277,6 +278,16 @@ export function MarketPage() {
                   {s}
                 </button>
               ))}
+              <span className="mx-2 h-4 w-px bg-[rgba(25,36,52,0.14)]" />
+              <button
+                type="button"
+                aria-pressed={autoLines}
+                className={tab(autoLines)}
+                onClick={() => setAutoLines((v) => !v)}
+                title={tr(language, '自动画支撑/阻力、趋势线、通道、斐波那契', 'Auto support/resistance, trend, channel, Fibonacci')}
+              >
+                {tr(language, '自动划线', 'Auto lines')}
+              </button>
             </div>
             {loadError && candles.length === 0 ? (
               <div
@@ -301,6 +312,7 @@ export function MarketPage() {
                 subs={subs}
                 levels={levels}
                 resetKey={key}
+                autoLines={autoLines}
                 height={440 + subs.length * 110}
               />
             )}
