@@ -11,7 +11,6 @@ import {
 import { t, type Language } from '../../i18n/translations'
 import { OFFICIAL_LINKS } from '../../constants/branding'
 import { getCurrentPageForPath, ROUTES, type Page } from '../../router/paths'
-import { HyperliquidWalletConnect } from './HyperliquidWalletConnect'
 import { BrandLogo } from './BrandLogo'
 
 interface HeaderBarProps {
@@ -156,12 +155,6 @@ export default function HeaderBar({
         </div>
         <div id="dash-header-slot" />
         <div className="nofx-navigation-actions">
-          <div className="nofx-nav-wallet">
-            <HyperliquidWalletConnect
-              language={language}
-              isLoggedIn={isLoggedIn}
-            />
-          </div>
           {isLoggedIn && user ? (
             <div className="nofx-user" ref={userRef}>
               <button
