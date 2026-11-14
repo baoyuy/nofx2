@@ -191,7 +191,17 @@ function SettingsForm({ language, settings, onSaved }: { language: string; setti
         {field(tr(language, '单币仓位上限', 'Notional cap'), tr(language, '单个币名义仓位最多占权益几倍', 'per-trade notional cap × equity'), 'max_notional_x', 0.1, 0.1, 2, '×权益')}
         {field(tr(language, '量能阈值', 'Volume gate'), tr(language, '量能突增达到几倍才允许入场', 'enter only if volume spike ≥ this'), 'min_vol_spike', 0.5, 0, 20, 'x')}
         {field(tr(language, '时间止损', 'Time stop'), tr(language, '持仓超过几小时没触发止损止盈就平仓', 'close after N hours if neither hit'), 'time_stop_hours', 0.5, 0.5, 24, tr(language, '小时', 'h'))}
+        {field(tr(language, '涨幅下限', 'Min day gain'), tr(language, '今日涨幅至少多少才买', 'minimum day gain to enter'), 'gain_min_pct', 1, 0, 50, '%')}
+        {field(tr(language, '涨幅上限', 'Max day gain'), tr(language, '今日涨幅超过多少就不追（太大往往是尾声）', 'skip coins already up more than this'), 'gain_max_pct', 1, 5, 80, '%')}
       </div>
+      <label className="mt-2 flex items-center gap-2 text-xs" title={tr(language, '勾选：量能突增和 OI 增加都要满足（严格）；不勾：满足其一即可（宽松）', 'Checked: need BOTH volume spike and OI rise (strict). Unchecked: either one (loose).')}>
+        <input
+          type="checkbox"
+          checked={!!s.oi_required}
+          onChange={(e) => setS((p) => ({ ...p, oi_required: e.target.checked }))}
+        />
+        {tr(language, 'OI 必须增加（严格：量能且 OI）', 'OI must rise (strict: volume AND OI)')}
+      </label>
       <div className="mt-2 flex items-center gap-2">
         <button type="button" className={ui.btnGhost} onClick={save} disabled={busy}>
           {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}

@@ -23,8 +23,9 @@ type PaperConfig struct {
 	TimeStopHours float64
 	Tick          time.Duration
 	MinVolSpike   float64
-	NeedOIRising  bool
-	MaxDayGain    float64
+	GainMin       float64
+	GainMax       float64
+	OIRequired    bool
 }
 
 // DefaultPaperConfig is a conservative short-term long-only rule.
@@ -33,7 +34,7 @@ func DefaultPaperConfig() PaperConfig {
 		DefaultEquity: 1000, RiskPerTrade: 0.005,
 		StopATR: 1.5, TargetATR: 3.0, MaxPositions: 3, MaxNotionalX: 0.5,
 		FeeRate: 0.0005, TimeStopHours: 4, Tick: 60 * time.Second,
-		MinVolSpike: 3, NeedOIRising: true, MaxDayGain: 0.5,
+		MinVolSpike: 3, GainMin: 0.02, GainMax: 0.30, OIRequired: false,
 	}
 }
 
@@ -77,6 +78,13 @@ func (p *PaperTrader) applyStoredSettings() {
 	if s.TimeStopHours > 0 {
 		p.cfg.TimeStopHours = s.TimeStopHours
 	}
+	if s.GainMinPct > 0 {
+		p.cfg.GainMin = s.GainMinPct / 100
+	}
+	if s.GainMaxPct > 0 {
+		p.cfg.GainMax = s.GainMaxPct / 100
+	}
+	p.cfg.OIRequired = s.OIRequired
 }
 
 // Settings returns the effective rule settings for the UI.
@@ -88,7 +96,15 @@ func (p *PaperTrader) Settings() store.ExplosivePaperSettings {
 			TargetATR: p.cfg.TargetATR, MaxPositions: p.cfg.MaxPositions,
 			MaxNotionalX: p.cfg.MaxNotionalX, MinVolSpike: p.cfg.MinVolSpike,
 			TimeStopHours: p.cfg.TimeStopHours,
+			GainMinPct:    p.cfg.GainMin * 100, GainMaxPct: p.cfg.GainMax * 100,
+			OIRequired: p.cfg.OIRequired,
 		}
+	}
+	if s.GainMinPct <= 0 {
+		s.GainMinPct = p.cfg.GainMin * 100
+	}
+	if s.GainMaxPct <= 0 {
+		s.GainMaxPct = p.cfg.GainMax * 100
 	}
 	return s
 }
@@ -124,6 +140,12 @@ func (p *PaperTrader) UpdateSettings(v store.ExplosivePaperSettings) store.Explo
 	}
 	if v.TimeStopHours < 0.5 {
 		v.TimeStopHours = 0.5
+	}
+	if v.GainMinPct < 0 {
+		v.GainMinPct = 0
+	}
+	if v.GainMaxPct <= v.GainMinPct {
+		v.GainMaxPct = v.GainMinPct + 5
 	}
 	v.UpdatedAt = time.Now().UnixMilli()
 	_ = p.store.SaveSettings(&v)
@@ -310,20 +332,22 @@ func (p *PaperTrader) processAccount(acc paperAccount, board Board, priceOf func
 	})
 }
 
+// entryOK applies the configurable gates: a day-gain window plus a
+// confirmation that is either "volume spike OR OI rising" (default) or the
+// stricter "volume spike AND OI rising".
 func (p *PaperTrader) entryOK(r Row) bool {
 	if r.Price <= 0 || r.ATRPct <= 0 {
 		return false
 	}
-	if r.DayGain <= 0.02 || r.DayGain > p.cfg.MaxDayGain {
+	if r.DayGain < p.cfg.GainMin || r.DayGain > p.cfg.GainMax {
 		return false
 	}
-	if r.VolSpike1h < p.cfg.MinVolSpike {
-		return false
+	volOK := r.VolSpike1h >= p.cfg.MinVolSpike
+	oiOK := r.OIKnown && r.OIChange1h > 0
+	if p.cfg.OIRequired {
+		return volOK && oiOK
 	}
-	if p.cfg.NeedOIRising && (!r.OIKnown || r.OIChange1h <= 0) {
-		return false
-	}
-	return true
+	return volOK || oiOK
 }
 
 // ExplosivePaperView is the read model the API returns for one account.

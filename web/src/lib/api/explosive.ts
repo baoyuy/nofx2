@@ -191,6 +191,9 @@ export interface PaperSettings {
   max_notional_x: number
   min_vol_spike: number
   time_stop_hours: number
+  gain_min_pct: number
+  gain_max_pct: number
+  oi_required: boolean
   updated_at: number
 }
 

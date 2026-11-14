@@ -19,7 +19,7 @@ type ExplosivePaperAccount struct {
 // opened. No real money: fills use the live price and a taker fee.
 type ExplosivePaperTrade struct {
 	ID        int64  `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
-	AccountID int64  `gorm:"column:account_id;index" json:"account_id"`
+	AccountID int64  `gorm:"column:account_id;index;default:0" json:"account_id"`
 	Symbol    string `gorm:"column:symbol;index" json:"symbol"`
 	Side      string `gorm:"column:side" json:"side"`
 
@@ -46,7 +46,7 @@ type ExplosivePaperTrade struct {
 // ExplosivePaperEquity is one snapshot of a paper account.
 type ExplosivePaperEquity struct {
 	ID         int64   `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
-	AccountID  int64   `gorm:"column:account_id;index" json:"account_id"`
+	AccountID  int64   `gorm:"column:account_id;index;default:0" json:"account_id"`
 	TS         int64   `gorm:"column:ts;index" json:"ts"`
 	Equity     float64 `gorm:"column:equity" json:"equity"`
 	Realized   float64 `gorm:"column:realized" json:"realized"`
@@ -60,7 +60,14 @@ type PaperStore struct{ db *gorm.DB }
 func NewPaperStore(db *gorm.DB) *PaperStore { return &PaperStore{db: db} }
 
 func (s *PaperStore) AutoMigrate() error {
-	return s.db.AutoMigrate(&ExplosivePaperAccount{}, &ExplosivePaperTrade{}, &ExplosivePaperEquity{}, &ExplosivePaperSettings{})
+	if err := s.db.AutoMigrate(&ExplosivePaperAccount{}, &ExplosivePaperTrade{}, &ExplosivePaperEquity{}, &ExplosivePaperSettings{}); err != nil {
+		return err
+	}
+	// Rows created before multi-account support got a NULL account_id; treat
+	// them as the built-in default account (0).
+	s.db.Model(&ExplosivePaperTrade{}).Where("account_id IS NULL").Update("account_id", 0)
+	s.db.Model(&ExplosivePaperEquity{}).Where("account_id IS NULL").Update("account_id", 0)
+	return nil
 }
 
 func (s *PaperStore) Accounts() ([]ExplosivePaperAccount, error) {
@@ -133,7 +140,13 @@ type ExplosivePaperSettings struct {
 	MaxNotionalX  float64 `gorm:"column:max_notional_x" json:"max_notional_x"` // per-trade notional cap × equity
 	MinVolSpike   float64 `gorm:"column:min_vol_spike" json:"min_vol_spike"`   // entry volume-spike gate
 	TimeStopHours float64 `gorm:"column:time_stop_hours" json:"time_stop_hours"`
-	UpdatedAt     int64   `gorm:"column:updated_at" json:"updated_at"`
+	// Entry gates for the coin's day gain and the OI confirmation.
+	GainMinPct float64 `gorm:"column:gain_min_pct" json:"gain_min_pct"`
+	GainMaxPct float64 `gorm:"column:gain_max_pct" json:"gain_max_pct"`
+	// OIRequired: OI must rise AND volume must spike (strict).
+	// Otherwise volume spike OR OI rising is enough (default OR).
+	OIRequired bool  `gorm:"column:oi_required" json:"oi_required"`
+	UpdatedAt  int64 `gorm:"column:updated_at" json:"updated_at"`
 }
 
 func (s *PaperStore) GetSettings() (ExplosivePaperSettings, error) {
