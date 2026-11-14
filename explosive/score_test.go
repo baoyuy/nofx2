@@ -294,19 +294,19 @@ func TestDayFeaturesUseBeijingMidnight(t *testing.T) {
 }
 
 func TestPotentialPrefersTheEarlyMover(t *testing.T) {
-	early := potential(0.2, 1, 1.0, 0.03, true, 1, 0)
-	late := potential(3.0, 10, -0.5, -0.01, true, 8, 0.002)
+	early := Potential(0.2, 1, 1.0, 0.03, true, 1, 0)
+	late := Potential(3.0, 10, -0.5, -0.01, true, 8, 0.002)
 	if early <= late {
 		t.Fatalf("an early +20%% mover must outrank a late +300%% one: %.2f vs %.2f", early, late)
 	}
-	mid := potential(0.6, 3, 0.5, 0.02, true, 2, 0)
+	mid := Potential(0.6, 3, 0.5, 0.02, true, 2, 0)
 	if mid <= 0 {
 		t.Fatalf("mid move should have room: %.2f", mid)
 	}
-	if potential(0.2, 1, -0.9, -0.05, true, 12, 0.003) >= early {
+	if Potential(0.2, 1, -0.9, -0.05, true, 12, 0.003) >= early {
 		t.Fatal("a fading move must score below a fed one")
 	}
-	if potential(-0.1, 1, 1, 0.03, true, 1, 0) != 0 {
+	if Potential(-0.1, 1, 1, 0.03, true, 1, 0) != 0 {
 		t.Fatal("a coin down on the day has no remaining upside")
 	}
 }

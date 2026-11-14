@@ -281,12 +281,12 @@ func dayFeatures(hourly []Kline, price float64, now time.Time) (gain, elapsedH, 
 	return gain, elapsedH, volSlope, highDist, true
 }
 
-// potential estimates the rest of the day's move in percent. A move that is
+// Potential estimates the rest of the day's move in percent. A move that is
 // early, fed by expanding volume and rising open interest, with room left
 // before the day cap, scores highest; a late, fading move at a large gain has
 // almost no room. The weights are an initial guess to be calibrated by the
 // recorded outcomes.
-func potential(gain, elapsedH, volSlope, oi float64, oiKnown bool, highDist, funding float64) float64 {
+func Potential(gain, elapsedH, volSlope, oi float64, oiKnown bool, highDist, funding float64) float64 {
 	if gain <= 0 {
 		return 0
 	}
@@ -455,7 +455,7 @@ func Evaluate(in Input) (Row, bool) {
 
 	predicted := 0.0
 	if in.HasDay {
-		predicted = potential(in.DayGain, in.ElapsedH, in.VolumeSlope, in.OIChange1h, in.OIKnown, in.DayHighDist, in.Funding)
+		predicted = Potential(in.DayGain, in.ElapsedH, in.VolumeSlope, in.OIChange1h, in.OIKnown, in.DayHighDist, in.Funding)
 	}
 
 	rel := clamp01((in.Change24h - in.BTCChange24h) / relFull)
