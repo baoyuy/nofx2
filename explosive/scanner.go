@@ -250,19 +250,34 @@ func (s *Screener) build(limit int) Board {
 		}
 		rows = append(rows, row)
 	}
-	// Ordered by the expected rest of the day, not by what already happened:
-	// a +20% coin with room left outranks a +300% one that is done.
-	sort.SliceStable(rows, func(a, b int) bool {
-		if rows[a].PredictedRemaining != rows[b].PredictedRemaining {
-			return rows[a].PredictedRemaining > rows[b].PredictedRemaining
+	// Two lists. The ambush list is what the page is for: ranked by where the
+	// coin is expected to END the day, so a coin early in a big move outranks
+	// one that already ran. Coins that already ran are kept apart, not ranked
+	// as ambushes.
+	ambush := make([]Row, 0, len(rows))
+	blasted := make([]Row, 0, 8)
+	for _, r := range rows {
+		if r.Ran {
+			blasted = append(blasted, r)
+		} else if r.Ambush {
+			ambush = append(ambush, r)
 		}
-		return rows[a].Strength > rows[b].Strength
+	}
+	sort.SliceStable(ambush, func(a, b int) bool {
+		if ambush[a].PredictedFinal != ambush[b].PredictedFinal {
+			return ambush[a].PredictedFinal > ambush[b].PredictedFinal
+		}
+		return ambush[a].Strength > ambush[b].Strength
 	})
-	if limit > 0 && len(rows) > limit {
-		rows = rows[:limit]
+	sort.SliceStable(blasted, func(a, b int) bool { return blasted[a].DayGain > blasted[b].DayGain })
+	if limit > 0 && len(ambush) > limit {
+		ambush = ambush[:limit]
+	}
+	if len(blasted) > 10 {
+		blasted = blasted[:10]
 	}
 
-	board := Board{Rows: rows, Scanned: scanned, Candidates: candidates, FetchedAt: fullAt, Refreshing: refreshing}
+	board := Board{Rows: ambush, Blasted: blasted, Scanned: scanned, Candidates: candidates, FetchedAt: fullAt, Refreshing: refreshing}
 	if !fullAt.IsZero() {
 		board.AgeSeconds = int(time.Since(fullAt).Seconds())
 		board.Stale = board.AgeSeconds > int(boardTTL.Seconds())

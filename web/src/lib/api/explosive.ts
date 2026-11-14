@@ -24,8 +24,14 @@ export interface ExplosiveRow {
   elapsed_hours: number
   /** last 3h volume over the 3h before, as a fraction */
   volume_slope: number
-  /** model estimate of the rest of the day's move, percent: the ranking key */
+  /** model estimate of the rest of the day's move, percent */
   predicted_remaining: number
+  /** expected total gain by the day close, percent: the ambush ranking key */
+  predicted_final: number
+  /** already up 50%+ today */
+  ran: boolean
+  /** still early enough to enter */
+  ambush: boolean
   /** good | fair | thin */
   tradability: string
   oi_change_1h: number
@@ -55,6 +61,8 @@ export interface ExplosiveRow {
 
 export interface ExplosiveBoard {
   rows: ExplosiveRow[]
+  /** coins that already ran; shown apart from the ambush list */
+  blasted?: ExplosiveRow[]
   scanned: number
   candidates: number
   fetched_at: string

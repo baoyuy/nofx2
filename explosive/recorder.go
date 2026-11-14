@@ -116,7 +116,7 @@ func (r *Recorder) snapshot(ctx context.Context, now time.Time) error {
 			Change24h: row.Change24h, Change5m: row.Change5m, Change15m: row.Change15m,
 			Change1h: row.Change1h, Change4h: row.Change4h,
 			DayGain: row.DayGain, ElapsedH: row.ElapsedH, VolumeSlope: row.VolumeSlope,
-			PredictedRemaining: row.PredictedRemaining, Tradability: row.Tradability,
+			PredictedRemaining: row.PredictedRemaining, PredictedFinal: row.PredictedFinal, Tradability: row.Tradability,
 			VolRatio: row.VolRatio, OIChange1h: row.OIChange1h, Funding: row.Funding,
 			ATRPct: row.ATRPct, DistanceHigh: row.DistanceHigh,
 			EMA20: row.EMA20, EMA60: row.EMA60, EMA120: row.EMA120, EMASlope: row.EMASlope,

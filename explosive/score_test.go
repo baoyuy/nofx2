@@ -310,3 +310,23 @@ func TestPotentialPrefersTheEarlyMover(t *testing.T) {
 		t.Fatal("a coin down on the day has no remaining upside")
 	}
 }
+
+func TestRanAndAmbushUseRolling24hToo(t *testing.T) {
+	// A coin +380% on the rolling 24h but only +20% since midnight must not be
+	// offered as an ambush: it already had its move. Units: Change24h percent,
+	// DayGain fraction.
+	in := Input{Symbol: "X", Price: 1.2, Bars5m: trendBars(60, 1.0, 12), Volume24h: 5e7,
+		Change24h: 380, HasDay: true, DayGain: 0.20, ElapsedH: 5}
+	r, ok := Evaluate(in)
+	if !ok {
+		t.Fatal("evaluate failed")
+	}
+	if !r.Ran || r.Ambush {
+		t.Fatalf("high rolling 24h must count as already run: ran=%v ambush=%v", r.Ran, r.Ambush)
+	}
+	in.Change24h = 20
+	r2, _ := Evaluate(in)
+	if r2.Ran || !r2.Ambush {
+		t.Fatalf("early coin must be an ambush: ran=%v ambush=%v", r2.Ran, r2.Ambush)
+	}
+}

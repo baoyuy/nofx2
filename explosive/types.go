@@ -44,8 +44,16 @@ type Row struct {
 	ElapsedH    float64 `json:"elapsed_hours"`
 	VolumeSlope float64 `json:"volume_slope"`
 	// PredictedRemaining is the model's estimate of the rest of the day's
-	// move, in percent. The board is ordered by it.
+	// move, in percent.
 	PredictedRemaining float64 `json:"predicted_remaining"`
+	// PredictedFinal is where the coin is expected to end the day, as a total
+	// gain from today's open, percent. This is what the ambush board ranks on:
+	// a coin at +10% heading for +90% outranks one at +60% heading for +65%.
+	PredictedFinal float64 `json:"predicted_final"`
+	// Ran is today's gain already realised; Ambush marks a coin still early
+	// enough to enter (the board's first section).
+	Ran    bool `json:"ran"`
+	Ambush bool `json:"ambush"`
 	// Tradability is a coarse liquidity label: good | fair | thin.
 	Tradability string `json:"tradability"`
 	// Multi-timeframe changes, percent, from 1h closes.
@@ -92,7 +100,11 @@ type Row struct {
 
 // Board is one screening pass.
 type Board struct {
+	// Rows is the ambush list, ordered by PredictedFinal.
 	Rows []Row `json:"rows"`
+	// Blasted are coins that already ran today: shown, but not ranked as
+	// ambushes.
+	Blasted []Row `json:"blasted"`
 	// Scanned counts tickers considered, Candidates those that passed the
 	// liquidity and freshness gates.
 	Scanned    int       `json:"scanned"`

@@ -67,6 +67,7 @@ export function ExplosivePage() {
     { refreshInterval: 1000, revalidateOnFocus: false, keepPreviousData: true }
   )
   const rows = data?.rows || []
+  const blasted = data?.blasted || []
   const current = selected || rows[0]?.symbol || ''
   const row = useMemo(
     () => rows.find((r) => r.symbol === current) || null,
@@ -172,9 +173,11 @@ export function ExplosivePage() {
                 <tr>
                   <th className="py-1.5 font-normal">#</th>
                   <th className="font-normal">{tr(language, '币种', 'Coin')}</th>
-                  <th className="font-normal">{tr(language, '预测剩余', 'Remaining')}</th>
+                  <th className="text-right font-normal">{tr(language, '预期最终', 'Expected')}</th>
+                  <th className="font-normal">{tr(language, '潜在空间', 'Room')}</th>
                   <th className="font-normal">{tr(language, '状态', 'State')}</th>
                   <th className="text-right font-normal">{tr(language, '今日涨幅', 'Day')}</th>
+                  <th className="text-right font-normal">{tr(language, '滚动24h', '24h')}</th>
                   <th className="text-right font-normal">{tr(language, '已运行', 'Ran')}</th>
                   <th className="text-right font-normal">{tr(language, '量能斜率', 'Vol slope')}</th>
                   <th className="text-right font-normal">OI 1h</th>
@@ -198,8 +201,11 @@ export function ExplosivePage() {
                   >
                     <td className="py-1.5 text-nofx-text-muted tabular-nums">{i + 1}</td>
                     <td className="font-medium">{r.symbol.replace('USDT', '')}</td>
+                    <td className="text-right font-semibold tabular-nums" style={{ color: BN.up }}>
+                      +{(r.predicted_final ?? 0).toFixed(1)}%
+                    </td>
                     <td>
-                      <PotentialBar value={r.predicted_remaining} />
+                      <PotentialBar value={r.predicted_remaining ?? 0} />
                     </td>
                     <td>
                       <span
@@ -211,6 +217,9 @@ export function ExplosivePage() {
                     </td>
                     <td className="text-right tabular-nums" style={{ color: r.day_gain >= 0 ? BN.up : BN.down }}>
                       {signed(r.day_gain * 100)}
+                    </td>
+                    <td className="text-right tabular-nums" style={{ color: r.change_24h >= 0 ? BN.up : BN.down }}>
+                      {signed(r.change_24h)}
                     </td>
                     <td className="text-right tabular-nums">{r.elapsed_hours.toFixed(1)}h</td>
                     <td className="text-right tabular-nums" style={{ color: r.volume_slope >= 0 ? BN.up : BN.down }}>
@@ -267,6 +276,58 @@ export function ExplosivePage() {
           )}
         </section>
 
+        {blasted.length ? (
+          <section className={`${ui.panel} min-w-0`}>
+            <div className="mb-2 flex items-baseline gap-2">
+              <h2 className="text-base font-semibold text-nofx-text">
+                {tr(language, '已爆发', 'Already blasted')}
+              </h2>
+              <span className={`text-xs ${ui.muted}`}>
+                {tr(language, '今日已涨 50% 以上，不宜再追，仅供参考', 'Up 50%+ today: not an entry, reference only')}
+              </span>
+            </div>
+            <table className="w-full text-sm">
+              <thead className="text-left text-xs text-nofx-text-muted">
+                <tr>
+                  <th className="py-1.5 font-normal">{tr(language, '币种', 'Coin')}</th>
+                  <th className="text-right font-normal">{tr(language, '今日涨幅', 'Day')}</th>
+                  <th className="text-right font-normal">{tr(language, '滚动24h', '24h')}</th>
+                  <th className="text-right font-normal">OI 1h</th>
+                  <th className="font-normal">{tr(language, '状态', 'State')}</th>
+                </tr>
+              </thead>
+              <tbody className="text-nofx-text">
+                {blasted.map((r) => (
+                  <tr
+                    key={r.symbol}
+                    onClick={() => setSelected(r.symbol)}
+                    className={`cursor-pointer border-t ${ui.border} hover:bg-nofx-bg-deeper`}
+                  >
+                    <td className="py-1.5 font-medium">{r.symbol.replace('USDT', '')}</td>
+                    <td className="text-right tabular-nums" style={{ color: r.day_gain >= 0 ? BN.up : BN.down }}>
+                      {signed(r.day_gain * 100)}
+                    </td>
+                    <td className="text-right tabular-nums" style={{ color: r.change_24h >= 0 ? BN.up : BN.down }}>
+                      {signed(r.change_24h)}
+                    </td>
+                    <td className="text-right tabular-nums" style={{ color: r.oi_known ? (r.oi_change_1h >= 0 ? BN.up : BN.down) : undefined }}>
+                      {r.oi_known ? signed(r.oi_change_1h * 100) : '—'}
+                    </td>
+                    <td>
+                      <span
+                        className="rounded px-1.5 py-0.5 text-xs font-semibold"
+                        style={{ color: stateColor[r.state], background: 'rgba(25,36,52,0.06)' }}
+                      >
+                        {stateLabel(language, r.state)}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+        ) : null}
+
         <aside className="space-y-3">
           <section className={ui.panel}>
             <div className="mb-2 flex items-baseline gap-2">
@@ -310,9 +371,15 @@ export function ExplosivePage() {
             <section className={ui.panel}>
               <div className="mb-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
                 <div className="flex justify-between">
-                  <span className={ui.muted}>{tr(language, '预测剩余', 'Predicted')}</span>
+                  <span className={ui.muted}>{tr(language, '预期最终', 'Expected')}</span>
                   <span className="font-semibold tabular-nums" style={{ color: BN.up }}>
-                    +{row.predicted_remaining.toFixed(1)}%
+                    +{(row.predicted_final ?? 0).toFixed(1)}%
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className={ui.muted}>{tr(language, '潜在空间', 'Room left')}</span>
+                  <span className="tabular-nums" style={{ color: BN.up }}>
+                    +{(row.predicted_remaining ?? 0).toFixed(1)}%
                   </span>
                 </div>
                 <div className="flex justify-between">

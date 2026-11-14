@@ -479,8 +479,16 @@ func Evaluate(in Input) (Row, bool) {
 		state = StateStarting
 	}
 
+	finalGain := (1+in.DayGain)*(1+predicted/100) - 1
+	// A coin counts as already run if it is up 50% either since Beijing
+	// midnight or on the rolling 24h. The rolling check matters because a
+	// coin can be +380% in 24h yet only +20% since midnight.
+	ran := in.DayGain >= 0.50 || in.Change24h >= 50
+	ambush := !ran
+
 	return Row{
 		Symbol: in.Symbol, Price: in.Price, Change24h: in.Change24h, Change5m: ret5, Change15m: ret15,
+		PredictedFinal: finalGain * 100, Ran: ran, Ambush: ambush,
 		Volume24h: in.Volume24h, VolRatio: vr, OIChange1h: in.OIChange1h, OIKnown: in.OIKnown, Funding: in.Funding,
 		Change1h: ch1, Change4h: ch4, EMASlope: slope, TakerBuyRatio: takerRatio, RiseEfficiency: efficiency,
 		DayGain: in.DayGain, ElapsedH: in.ElapsedH, VolumeSlope: in.VolumeSlope,
