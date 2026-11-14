@@ -161,3 +161,34 @@ func TestSameHourExcessRemovesTheCommonMove(t *testing.T) {
 		t.Fatalf("hit flag: %+v", out)
 	}
 }
+
+func TestIgnitionUsesMultiDayHistory(t *testing.T) {
+	// Two weeks of flat 5m bars, then a 20x volume burst in the last 15m.
+	const bars = 14 * 24 * 12
+	start := time.Date(2026, 10, 1, 0, 0, 0, 0, Beijing).UnixMilli()
+	series := make([]Bar, bars)
+	for i := 0; i < bars; i++ {
+		series[i] = Bar{Time: start + int64(i)*5*60*1000, Open: 1, High: 1.001, Low: 0.999, Close: 1, Volume: 100, Quote: 100}
+	}
+	for i := bars - 3; i < bars; i++ {
+		series[i].Quote = 2000
+		series[i].High = 1.02
+	}
+	vs, br, cr, atr := ignition(series, bars-1, 1.03)
+	if vs < 5 {
+		t.Fatalf("volume spike should be clear against a flat base, got %.2f", vs)
+	}
+	if br <= 0 {
+		t.Fatalf("price above the 7d high should register a breakout: %.4f", br)
+	}
+	if cr <= 0 {
+		t.Fatalf("compression is the 7d range: %.4f", cr)
+	}
+	if atr <= 0 {
+		t.Fatalf("atr: %.4f", atr)
+	}
+	// Not enough history means no reading, not a bogus one.
+	if v2, _, _, _ := ignition(series[:100], 99, 1); v2 != 0 {
+		t.Fatalf("short history must return zero: %.2f", v2)
+	}
+}

@@ -101,9 +101,11 @@ func BuildRows(symbol string, bars []Bar, btcDay map[int64]float64, oiByHour map
 		return nil
 	}
 	byDay := map[int64][]Bar{}
-	for _, b := range bars {
+	global := make(map[int64]int, len(bars))
+	for i, b := range bars {
 		d := DayStart(b.Time)
 		byDay[d] = append(byDay[d], b)
+		global[b.Time] = i
 	}
 	days := make([]int64, 0, len(byDay))
 	for d := range byDay {
@@ -218,47 +220,11 @@ func BuildRows(symbol string, bars []Bar, btcDay map[int64]float64, oiByHour map
 				}
 			}
 			row.Funding = fundingAt(funding, day+int64(hour)*3600*1000)
-			// Rolling 7-day ignition context, using bars strictly before idx.
-			if idx >= 24 {
-				p7 := idx - 2016 // 7 days of 5m bars
-				if p7 < 0 {
-					p7 = 0
-				}
-				var hi, lo, sumVol, sumQuote float64
-				hi, lo = 0, math.Inf(1)
-				med := make([]float64, 0, 64)
-				for i := p7; i < idx; i++ {
-					hi = math.Max(hi, dayBars[i].High)
-					if dayBars[i].Low > 0 && dayBars[i].Low < lo {
-						lo = dayBars[i].Low
-					}
-				}
-				if hi > 0 {
-					row.Breakout7d = price/hi - 1
-				}
-				if lo > 0 && lo < math.Inf(1) {
-					row.Compress7d = (hi - lo) / lo
-				}
-				// 15m quote volume now vs the 7d median of 15m buckets.
-				nowQuote := 0.0
-				for i := idx - 2; i <= idx && i >= 0; i-- {
-					nowQuote += dayBars[i].Quote
-				}
-				for i := p7; i+2 < idx; i += 3 {
-					med = append(med, dayBars[i].Quote+dayBars[i+1].Quote+dayBars[i+2].Quote)
-				}
-				if len(med) > 5 {
-					sort.Float64s(med)
-					m := med[len(med)/2]
-					if m > 0 {
-						row.VolSpike = math.Min(50, nowQuote/m)
-					}
-				}
-				_ = sumVol
-				_ = sumQuote
-				row.ATR7dPct = row.ATRPct
-			}
 			row.Remaining = dayClose/price - 1
+			// Rolling 7-day ignition context from the full multi-day series.
+			if gi, ok := global[day+int64(hour)*3600*1000]; ok {
+				row.VolSpike, row.Breakout7d, row.Compress7d, row.ATR7dPct = ignition(bars, gi, price)
+			}
 			dd := 0.0
 			for i := idx + 1; i < len(dayBars); i++ {
 				if dayBars[i].Low > 0 {
@@ -325,4 +291,65 @@ func DayGain(bars []Bar, day int64) float64 {
 		return 0
 	}
 	return last/first - 1
+}
+
+// ignition computes the rolling 7-day context ending just before gi.
+// It is the "quiet base then sudden volume" shape a monster coin ignites from.
+func ignition(bars []Bar, gi int, price float64) (volSpike, breakout7d, compress7d, atr7dPct float64) {
+	// 7 days of 5m bars, one day of warm-up margin.
+	const lookback = 7 * 24 * 12
+	from := gi - lookback
+	if from < 1 {
+		from = 1
+	}
+	if gi-from < 288 { // need at least a day of history to be meaningful
+		return 0, 0, 0, 0
+	}
+	hi, lo := 0.0, math.Inf(1)
+	for i := from; i < gi; i++ {
+		hi = math.Max(hi, bars[i].High)
+		if bars[i].Low > 0 && bars[i].Low < lo {
+			lo = bars[i].Low
+		}
+	}
+	if hi > 0 {
+		breakout7d = price/hi - 1
+	}
+	if lo > 0 && lo < math.Inf(1) {
+		compress7d = (hi - lo) / lo
+	}
+	// Last 15 minutes of quote volume against the 7-day median of 15m buckets.
+	now := 0.0
+	for i := gi - 2; i <= gi && i >= 0; i-- {
+		now += bars[i].Quote
+	}
+	buckets := make([]float64, 0, lookback/3+1)
+	for i := from; i+2 < gi; i += 3 {
+		buckets = append(buckets, bars[i].Quote+bars[i+1].Quote+bars[i+2].Quote)
+	}
+	if len(buckets) >= 20 {
+		sort.Float64s(buckets)
+		m := buckets[len(buckets)/2]
+		if m > 0 {
+			volSpike = math.Min(30, now/m)
+		}
+	}
+	// 7-day ATR as percent of price.
+	var tr float64
+	n := 0
+	for i := gi - 14; i < gi; i++ {
+		if i < 1 {
+			continue
+		}
+		v := bars[i].High - bars[i].Low
+		if p := bars[i-1].Close; p > 0 {
+			v = math.Max(v, math.Max(math.Abs(bars[i].High-p), math.Abs(bars[i].Low-p)))
+		}
+		tr += v
+		n++
+	}
+	if n > 0 && price > 0 {
+		atr7dPct = tr / float64(n) / price * 100
+	}
+	return
 }
