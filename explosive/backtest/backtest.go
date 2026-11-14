@@ -47,9 +47,20 @@ type Row struct {
 	Efficiency  float64 `json:"efficiency"`
 	RelStrength float64 `json:"rel_strength"`
 	QuoteVol    float64 `json:"quote_vol"`
+	// OIChange1h is the open-interest change over the past hour (fraction);
+	// OIKnown is false when the OI history did not cover the point.
+	OIChange1h float64 `json:"oi_change_1h"`
+	OIKnown    bool    `json:"oi_known"`
+	Funding    float64 `json:"funding"`
 	// Outcome to the Beijing-day close.
 	Remaining float64 `json:"remaining"`
 	MaxDD     float64 `json:"max_dd"`
+	// Excess is Remaining minus the mean Remaining of every candidate in the
+	// same hour: it removes time-of-day drift that makes late entries look
+	// better only because they are exposed for fewer hours.
+	Excess float64 `json:"excess"`
+	// Hit marks a large continuation, Remaining >= +10%.
+	Hit bool `json:"hit"`
 }
 
 // CloseAt returns the close of the last bar closing at or before ms.
@@ -68,10 +79,17 @@ func closeAt(bars []Bar, ms int64) (float64, int) {
 	return bars[idx].Close, idx
 }
 
+// Funding is one funding settlement.
+type Funding struct {
+	Time int64 // ms
+	Rate float64
+}
+
 // BuildRows turns one symbol's 5m bars into hourly readings, one per Beijing
 // day. btcDay maps a day start to BTC's own gain that day, for relative
-// strength.
-func BuildRows(symbol string, bars []Bar, btcDay map[int64]float64, minGain, minQuote float64) []Row {
+// strength. oiByHour maps an hour's open timestamp to open interest; it may be
+// nil. funding may be nil.
+func BuildRows(symbol string, bars []Bar, btcDay map[int64]float64, oiByHour map[int64]float64, funding []Funding, minGain, minQuote float64) []Row {
 	if len(bars) == 0 {
 		return nil
 	}
@@ -182,6 +200,17 @@ func BuildRows(symbol string, bars []Bar, btcDay map[int64]float64, minGain, min
 			if path > 0 {
 				row.Efficiency = math.Min(1, math.Abs(price-dayBars[idx-11].Close)/path)
 			}
+			// Open interest over the past hour, when the series covers both ends.
+			if oiByHour != nil {
+				ts := day + int64(hour)*3600*1000
+				if cur, ok := oiByHour[ts]; ok && cur > 0 {
+					if prev, ok := oiByHour[ts-3600*1000]; ok && prev > 0 {
+						row.OIChange1h = cur/prev - 1
+						row.OIKnown = true
+					}
+				}
+			}
+			row.Funding = fundingAt(funding, day+int64(hour)*3600*1000)
 			row.Remaining = dayClose/price - 1
 			dd := 0.0
 			for i := idx + 1; i < len(dayBars); i++ {
@@ -194,6 +223,43 @@ func BuildRows(symbol string, bars []Bar, btcDay map[int64]float64, minGain, min
 		}
 	}
 	return out
+}
+
+// fundingAt returns the most recent settlement at or before ms.
+func fundingAt(funding []Funding, ms int64) float64 {
+	rate := 0.0
+	for _, f := range funding {
+		if f.Time <= ms {
+			rate = f.Rate
+		} else {
+			break
+		}
+	}
+	return rate
+}
+
+// AddSameHourExcess fills Excess for every row, measured against the mean
+// Remaining of all candidates in the same (day, hour). It returns the rows.
+func AddSameHourExcess(rows []Row) []Row {
+	type key struct {
+		day  int64
+		hour int
+	}
+	sum := map[key]float64{}
+	n := map[key]int{}
+	for _, r := range rows {
+		k := key{r.Day, r.Hour}
+		sum[k] += r.Remaining
+		n[k]++
+	}
+	for i := range rows {
+		k := key{rows[i].Day, rows[i].Hour}
+		if n[k] > 0 {
+			rows[i].Excess = rows[i].Remaining - sum[k]/float64(n[k])
+		}
+		rows[i].Hit = rows[i].Remaining >= 0.10
+	}
+	return rows
 }
 
 // DayGain of one symbol over one Beijing day, from its bars.

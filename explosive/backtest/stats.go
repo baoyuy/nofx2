@@ -26,14 +26,23 @@ func Features() []Feature {
 		{"efficiency", func(r Row) float64 { return r.Efficiency }},
 		{"rel_strength", func(r Row) float64 { return r.RelStrength }},
 		{"log_quote", func(r Row) float64 { return math.Log10(1 + r.QuoteVol) }},
+		{"oi_change", func(r Row) float64 { return r.OIChange1h }},
+		{"funding", func(r Row) float64 { return r.Funding }},
 	}
 }
 
 // Spearman is the rank correlation of a feature and the remaining return.
-func Spearman(rows []Row, get func(Row) float64) float64 { return spearmanOn(rows, get) }
+func Spearman(rows []Row, get func(Row) float64) float64 {
+	return spearmanOn(rows, get, func(r Row) float64 { return r.Remaining })
+}
+
+// SpearmanExcess correlates a feature with the same-hour excess return.
+func SpearmanExcess(rows []Row, get func(Row) float64) float64 {
+	return spearmanOn(rows, get, func(r Row) float64 { return r.Excess })
+}
 
 // spearmanOn computes ranks preserving pairing.
-func spearmanOn(rows []Row, get func(Row) float64) float64 {
+func spearmanOn(rows []Row, get func(Row) float64, target func(Row) float64) float64 {
 	n := len(rows)
 	if n < 5 {
 		return 0
@@ -43,7 +52,7 @@ func spearmanOn(rows []Row, get func(Row) float64) float64 {
 	}
 	items := make([]item, n)
 	for i, r := range rows {
-		items[i] = item{get(r), r.Remaining}
+		items[i] = item{get(r), target(r)}
 	}
 	rank := func(vals []float64) []float64 {
 		idx := make([]int, len(vals))
@@ -84,6 +93,15 @@ func spearmanOn(rows []Row, get func(Row) float64) float64 {
 // IC per day: the mean of each day's rank correlation, so one busy day cannot
 // dominate the result.
 func DailyIC(rows []Row, get func(Row) float64) float64 {
+	return DailyICOn(rows, get, func(r Row) float64 { return r.Remaining })
+}
+
+// DailyICExcess is DailyIC against the same-hour excess return.
+func DailyICExcess(rows []Row, get func(Row) float64) float64 {
+	return DailyICOn(rows, get, func(r Row) float64 { return r.Excess })
+}
+
+func DailyICOn(rows []Row, get func(Row) float64, target func(Row) float64) float64 {
 	byDay := map[int64][]Row{}
 	for _, r := range rows {
 		byDay[r.Day] = append(byDay[r.Day], r)
@@ -93,7 +111,7 @@ func DailyIC(rows []Row, get func(Row) float64) float64 {
 		if len(rs) < 5 {
 			continue
 		}
-		sum += spearmanOn(rs, get)
+		sum += spearmanOn(rs, get, target)
 		n++
 	}
 	if n == 0 {
@@ -118,7 +136,11 @@ type Band struct {
 func Bands(rows []Row, score func(Row) float64, names []string, edges []float64) []Band {
 	out := make([]Band, len(names))
 	for i := range names {
-		out[i] = Band{Name: names[i], From: edges[i]}
+		from := math.Inf(-1)
+		if i < len(edges) {
+			from = edges[i]
+		}
+		out[i] = Band{Name: names[i], From: from}
 	}
 	for _, r := range rows {
 		s := score(r)
@@ -151,12 +173,53 @@ func Bands(rows []Row, score func(Row) float64, names []string, edges []float64)
 	return out
 }
 
+// ExcessBands is Bands but scored on the same-hour excess: the honest question
+// is whether a high score beats its hour's peers, not whether it went up.
+func ExcessBands(rows []Row, score func(Row) float64, names []string, edges []float64) []Band {
+	out := make([]Band, len(names))
+	for i := range names {
+		from := math.Inf(-1)
+		if i < len(edges) {
+			from = edges[i]
+		}
+		out[i] = Band{Name: names[i], From: from}
+	}
+	for _, r := range rows {
+		i := sort.SearchFloat64s(edges, score(r))
+		if i >= len(names) {
+			i = len(names) - 1
+		}
+		b := &out[i]
+		b.Samples++
+		if r.Excess > 0 {
+			b.Up++
+		}
+		if r.Excess > 0 && r.MaxDD > -0.03 {
+			b.Sustained++
+		}
+		b.AvgRet += r.Excess
+		b.AvgDD += r.MaxDD
+	}
+	for i := range out {
+		b := &out[i]
+		if b.Samples == 0 {
+			continue
+		}
+		n := float64(b.Samples)
+		b.Up /= n
+		b.Sustained /= n
+		b.AvgRet /= n
+		b.AvgDD /= n
+	}
+	return out
+}
+
 // FitWeights weights each feature by its daily IC after z-scoring, which is a
 // simple, explainable first model. Returns the weights and the score function.
 func FitWeights(rows []Row, feats []Feature) map[string]float64 {
 	weights := map[string]float64{}
 	for _, f := range feats {
-		weights[f.Name] = math.Max(-1, math.Min(1, DailyIC(rows, f.Get)))
+		weights[f.Name] = math.Max(-1, math.Min(1, DailyICExcess(rows, f.Get)))
 	}
 	return weights
 }

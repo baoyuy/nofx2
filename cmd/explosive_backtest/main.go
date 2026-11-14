@@ -131,7 +131,9 @@ func main() {
 			if err != nil {
 				return
 			}
-			rs := backtest.BuildRows(sym, bars, btcDay, 0.05, 5e6)
+			oi, _ := oiHistory(ctx, c, sym, start, end)
+			fund, _ := fundingHistory(ctx, c, sym, start, end)
+			rs := backtest.BuildRows(sym, bars, btcDay, oi, fund, 0.05, 5e6)
 			mu.Lock()
 			rows = append(rows, rs...)
 			done++
@@ -142,6 +144,7 @@ func main() {
 		}(cd.symbol)
 	}
 	wg.Wait()
+	rows = backtest.AddSameHourExcess(rows)
 	fmt.Printf("rows: %d across %d days\n", len(rows), distinctDays(rows))
 	if len(rows) == 0 {
 		fmt.Println("no rows: widen -days or lower -min-gain")
@@ -172,9 +175,9 @@ func main() {
 	cur := func(r backtest.Row) float64 {
 		return explosive.Potential(r.DayGain, r.ElapsedH, r.VolSlope, 0, false, r.HighDist, 0)
 	}
-	fmt.Printf("\ncurrent model: pooled IC %+.3f  daily IC %+.3f\n",
-		backtest.Spearman(rows, cur), backtest.DailyIC(rows, cur))
-	printBands(backtest.Bands(rows, cur, bands, edges))
+	fmt.Printf("\ncurrent model vs same-hour excess: pooled %+.3f  daily %+.3f\n",
+		backtest.SpearmanExcess(rows, cur), backtest.DailyICExcess(rows, cur))
+	printBands(backtest.ExcessBands(rows, cur, bands, edges))
 
 	weights := backtest.FitWeights(rows, feats)
 	fmt.Println("\nIC-weighted model:")
@@ -184,14 +187,14 @@ func main() {
 		}
 	}
 	fitted := backtest.Score(rows, feats, weights)
-	fmt.Printf("  pooled IC %+.3f  daily IC %+.3f\n",
-		backtest.Spearman(rows, fitted), backtest.DailyIC(rows, fitted))
+	fmt.Printf("  vs excess: pooled %+.3f  daily %+.3f\n",
+		backtest.SpearmanExcess(rows, fitted), backtest.DailyICExcess(rows, fitted))
 	qNames, qEdges := quantiles(rows, fitted)
-	printBands(backtest.Bands(rows, fitted, qNames, qEdges))
+	printBands(backtest.ExcessBands(rows, fitted, qNames, qEdges))
 }
 
 func printBands(bs []backtest.Band) {
-	fmt.Println("  band      n     up     avgRet   avgDD    sustained")
+	fmt.Println("  band      n   beatsHour  avgExcess  avgDD   sustained")
 	for _, b := range bs {
 		if b.Samples == 0 {
 			continue
@@ -233,18 +236,92 @@ func writeCSV(path string, rows []backtest.Row) {
 	defer f.Close()
 	w := csv.NewWriter(f)
 	_ = w.Write([]string{"symbol", "day", "hour", "price", "day_gain", "elapsed_h", "vol_slope", "high_dist",
-		"change_1h", "change_4h", "atr_pct", "taker_ratio", "efficiency", "rel_strength", "quote_vol", "remaining", "max_dd"})
+		"change_1h", "change_4h", "atr_pct", "taker_ratio", "efficiency", "rel_strength", "quote_vol",
+		"oi_change_1h", "oi_known", "funding", "remaining", "max_dd", "excess", "hit"})
 	for _, r := range rows {
 		_ = w.Write([]string{r.Symbol, strconv.FormatInt(r.Day, 10), strconv.Itoa(r.Hour),
 			f2(r.Price), f4(r.DayGain), f2(r.ElapsedH), f4(r.VolSlope), f4(r.HighDist),
 			f4(r.Change1h), f4(r.Change4h), f4(r.ATRPct), f4(r.TakerRatio), f4(r.Efficiency), f4(r.RelStrength),
-			fmt.Sprintf("%.0f", r.QuoteVol), f4(r.Remaining), f4(r.MaxDD)})
+			fmt.Sprintf("%.0f", r.QuoteVol), f4(r.OIChange1h), strconv.FormatBool(r.OIKnown), f6(r.Funding),
+			f4(r.Remaining), f4(r.MaxDD), f4(r.Excess), strconv.FormatBool(r.Hit)})
 	}
 	w.Flush()
 }
 
 func f2(v float64) string { return strconv.FormatFloat(v, 'f', 2, 64) }
 func f4(v float64) string { return strconv.FormatFloat(v, 'f', 4, 64) }
+func f6(v float64) string { return strconv.FormatFloat(v, 'f', 6, 64) }
+
+// oiHistory pages through open-interest history, keyed by the hour's open ms.
+// Binance keeps about 30 days and returns at most 500 points per request.
+func oiHistory(ctx context.Context, c *http.Client, symbol string, start, end int64) (map[int64]float64, error) {
+	out := map[int64]float64{}
+	const step = int64(3600 * 1000)
+	cursor := start
+	for cursor < end {
+		q := url.Values{}
+		q.Set("symbol", symbol)
+		q.Set("period", "1h")
+		q.Set("startTime", strconv.FormatInt(cursor, 10))
+		q.Set("endTime", strconv.FormatInt(end, 10))
+		q.Set("limit", "500")
+		var rows []struct {
+			SumOpenInterest string `json:"sumOpenInterest"`
+			Timestamp       int64  `json:"timestamp"`
+		}
+		if err := getJSON(ctx, c, baseURL+"/futures/data/openInterestHist?"+q.Encode(), &rows); err != nil {
+			return out, err
+		}
+		if len(rows) == 0 {
+			break
+		}
+		for _, r := range rows {
+			if v, err := strconv.ParseFloat(r.SumOpenInterest, 64); err == nil && v > 0 {
+				out[r.Timestamp] = v
+			}
+		}
+		next := rows[len(rows)-1].Timestamp + step
+		if next <= cursor {
+			break
+		}
+		cursor = next
+	}
+	return out, nil
+}
+
+// fundingHistory pages through funding settlements.
+func fundingHistory(ctx context.Context, c *http.Client, symbol string, start, end int64) ([]backtest.Funding, error) {
+	var out []backtest.Funding
+	cursor := start
+	for cursor < end {
+		q := url.Values{}
+		q.Set("symbol", symbol)
+		q.Set("startTime", strconv.FormatInt(cursor, 10))
+		q.Set("endTime", strconv.FormatInt(end, 10))
+		q.Set("limit", "1000")
+		var rows []struct {
+			FundingTime int64  `json:"fundingTime"`
+			FundingRate string `json:"fundingRate"`
+		}
+		if err := getJSON(ctx, c, baseURL+"/fapi/v1/fundingRate?"+q.Encode(), &rows); err != nil {
+			return out, err
+		}
+		if len(rows) == 0 {
+			break
+		}
+		for _, r := range rows {
+			if v, err := strconv.ParseFloat(r.FundingRate, 64); err == nil {
+				out = append(out, backtest.Funding{Time: r.FundingTime, Rate: v})
+			}
+		}
+		next := rows[len(rows)-1].FundingTime + 1
+		if next <= cursor {
+			break
+		}
+		cursor = next
+	}
+	return out, nil
+}
 
 // byVolume orders symbols by 24h turnover, most liquid first.
 func byVolume(ctx context.Context, c *http.Client, symbols []string) ([]string, error) {

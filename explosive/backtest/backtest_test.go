@@ -32,7 +32,7 @@ func syntheticDay() (int64, []Bar) {
 
 func TestBuildRowsComputesAndLabels(t *testing.T) {
 	day, bars := syntheticDay()
-	rows := BuildRows("TESTUSDT", bars, map[int64]float64{day: 0.01}, 0.05, 0)
+	rows := BuildRows("TESTUSDT", bars, map[int64]float64{day: 0.01}, nil, nil, 0.05, 0)
 	if len(rows) == 0 {
 		t.Fatal("no rows")
 	}
@@ -70,8 +70,16 @@ func TestBuildRowsComputesAndLabels(t *testing.T) {
 func TestBuildRowsSkipsIncompleteDays(t *testing.T) {
 	day, bars := syntheticDay()
 	partial := bars[:200] // the day is still running
-	if rows := BuildRows("TESTUSDT", partial, map[int64]float64{day: 0.01}, 0.05, 0); len(rows) != 0 {
+	if rows := BuildRows("TESTUSDT", partial, map[int64]float64{day: 0.01}, nil, nil, 0.05, 0); len(rows) != 0 {
 		t.Fatalf("a running day must not be labelled: %d rows", len(rows))
+	}
+}
+
+func TestBandsAcceptQuantileEdges(t *testing.T) {
+	rows := []Row{{Remaining: 0.1}, {Remaining: -0.1}, {Remaining: 0.2}}
+	bs := Bands(rows, func(r Row) float64 { return r.Remaining }, []string{"Q1", "Q2", "Q3"}, []float64{-0.1, 0.1})
+	if len(bs) != 3 || bs[2].Samples != 1 {
+		t.Fatalf("quantile bands: %+v", bs)
 	}
 }
 
@@ -104,5 +112,52 @@ func TestBandsSplitOnThresholds(t *testing.T) {
 	}
 	if bs[0].AvgRet >= 0 {
 		t.Fatalf("band average: %+v", bs[0])
+	}
+}
+
+func TestOIAndFundingAttach(t *testing.T) {
+	day, bars := syntheticDay()
+	hour := int64(6) * 3600 * 1000
+	oi := map[int64]float64{
+		day + hour - 3600*1000: 1000,
+		day + hour:             1100,
+	}
+	fund := []Funding{{Time: day + hour - 4*3600*1000, Rate: 0.0001}, {Time: day + hour - 3600*1000, Rate: 0.0003}}
+	rows := BuildRows("TESTUSDT", bars, map[int64]float64{day: 0.01}, oi, fund, 0.05, 0)
+	var r *Row
+	for i := range rows {
+		if rows[i].Hour == 6 {
+			r = &rows[i]
+		}
+	}
+	if r == nil || !r.OIKnown {
+		t.Fatalf("OI not attached: %+v", r)
+	}
+	if math.Abs(r.OIChange1h-0.10) > 1e-9 {
+		t.Fatalf("OI change = %v", r.OIChange1h)
+	}
+	if math.Abs(r.Funding-0.0003) > 1e-12 {
+		t.Fatalf("funding = %v", r.Funding)
+	}
+}
+
+func TestSameHourExcessRemovesTheCommonMove(t *testing.T) {
+	rows := []Row{
+		{Day: 1, Hour: 5, Remaining: 0.10},
+		{Day: 1, Hour: 5, Remaining: -0.02},
+		{Day: 1, Hour: 5, Remaining: -0.08},
+	}
+	out := AddSameHourExcess(rows)
+	// Mean is 0.0, so excess equals remaining here.
+	if math.Abs(out[0].Excess-0.10) > 1e-9 || out[2].Excess >= 0 {
+		t.Fatalf("excess: %+v", out)
+	}
+	// A uniformly rising hour gives zero excess to everyone.
+	flat := AddSameHourExcess([]Row{{Day: 2, Hour: 3, Remaining: 0.05}, {Day: 2, Hour: 3, Remaining: 0.05}})
+	if flat[0].Excess != 0 || flat[1].Excess != 0 {
+		t.Fatalf("flat hour excess: %+v", flat)
+	}
+	if out[0].Hit != true || out[1].Hit != false {
+		t.Fatalf("hit flag: %+v", out)
 	}
 }
