@@ -115,7 +115,9 @@ describe('explosive board', () => {
       </LanguageProvider>
     )
     await screen.findAllByText('SOL')
-    fireEvent.click(screen.getByText(/Accuracy|准确率/))
+    const accTab = screen.getAllByRole('button').find((b) => (b.textContent || '').trim() === '准确率')
+    expect(accTab).toBeTruthy()
+    fireEvent.click(accTab!)
     expect(await screen.findByText('≥80')).toBeTruthy()
     expect(screen.getAllByText('3').length).toBeGreaterThan(0)
   })

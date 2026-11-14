@@ -40,6 +40,7 @@ type Server struct {
 	authLimiter               *ipRateLimiter  // per-IP throttle for login/register
 	copyTrade                 *copytrade.Monitor
 	explosiveRec              *explosive.Recorder
+	explosivePaper            *explosive.PaperTrader
 	mirror                    *mirror.Engine
 	mirrorCtx                 context.Context
 	proxyTestMu               sync.Mutex

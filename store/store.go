@@ -33,6 +33,7 @@ type Store struct {
 	coinPool       *CoinPoolStore
 	copyTrade      *CopyTradeStore
 	explosive      *ExplosiveStore
+	paper          *PaperStore
 	mirror         *MirrorStore
 	telegramConfig TelegramConfigStore
 
@@ -338,6 +339,16 @@ func (s *Store) CoinPool() *CoinPoolStore {
 }
 
 // CopyTrade gets the copy-trade monitor storage
+// Paper gets the explosive board's paper-trading storage.
+func (s *Store) Paper() *PaperStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.paper == nil {
+		s.paper = NewPaperStore(s.gdb)
+	}
+	return s.paper
+}
+
 // Explosive gets the explosive board's signal storage.
 func (s *Store) Explosive() *ExplosiveStore {
 	s.mu.Lock()

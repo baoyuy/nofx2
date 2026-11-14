@@ -15,6 +15,7 @@ import { tr, ui } from '../components/market/marketUi'
 import { useLanguage } from '../contexts/LanguageContext'
 import { priceDecimals } from '../utils/marketIndicators'
 import { AccuracyPanel } from '../components/explosive/AccuracyPanel'
+import { PaperPanel } from '../components/explosive/PaperPanel'
 import { stateColor, stateLabel, tagLabel } from '../components/explosive/labels'
 
 const signed = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
@@ -107,7 +108,7 @@ function sortValue(r: ExplosiveRow, key: SortKey): number {
 
 export function ExplosivePage() {
   const { language } = useLanguage()
-  const [view, setView] = useState<'board' | 'accuracy'>('board')
+  const [view, setView] = useState<'board' | 'accuracy' | 'paper'>('board')
   const [selected, setSelected] = useState('')
   const [chartInterval, setChartInterval] = useState('15m')
   const [sort, setSort] = useState<{ key: SortKey; dir: 'desc' | 'asc' }>({ key: 'expected', dir: 'desc' })
@@ -295,7 +296,7 @@ export function ExplosivePage() {
             </span>
           ) : null}
           <div className="ml-auto flex gap-1">
-            {(['board', 'accuracy'] as const).map((v) => (
+            {(['board', 'paper', 'accuracy'] as const).map((v) => (
               <button
                 key={v}
                 type="button"
@@ -303,7 +304,11 @@ export function ExplosivePage() {
                 className={`${ui.btnGhost} ${view === v ? 'border-nofx-gold text-nofx-gold' : ''}`}
                 onClick={() => setView(v)}
               >
-                {v === 'board' ? tr(language, '榜单', 'Board') : tr(language, '准确率', 'Accuracy')}
+                {v === 'board'
+                  ? tr(language, '榜单', 'Board')
+                  : v === 'paper'
+                    ? tr(language, '模拟盘', 'Paper')
+                    : tr(language, '准确率', 'Accuracy')}
               </button>
             ))}
           </div>
@@ -325,6 +330,8 @@ export function ExplosivePage() {
 
       {view === 'accuracy' ? (
         <AccuracyPanel language={language} />
+      ) : view === 'paper' ? (
+        <PaperPanel language={language} />
       ) : (
         <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
           <div className="min-w-0 space-y-4">

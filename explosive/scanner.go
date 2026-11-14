@@ -77,6 +77,17 @@ type Screener struct {
 	flight    singleflight.Group
 }
 
+// Price returns the live price of one symbol from the feed, if fresh.
+func (s *Screener) Price(symbol string) (float64, bool) {
+	if s.live == nil {
+		return 0, false
+	}
+	if t, ok := s.live.Get(symbol); ok && t.Price > 0 {
+		return t.Price, true
+	}
+	return 0, false
+}
+
 // New returns a screener for Binance USDT-M futures.
 func New() *Screener {
 	return &Screener{

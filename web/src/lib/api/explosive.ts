@@ -135,6 +135,58 @@ export interface ExplosiveAccuracy {
   updated_at: string
 }
 
+export interface PaperTrade {
+  id: number
+  symbol: string
+  side: string
+  opened_at: number
+  entry_price: number
+  quantity: number
+  notional: number
+  stop_price: number
+  target_price: number
+  atr_pct: number
+  risk_usd: number
+  vol_spike: number
+  oi_pct: number
+  day_gain: number
+  status: string
+  closed_at: number
+  exit_price: number
+  exit_reason: string
+  fee: number
+  realized_pnl: number
+}
+
+export interface PaperEquityPoint {
+  ts: number
+  equity: number
+  realized: number
+  unrealized: number
+  open_count: number
+}
+
+export interface ExplosivePaper {
+  label: string
+  starting_equity: number
+  equity: number
+  return_pct: number
+  realized: number
+  unrealized: number
+  open_count: number
+  trades: number
+  wins: number
+  win_rate: number
+  avg_win: number
+  avg_loss: number
+  profit_factor: number
+  open: PaperTrade[]
+  recent: PaperTrade[]
+  equity_series: PaperEquityPoint[]
+  config: Record<string, number>
+  updated_at: number
+}
+
 export const explosiveApi = {
   async accuracy(days = 30): Promise<ExplosiveAccuracy> {
     const r = await httpClient.request<ExplosiveAccuracy>(
@@ -142,6 +194,14 @@ export const explosiveApi = {
       { params: { days }, silent: true, timeout: 20000 }
     )
     return unwrap(r, 'Failed to load accuracy')
+  },
+
+  async paper(): Promise<ExplosivePaper> {
+    const r = await httpClient.request<ExplosivePaper>(
+      `${API_BASE}/market/explosive/paper`,
+      { silent: true, timeout: 20000 }
+    )
+    return unwrap(r, 'Failed to load paper account')
   },
 
   async board(refresh = false): Promise<ExplosiveBoard> {
