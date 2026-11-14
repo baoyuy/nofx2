@@ -256,11 +256,15 @@ func (s *Screener) build(limit int) Board {
 	// as ambushes.
 	ambush := make([]Row, 0, len(rows))
 	blasted := make([]Row, 0, 8)
+	radar := make([]Row, 0, 16)
 	for _, r := range rows {
 		if r.Ran {
 			blasted = append(blasted, r)
 		} else if r.Ambush {
 			ambush = append(ambush, r)
+		}
+		if r.Radar {
+			radar = append(radar, r)
 		}
 	}
 	sort.SliceStable(ambush, func(a, b int) bool {
@@ -276,8 +280,12 @@ func (s *Screener) build(limit int) Board {
 	if len(blasted) > 10 {
 		blasted = blasted[:10]
 	}
+	sort.SliceStable(radar, func(a, b int) bool { return radar[a].RadarScore > radar[b].RadarScore })
+	if len(radar) > 12 {
+		radar = radar[:12]
+	}
 
-	board := Board{Rows: ambush, Blasted: blasted, Scanned: scanned, Candidates: candidates, FetchedAt: fullAt, Refreshing: refreshing}
+	board := Board{Rows: ambush, Blasted: blasted, Radar: radar, Scanned: scanned, Candidates: candidates, FetchedAt: fullAt, Refreshing: refreshing}
 	if !fullAt.IsZero() {
 		board.AgeSeconds = int(time.Since(fullAt).Seconds())
 		board.Stale = board.AgeSeconds > int(boardTTL.Seconds())

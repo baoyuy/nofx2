@@ -330,3 +330,36 @@ func TestRanAndAmbushUseRolling24hToo(t *testing.T) {
 		t.Fatalf("early coin must be an ambush: ran=%v ambush=%v", r2.Ran, r2.Ambush)
 	}
 }
+
+func TestVolumeSpike1hAndRadar(t *testing.T) {
+	// Flat hourly volume, then a 5x hour.
+	bars := make([]Kline, 60)
+	for i := range bars {
+		bars[i] = Kline{Open: 1, High: 1.01, Low: 0.99, Close: 1, Volume: 1000}
+	}
+	bars[len(bars)-1].Volume = 5000
+	if got := volumeSpike1h(bars); got < 4.5 || got > 5.5 {
+		t.Fatalf("volume spike = %.2f, want ~5", got)
+	}
+	if volumeSpike1h(bars[:10]) != 0 {
+		t.Fatal("too little history must read zero")
+	}
+
+	// A spike on a visibly moving, volatile coin with money coming in is a radar hit.
+	in := Input{Symbol: "R", Price: 1.05, Bars5m: trendBars(60, 1.0, 2.0), Bars1h: bars,
+		Change24h: 10, Volume24h: 5e7, OIKnown: true, OIChange1h: 0.05,
+		HasDay: true, DayGain: 0.08, ElapsedH: 4}
+	r, ok := Evaluate(in)
+	if !ok {
+		t.Fatal("evaluate failed")
+	}
+	if !r.Radar || r.VolSpike1h < 4.5 {
+		t.Fatalf("expected a radar hit: radar=%v spike=%.1f atr=%.2f", r.Radar, r.VolSpike1h, r.ATRPct)
+	}
+	// Already run coins never reach the radar.
+	in.Change24h = 200
+	r2, _ := Evaluate(in)
+	if r2.Radar {
+		t.Fatal("a coin already up 200% in 24h must not be a radar hit")
+	}
+}

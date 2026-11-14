@@ -486,9 +486,18 @@ func Evaluate(in Input) (Row, bool) {
 	ran := in.DayGain >= 0.50 || in.Change24h >= 50
 	ambush := !ran
 
+	// Ignition radar: a volume spike against the recent hourly norm, real
+	// volatility, and money coming in. Kept deliberately strict so it fires on
+	// a handful of names a day. Backtested precision is low (about 8% reach
+	// +50%), so this is a watch list, not a prediction.
+	vspike := volumeSpike1h(in.Bars1h)
+	radarScore := vspike * clamp01(atr/2)
+	radar := !ran && in.DayGain >= 0.02 && vspike >= 2 && atr >= 1.0 && (!in.OIKnown || in.OIChange1h > 0)
+
 	return Row{
 		Symbol: in.Symbol, Price: in.Price, Change24h: in.Change24h, Change5m: ret5, Change15m: ret15,
 		PredictedFinal: finalGain * 100, Ran: ran, Ambush: ambush,
+		VolSpike1h: vspike, RadarScore: radarScore, Radar: radar,
 		Volume24h: in.Volume24h, VolRatio: vr, OIChange1h: in.OIChange1h, OIKnown: in.OIKnown, Funding: in.Funding,
 		Change1h: ch1, Change4h: ch4, EMASlope: slope, TakerBuyRatio: takerRatio, RiseEfficiency: efficiency,
 		DayGain: in.DayGain, ElapsedH: in.ElapsedH, VolumeSlope: in.VolumeSlope,
@@ -529,4 +538,36 @@ func formingBar(bars []Kline, price float64, interval time.Duration, now time.Ti
 		cur.Low = math.Min(cur.Low, price)
 	}
 	return out
+}
+
+// volumeSpike1h compares the last closed hour's volume with the median hour
+// over the prior days. It is the live proxy for the 15m spike validated in the
+// backtest, using the hourly bars the screener already keeps.
+func volumeSpike1h(bars []Kline) float64 {
+	if len(bars) < 25 {
+		return 0
+	}
+	cur := bars[len(bars)-1].Volume
+	if cur <= 0 {
+		return 0
+	}
+	prior := make([]float64, 0, len(bars)-1)
+	from := len(bars) - 1 - 168
+	if from < 0 {
+		from = 0
+	}
+	for i := from; i < len(bars)-1; i++ {
+		if bars[i].Volume > 0 {
+			prior = append(prior, bars[i].Volume)
+		}
+	}
+	if len(prior) < 20 {
+		return 0
+	}
+	sort.Float64s(prior)
+	med := prior[len(prior)/2]
+	if med <= 0 {
+		return 0
+	}
+	return math.Min(30, cur/med)
 }

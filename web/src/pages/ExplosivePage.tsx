@@ -68,6 +68,7 @@ export function ExplosivePage() {
   )
   const rows = data?.rows || []
   const blasted = data?.blasted || []
+  const radar = data?.radar || []
   const current = selected || rows[0]?.symbol || ''
   const row = useMemo(
     () => rows.find((r) => r.symbol === current) || null,
@@ -167,6 +168,13 @@ export function ExplosivePage() {
       ) : (
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
         <section className={`${ui.panel} min-w-0 overflow-x-auto`}>
+          <div className={`mb-2 text-xs ${ui.muted}`}>
+            {tr(
+              language,
+              '预期最终 = 今日涨幅 + 模型预测的剩余空间，按它排序。模型能力有限，仅作参考，不代表一定会涨。',
+              'Expected = day gain + modelled room left; the list is sorted by it. The model is weak, so treat this as reference only.'
+            )}
+          </div>
           {rows.length ? (
             <table className="w-full min-w-[860px] text-sm">
               <thead className="text-left text-xs text-nofx-text-muted">
@@ -272,6 +280,65 @@ export function ExplosivePage() {
               {data?.reason
                 ? tr(language, `暂时没有符合条件的币：${data.reason}`, `Nothing qualifies right now: ${data.reason}`)
                 : tr(language, '正在扫描…', 'Scanning…')}
+            </p>
+          )}
+        </section>
+
+        <section className={`${ui.panel} min-w-0 overflow-x-auto`}>
+          <div className="mb-2 flex flex-wrap items-baseline gap-2">
+            <h2 className="text-base font-semibold text-nofx-text">
+              {tr(language, '妖币雷达', 'Monster radar')}
+            </h2>
+            <span className={`text-xs ${ui.muted}`}>
+              {tr(
+                language,
+                '成交量突增 + 高波动 + 持仓量增加，仍在早期。实测约 8% 会在当日涨到 50%+，多数日子可能为空，仅作观察。',
+                'Volume spike + volatility + rising OI, still early. About 8% reach +50% the same day; often empty. Watch only.'
+              )}
+            </span>
+          </div>
+          {radar.length ? (
+            <table className="w-full min-w-[640px] text-sm">
+              <thead className="text-left text-xs text-nofx-text-muted">
+                <tr>
+                  <th className="py-1.5 font-normal">{tr(language, '币种', 'Coin')}</th>
+                  <th className="text-right font-normal">{tr(language, '量能突增', 'Vol spike')}</th>
+                  <th className="text-right font-normal">ATR</th>
+                  <th className="text-right font-normal">{tr(language, '今日涨幅', 'Day')}</th>
+                  <th className="text-right font-normal">OI 1h</th>
+                  <th className="text-right font-normal">{tr(language, '预期最终', 'Expected')}</th>
+                  <th className="text-right font-normal">{tr(language, '成交额', 'Turnover')}</th>
+                </tr>
+              </thead>
+              <tbody className="text-nofx-text">
+                {radar.map((r) => (
+                  <tr
+                    key={r.symbol}
+                    onClick={() => setSelected(r.symbol)}
+                    className={`cursor-pointer border-t ${ui.border} hover:bg-nofx-bg-deeper`}
+                  >
+                    <td className="py-1.5 font-medium">{r.symbol.replace('USDT', '')}</td>
+                    <td className="text-right font-semibold tabular-nums" style={{ color: (r.vol_spike_1h ?? 0) >= 3 ? BN.up : undefined }}>
+                      {(r.vol_spike_1h ?? 0).toFixed(1)}x
+                    </td>
+                    <td className="text-right tabular-nums">{(r.atr_pct ?? 0).toFixed(1)}%</td>
+                    <td className="text-right tabular-nums" style={{ color: r.day_gain >= 0 ? BN.up : BN.down }}>
+                      {signed(r.day_gain * 100)}
+                    </td>
+                    <td className="text-right tabular-nums" style={{ color: r.oi_known ? (r.oi_change_1h >= 0 ? BN.up : BN.down) : undefined }}>
+                      {r.oi_known ? signed(r.oi_change_1h * 100) : '—'}
+                    </td>
+                    <td className="text-right font-semibold tabular-nums" style={{ color: BN.up }}>
+                      +{(r.predicted_final ?? 0).toFixed(1)}%
+                    </td>
+                    <td className="text-right tabular-nums">{compact(r.volume_24h)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className={`py-4 text-center text-xs ${ui.muted}`}>
+              {tr(language, '当前没有点火信号（多数时候如此，属正常）。', 'No ignition signal right now (normal most of the time).')}
             </p>
           )}
         </section>

@@ -33,6 +33,9 @@ type ExplosiveSignal struct {
 	VolumeSlope        float64 `gorm:"column:volume_slope"`
 	PredictedRemaining float64 `gorm:"column:predicted_remaining"`
 	PredictedFinal     float64 `gorm:"column:predicted_final"`
+	VolSpike1h         float64 `gorm:"column:vol_spike_1h"`
+	RadarScore         float64 `gorm:"column:radar_score"`
+	Radar              bool    `gorm:"column:radar"`
 	Tradability        string  `gorm:"column:tradability"`
 
 	VolRatio     float64 `gorm:"column:vol_ratio"`

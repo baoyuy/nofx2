@@ -32,6 +32,12 @@ export interface ExplosiveRow {
   ran: boolean
   /** still early enough to enter */
   ambush: boolean
+  /** last hour's volume against its ~6-day median */
+  vol_spike_1h: number
+  /** ignition score: volume spike x volatility */
+  radar_score: number
+  /** ignition watch flag */
+  radar: boolean
   /** good | fair | thin */
   tradability: string
   oi_change_1h: number
@@ -63,6 +69,8 @@ export interface ExplosiveBoard {
   rows: ExplosiveRow[]
   /** coins that already ran; shown apart from the ambush list */
   blasted?: ExplosiveRow[]
+  /** ignition watch list, low measured hit rate */
+  radar?: ExplosiveRow[]
   scanned: number
   candidates: number
   fetched_at: string

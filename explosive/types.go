@@ -54,6 +54,11 @@ type Row struct {
 	// enough to enter (the board's first section).
 	Ran    bool `json:"ran"`
 	Ambush bool `json:"ambush"`
+	// VolSpike1h is the last closed hour's volume against its ~6-day median.
+	// RadarScore combines it with volatility; Radar flags an ignition.
+	VolSpike1h float64 `json:"vol_spike_1h"`
+	RadarScore float64 `json:"radar_score"`
+	Radar      bool    `json:"radar"`
 	// Tradability is a coarse liquidity label: good | fair | thin.
 	Tradability string `json:"tradability"`
 	// Multi-timeframe changes, percent, from 1h closes.
@@ -105,6 +110,10 @@ type Board struct {
 	// Blasted are coins that already ran today: shown, but not ranked as
 	// ambushes.
 	Blasted []Row `json:"blasted"`
+	// Radar lists ignition candidates: volume spike + volatility + OI rising,
+	// still early in the day. Measured hit rate is low (about 8% reach +50%),
+	// so it is a watch list, not a prediction.
+	Radar []Row `json:"radar"`
 	// Scanned counts tickers considered, Candidates those that passed the
 	// liquidity and freshness gates.
 	Scanned    int       `json:"scanned"`
