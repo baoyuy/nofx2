@@ -32,6 +32,8 @@ const baseURL = "https://fapi.binance.com"
 func main() {
 	days := flag.Int("days", 30, "how many days to replay")
 	minGain := flag.Float64("min-gain", 0.2, "only replay symbols that moved at least this much in a day")
+	universe := flag.String("universe", "movers", "movers: only coins that moved; all: every liquid perp (needed to count false positives)")
+	minRowGain := flag.Float64("min-row-gain", 0.03, "in all-universe mode, emit rows once a coin is up this much on the day")
 	workers := flag.Int("workers", 8, "parallel symbol fetches")
 	limit := flag.Int("symbols", 0, "cap the number of candidate symbols (0 = all)")
 	maxSymbols := flag.Int("max-symbols", 0, "only scan this many of the most liquid symbols (0 = all)")
@@ -86,7 +88,7 @@ func main() {
 					best = math.Max(best, math.Abs(b.Close/b.Open-1))
 				}
 			}
-			if best < *minGain {
+			if *universe == "movers" && best < *minGain {
 				return
 			}
 			mu.Lock()
@@ -99,7 +101,11 @@ func main() {
 	if *limit > 0 && len(cands) > *limit {
 		cands = cands[:*limit]
 	}
-	fmt.Printf("candidate symbols: %d (daily move >= %.0f%%)\n", len(cands), *minGain*100)
+	if *universe == "all" {
+		fmt.Printf("candidate symbols: %d (full universe)\n", len(cands))
+	} else {
+		fmt.Printf("candidate symbols: %d (daily move >= %.0f%%)\n", len(cands), *minGain*100)
+	}
 
 	// BTC benchmark per Beijing day.
 	btcBars, err := all5m(ctx, c, "BTCUSDT", start, end)
@@ -133,7 +139,11 @@ func main() {
 			}
 			oi, _ := oiHistory(ctx, c, sym, start, end)
 			fund, _ := fundingHistory(ctx, c, sym, start, end)
-			rs := backtest.BuildRows(sym, bars, btcDay, oi, fund, 0.05, 5e6)
+			rowMin := 0.05
+			if *universe == "all" {
+				rowMin = *minRowGain
+			}
+			rs := backtest.BuildRows(sym, bars, btcDay, oi, fund, rowMin, 5e6)
 			mu.Lock()
 			rows = append(rows, rs...)
 			done++
@@ -237,12 +247,14 @@ func writeCSV(path string, rows []backtest.Row) {
 	w := csv.NewWriter(f)
 	_ = w.Write([]string{"symbol", "day", "hour", "price", "day_gain", "elapsed_h", "vol_slope", "high_dist",
 		"change_1h", "change_4h", "atr_pct", "taker_ratio", "efficiency", "rel_strength", "quote_vol",
-		"oi_change_1h", "oi_known", "funding", "remaining", "max_dd", "excess", "hit"})
+		"oi_change_1h", "oi_known", "funding", "vol_spike", "breakout_7d", "compress_7d", "atr_7d_pct",
+		"remaining", "max_dd", "excess", "hit"})
 	for _, r := range rows {
 		_ = w.Write([]string{r.Symbol, strconv.FormatInt(r.Day, 10), strconv.Itoa(r.Hour),
 			f2(r.Price), f4(r.DayGain), f2(r.ElapsedH), f4(r.VolSlope), f4(r.HighDist),
 			f4(r.Change1h), f4(r.Change4h), f4(r.ATRPct), f4(r.TakerRatio), f4(r.Efficiency), f4(r.RelStrength),
 			fmt.Sprintf("%.0f", r.QuoteVol), f4(r.OIChange1h), strconv.FormatBool(r.OIKnown), f6(r.Funding),
+			f2(r.VolSpike), f4(r.Breakout7d), f4(r.Compress7d), f4(r.ATR7dPct),
 			f4(r.Remaining), f4(r.MaxDD), f4(r.Excess), strconv.FormatBool(r.Hit)})
 	}
 	w.Flush()

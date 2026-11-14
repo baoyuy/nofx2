@@ -5,6 +5,7 @@ package backtest
 
 import (
 	"math"
+	"sort"
 	"time"
 )
 
@@ -55,6 +56,12 @@ type Row struct {
 	// Outcome to the Beijing-day close.
 	Remaining float64 `json:"remaining"`
 	MaxDD     float64 `json:"max_dd"`
+	// Ignition features over a rolling 7-day window, independent of the
+	// calendar day: a monster coin usually ignites out of a quiet base.
+	VolSpike   float64 `json:"vol_spike"`   // last 15m quote volume / 7d median
+	Breakout7d float64 `json:"breakout_7d"` // price / prior-7d high - 1
+	Compress7d float64 `json:"compress_7d"` // prior-7d (max-min)/min, lower = tighter
+	ATR7dPct   float64 `json:"atr_7d_pct"`  // 7d ATR as percent of price
 	// Excess is Remaining minus the mean Remaining of every candidate in the
 	// same hour: it removes time-of-day drift that makes late entries look
 	// better only because they are exposed for fewer hours.
@@ -211,6 +218,46 @@ func BuildRows(symbol string, bars []Bar, btcDay map[int64]float64, oiByHour map
 				}
 			}
 			row.Funding = fundingAt(funding, day+int64(hour)*3600*1000)
+			// Rolling 7-day ignition context, using bars strictly before idx.
+			if idx >= 24 {
+				p7 := idx - 2016 // 7 days of 5m bars
+				if p7 < 0 {
+					p7 = 0
+				}
+				var hi, lo, sumVol, sumQuote float64
+				hi, lo = 0, math.Inf(1)
+				med := make([]float64, 0, 64)
+				for i := p7; i < idx; i++ {
+					hi = math.Max(hi, dayBars[i].High)
+					if dayBars[i].Low > 0 && dayBars[i].Low < lo {
+						lo = dayBars[i].Low
+					}
+				}
+				if hi > 0 {
+					row.Breakout7d = price/hi - 1
+				}
+				if lo > 0 && lo < math.Inf(1) {
+					row.Compress7d = (hi - lo) / lo
+				}
+				// 15m quote volume now vs the 7d median of 15m buckets.
+				nowQuote := 0.0
+				for i := idx - 2; i <= idx && i >= 0; i-- {
+					nowQuote += dayBars[i].Quote
+				}
+				for i := p7; i+2 < idx; i += 3 {
+					med = append(med, dayBars[i].Quote+dayBars[i+1].Quote+dayBars[i+2].Quote)
+				}
+				if len(med) > 5 {
+					sort.Float64s(med)
+					m := med[len(med)/2]
+					if m > 0 {
+						row.VolSpike = math.Min(50, nowQuote/m)
+					}
+				}
+				_ = sumVol
+				_ = sumQuote
+				row.ATR7dPct = row.ATRPct
+			}
 			row.Remaining = dayClose/price - 1
 			dd := 0.0
 			for i := idx + 1; i < len(dayBars); i++ {

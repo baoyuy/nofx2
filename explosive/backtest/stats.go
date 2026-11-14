@@ -28,6 +28,9 @@ func Features() []Feature {
 		{"log_quote", func(r Row) float64 { return math.Log10(1 + r.QuoteVol) }},
 		{"oi_change", func(r Row) float64 { return r.OIChange1h }},
 		{"funding", func(r Row) float64 { return r.Funding }},
+		{"vol_spike", func(r Row) float64 { return math.Log1p(r.VolSpike) }},
+		{"breakout_7d", func(r Row) float64 { return r.Breakout7d }},
+		{"compress_7d", func(r Row) float64 { return -r.Compress7d }},
 	}
 }
 
