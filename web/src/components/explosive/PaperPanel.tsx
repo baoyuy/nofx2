@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import useSWR from 'swr'
 import { Plus, Trash2, Loader2, SlidersHorizontal } from 'lucide-react'
-import { explosiveApi, type PaperTrade, type PaperAccountSummary, type PaperSettings } from '../../lib/api/explosive'
+import { explosiveApi, type PaperTrade, type PaperAccountSummary, type PaperSettings, type OpenPosition } from '../../lib/api/explosive'
 import { configApi } from '../../lib/api/config'
 import type { Exchange } from '../../types/config'
 import { tr, ui } from '../market/marketUi'
@@ -97,6 +97,45 @@ function TradesTable({ language, trades, closed }: { language: string; trades: P
                 {closed ? money(t.realized_pnl) : '—'}
               </td>
               <td className="px-2 text-right tabular-nums text-nofx-text-muted">{fmtTime(closed ? t.closed_at : t.opened_at)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function OpenTable({ language, positions }: { language: string; positions: OpenPosition[] }) {
+  return (
+    <div className="min-w-0 overflow-x-auto">
+      <table className="w-full min-w-[720px] whitespace-nowrap text-sm">
+        <thead className="text-left text-xs text-nofx-text-muted">
+          <tr>
+            <th className="px-2 py-1.5 font-normal">{tr(language, '币种', 'Coin')}</th>
+            <th className="px-2 text-right font-normal">{tr(language, '入场价', 'Entry')}</th>
+            <th className="px-2 text-right font-normal">{tr(language, '现价', 'Now')}</th>
+            <th className="px-2 text-right font-normal">{tr(language, '止损', 'Stop')}</th>
+            <th className="px-2 text-right font-normal">{tr(language, '止盈', 'Target')}</th>
+            <th className="px-2 text-right font-normal">{tr(language, '仓位(USDT)', 'Notional')}</th>
+            <th className="px-2 text-right font-normal">{tr(language, '浮动盈亏(USDT)', 'Floating PnL')}</th>
+            <th className="px-2 text-right font-normal">{tr(language, '开仓时间', 'Opened')}</th>
+          </tr>
+        </thead>
+        <tbody className="text-nofx-text">
+          {positions.map((p) => (
+            <tr key={p.id} className={`border-t ${ui.border}`}>
+              <td className="px-2 py-1.5 font-medium">{p.symbol.replace('USDT', '')}</td>
+              <td className="px-2 text-right tabular-nums">{price(p.entry_price)}</td>
+              <td className="px-2 text-right tabular-nums" style={{ color: p.unrealized_pnl >= 0 ? BN.up : BN.down }}>
+                {price(p.current_price)}
+              </td>
+              <td className="px-2 text-right tabular-nums" style={{ color: BN.down }}>{price(p.stop_price)}</td>
+              <td className="px-2 text-right tabular-nums" style={{ color: BN.up }}>{price(p.target_price)}</td>
+              <td className="px-2 text-right tabular-nums">{Math.round(p.notional)}</td>
+              <td className="px-2 text-right font-semibold tabular-nums" style={{ color: p.unrealized_pnl >= 0 ? BN.up : BN.down }}>
+                {money(p.unrealized_pnl)} ({signedPct(p.unrealized_pct)})
+              </td>
+              <td className="px-2 text-right tabular-nums text-nofx-text-muted">{fmtTime(p.opened_at)}</td>
             </tr>
           ))}
         </tbody>
@@ -366,7 +405,7 @@ export function PaperPanel({ language }: { language: string }) {
                   <h3 className="mb-2 text-sm font-semibold text-nofx-text">
                     {tr(language, '当前持仓', 'Open positions')} <span className={`text-xs ${ui.muted}`}>({data.open_count})</span>
                   </h3>
-                  <TradesTable language={language} trades={data.open} closed={false} />
+                  <OpenTable language={language} positions={data.open} />
                 </section>
               ) : null}
 

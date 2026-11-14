@@ -166,6 +166,22 @@ export interface PaperEquityPoint {
   open_count: number
 }
 
+export interface OpenPosition {
+  id: number
+  symbol: string
+  entry_price: number
+  current_price: number
+  stop_price: number
+  target_price: number
+  quantity: number
+  notional: number
+  risk_usd: number
+  atr_pct: number
+  unrealized_pnl: number
+  unrealized_pct: number
+  opened_at: number
+}
+
 export interface PaperSettings {
   id: number
   risk_pct: number
@@ -205,7 +221,7 @@ export interface ExplosivePaper {
   avg_win: number
   avg_loss: number
   profit_factor: number
-  open: PaperTrade[]
+  open: OpenPosition[]
   recent: PaperTrade[]
   equity_series: PaperEquityPoint[]
   config: Record<string, number>

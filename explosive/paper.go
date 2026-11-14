@@ -342,11 +342,28 @@ type ExplosivePaperView struct {
 	AvgWin         float64                      `json:"avg_win"`
 	AvgLoss        float64                      `json:"avg_loss"`
 	ProfitFactor   float64                      `json:"profit_factor"`
-	Open           []store.ExplosivePaperTrade  `json:"open"`
+	Open           []OpenPositionView           `json:"open"`
 	Recent         []store.ExplosivePaperTrade  `json:"recent"`
 	EquitySeries   []store.ExplosivePaperEquity `json:"equity_series"`
 	Config         map[string]float64           `json:"config"`
 	UpdatedAt      int64                        `json:"updated_at"`
+}
+
+// OpenPositionView is one live position with its current price and floating PnL.
+type OpenPositionView struct {
+	ID            int64   `json:"id"`
+	Symbol        string  `json:"symbol"`
+	Entry         float64 `json:"entry_price"`
+	Current       float64 `json:"current_price"`
+	Stop          float64 `json:"stop_price"`
+	Target        float64 `json:"target_price"`
+	Quantity      float64 `json:"quantity"`
+	Notional      float64 `json:"notional"`
+	RiskUSD       float64 `json:"risk_usd"`
+	ATRPct        float64 `json:"atr_pct"`
+	Unrealized    float64 `json:"unrealized_pnl"`
+	UnrealizedPct float64 `json:"unrealized_pct"`
+	OpenedAt      int64   `json:"opened_at"`
 }
 
 // AccountSummary is a compact per-account card for the account switcher.
@@ -378,11 +395,24 @@ func (p *PaperTrader) Snapshot(accID int64) ExplosivePaperView {
 	name, start := p.startFor(accID)
 	v := ExplosivePaperView{AccountID: accID, Label: name, StartingEquity: start}
 	open, _ := p.store.OpenTrades(accID)
-	if open == nil {
-		open = []store.ExplosivePaperTrade{}
+	v.Open = make([]OpenPositionView, 0, len(open))
+	for _, t := range open {
+		cur := t.Entry
+		if pr, ok := Shared.Price(t.Symbol); ok && pr > 0 {
+			cur = pr
+		}
+		up := (cur - t.Entry) * t.Quantity
+		upPct := 0.0
+		if t.Entry > 0 {
+			upPct = (cur/t.Entry - 1) * 100
+		}
+		v.Open = append(v.Open, OpenPositionView{
+			ID: t.ID, Symbol: t.Symbol, Entry: t.Entry, Current: cur,
+			Stop: t.Stop, Target: t.Target, Quantity: t.Quantity, Notional: t.Notional,
+			RiskUSD: t.RiskUSD, ATRPct: t.ATRPct, Unrealized: up, UnrealizedPct: upPct, OpenedAt: t.OpenedAt,
+		})
 	}
-	v.Open = open
-	v.OpenCount = len(open)
+	v.OpenCount = len(v.Open)
 	v.Recent, _ = p.store.RecentTrades(accID, 50)
 	v.Realized, _ = p.store.RealizedTotal(accID)
 	n, wins, winSum, lossSum, _ := p.store.ClosedStats(accID)
