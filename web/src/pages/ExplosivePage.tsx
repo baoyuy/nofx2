@@ -113,6 +113,10 @@ export function ExplosivePage() {
   const [sort, setSort] = useState<{ key: SortKey; dir: 'desc' | 'asc' }>({ key: 'expected', dir: 'desc' })
   const [filters, setFilters] = useState<Set<string>>(new Set())
   const [alert, setAlert] = useState<string[]>([])
+  const [riskAccount, setRiskAccount] = useState(1000)
+  const [riskPct, setRiskPct] = useState(2)
+  const [stopMult, setStopMult] = useState(1.5)
+  const [tpMult, setTpMult] = useState(3)
 
   const { data, error, mutate, isValidating } = useSWR(
     'market/explosive',
@@ -174,6 +178,24 @@ export function ExplosivePage() {
   const last = liveCandles[liveCandles.length - 1]?.close || row?.price || 0
   const decimals = priceDecimals(last)
   const refresh = () => void mutate(() => explosiveApi.board(true), { revalidate: false })
+
+  // Risk card: stop/target/position from volatility (ATR). Not a direction call.
+  const rc = useMemo(() => {
+    if (!row) return null
+    const price = row.price
+    const atr = (row.atr_pct ?? 0) / 100
+    if (!(price > 0) || !(atr > 0)) return null
+    const stop = price * (1 - stopMult * atr)
+    const tp = price * (1 + tpMult * atr)
+    const stopDist = stopMult * atr
+    const tpDist = tpMult * atr
+    const notional =
+      riskAccount > 0 && riskPct > 0 && stopDist > 0
+        ? (riskAccount * (riskPct / 100)) / stopDist
+        : 0
+    const rr = stopMult > 0 ? tpMult / stopMult : 0
+    return { price, atrPct: row.atr_pct, stop, tp, stopDist, tpDist, notional, rr }
+  }, [row, riskAccount, riskPct, stopMult, tpMult])
 
   const toggleFilter = (k: string) =>
     setFilters((prev) => {
@@ -581,6 +603,60 @@ export function ExplosivePage() {
                   <div className="flex justify-between"><dt className={ui.muted}>EMA20</dt><dd className="tabular-nums">{row.ema20.toFixed(2)}</dd></div>
                   <div className="flex justify-between"><dt className={ui.muted}>EMA60</dt><dd className="tabular-nums">{row.ema60.toFixed(2)}</dd></div>
                 </dl>
+                {rc ? (
+                  <div className="mt-3 rounded-lg border border-[rgba(25,36,52,0.12)] p-2 text-xs">
+                    <div className="mb-1 flex items-baseline gap-1">
+                      <span className="font-semibold text-nofx-text">{tr(language, '风险管理', 'Risk plan')}</span>
+                      <span className={ui.muted}>{tr(language, '（按波动率给建议，不预测涨跌）', '(volatility-based, not a direction call)')}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                      <div className="flex justify-between">
+                        <span className={ui.muted}>{tr(language, '建议止损', 'Stop')}</span>
+                        <span className="tabular-nums">{rc.stop.toFixed(4)} <span style={{ color: BN.down }}>−{(rc.stopDist * 100).toFixed(1)}%</span></span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className={ui.muted}>{tr(language, '建议止盈', 'Target')}</span>
+                        <span className="tabular-nums">{rc.tp.toFixed(4)} <span style={{ color: BN.up }}>+{(rc.tpDist * 100).toFixed(1)}%</span></span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className={ui.muted}>{tr(language, '盈亏比', 'R:R')}</span>
+                        <span className="tabular-nums">1 : {rc.rr.toFixed(1)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className={ui.muted}>{tr(language, 'ATR(5m)', 'ATR(5m)')}</span>
+                        <span className="tabular-nums">{rc.atrPct.toFixed(2)}%</span>
+                      </div>
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <label className="flex items-center gap-1">
+                        <span className={ui.muted}>{tr(language, '本金', 'Capital')}</span>
+                        <input type="number" min={0} value={riskAccount} onChange={(e) => setRiskAccount(Number(e.target.value) || 0)} className="w-16 rounded border border-[rgba(25,36,52,0.14)] bg-transparent px-1 py-0.5 text-right tabular-nums" />
+                      </label>
+                      <label className="flex items-center gap-1">
+                        <span className={ui.muted}>{tr(language, '单笔风险%', 'Risk %')}</span>
+                        <input type="number" min={0} max={100} value={riskPct} onChange={(e) => setRiskPct(Number(e.target.value) || 0)} className="w-12 rounded border border-[rgba(25,36,52,0.14)] bg-transparent px-1 py-0.5 text-right tabular-nums" />
+                      </label>
+                      <label className="flex items-center gap-1">
+                        <span className={ui.muted}>{tr(language, '止损×ATR', 'Stop×ATR')}</span>
+                        <input type="number" step={0.5} min={0.5} value={stopMult} onChange={(e) => setStopMult(Number(e.target.value) || 0)} className="w-12 rounded border border-[rgba(25,36,52,0.14)] bg-transparent px-1 py-0.5 text-right tabular-nums" />
+                      </label>
+                      <label className="flex items-center gap-1">
+                        <span className={ui.muted}>{tr(language, '止盈×ATR', 'Target×ATR')}</span>
+                        <input type="number" step={0.5} min={0.5} value={tpMult} onChange={(e) => setTpMult(Number(e.target.value) || 0)} className="w-12 rounded border border-[rgba(25,36,52,0.14)] bg-transparent px-1 py-0.5 text-right tabular-nums" />
+                      </label>
+                    </div>
+                    <div className="mt-1 flex justify-between">
+                      <span className={ui.muted}>{tr(language, '建议仓位', 'Size')}</span>
+                      <span className="font-semibold tabular-nums text-nofx-text">
+                        ≈ {Math.round(rc.notional).toLocaleString()} USDT
+                        {riskAccount > 0 ? <span className={ui.muted}> ({((rc.notional / riskAccount) * 100).toFixed(0)}% {tr(language, '资金', 'of equity')})</span> : null}
+                      </span>
+                    </div>
+                    <p className={`mt-1 ${ui.muted}`}>
+                      {tr(language, '止损止盈按 ATR 波动率计算，不构成涨跌预测；仓位按"最大亏损=本金×风险%"反推。历史同规则先止盈约35%/先止损约54%，仅供参考。', 'Stop/target follow ATR volatility, not a direction forecast. Size keeps max loss at capital × risk%. Same rule historically: target-first ~35%, stop-first ~54%.')}
+                    </p>
+                  </div>
+                ) : null}
                 <p className={`${ui.muted} mt-2`}>
                   {tr(language, '分数只说明"现在像不像一个刚开始的爆发"，不构成入场建议；过热和追高的币会被压分。', 'The score says how much this looks like a fresh burst, not a buy. Overheated and chased coins are discounted.')}
                 </p>
