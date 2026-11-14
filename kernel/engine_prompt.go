@@ -1067,6 +1067,10 @@ func (e *StrategyEngine) formatCoinSourceTag(sources []string) string {
 			return " (Bollinger horn: squeeze then expansion)"
 		case "copy_trade":
 			return " (Followed lead traders)"
+		case "explosive":
+			return " (Explosive board)"
+		case "hybrid":
+			return " (Hybrid: explosive + Bollinger horn + copy-trade)"
 		}
 		if strings.HasPrefix(sources[0], "hyper_rank") {
 			return " (Hyperliquid Dynamic Rank)"

@@ -110,6 +110,10 @@ function coinSourceLabel(
       return zh
         ? `带单币种（置信度 ${source.copy_trade_min_confidence || 40} 以上，最多 ${source.copy_trade_limit || 5} 个）`
         : `Lead traders' coins (confidence ${source.copy_trade_min_confidence || 40}+, up to ${source.copy_trade_limit || 5})`
+    case 'explosive':
+      return zh ? '爆发榜（实时）' : 'Explosive board (live)'
+    case 'hybrid':
+      return zh ? '混合源（爆发榜+喇叭口+带单）' : 'Hybrid (explosive + horn + copy-trade)'
     case 'vergex_signal':
       return zh
         ? 'Vergex 信号榜（付费，已停用）'

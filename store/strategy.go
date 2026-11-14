@@ -407,6 +407,10 @@ func normalizeCoinSourceType(value string) string {
 		return "hyper_all"
 	case strings.Contains(compact, "hypermain"):
 		return "hyper_main"
+	case compact == "hybrid" || strings.Contains(value, "混合"):
+		return "hybrid"
+	case strings.Contains(compact, "explosive") || strings.Contains(compact, "blast") || strings.Contains(value, "爆发") || strings.Contains(value, "妖币"):
+		return "explosive"
 	case strings.Contains(compact, "copytrad") || strings.Contains(value, "lead trader"):
 		return "copy_trade"
 	case strings.Contains(value, "static") || strings.Contains(value, "fixed"):
@@ -910,6 +914,13 @@ type CoinSourceConfig struct {
 	// Binance top gainers are re-screened every cycle on this interval
 	// (15m | 1h | 4h, default 1h) and the top HornCoinLimit matches are traded.
 	HornInterval string `json:"horn_interval,omitempty"`
+	// source_type = "explosive" reads the live 爆发榜 board (ambush + monster
+	// radar). source_type = "hybrid" unions the explosive board, the Bollinger
+	// horn and the copy-trade coins into one list. The three flags below pick
+	// which parts of the hybrid to include; leaving all false means all three.
+	HybridIncludeExplosive bool `json:"hybrid_include_explosive,omitempty"`
+	HybridIncludeHorn      bool `json:"hybrid_include_horn,omitempty"`
+	HybridIncludeCopyTrade bool `json:"hybrid_include_copy_trade,omitempty"`
 	// Copy-trade source (source_type = "copy_trade"): coins followed lead
 	// traders hold, ranked by direction confidence. Direction: both | long |
 	// short (the side the followed traders lean). 0 values take the defaults.
@@ -1713,6 +1724,8 @@ func (c *StrategyConfig) getEffectiveCoinCount() int {
 		count = c.CoinSource.HyperMainLimit
 	case "hyper_all":
 		count = c.CoinSource.HyperMainLimit
+	case "explosive", "hybrid":
+		count = MaxCandidateCoins
 	default:
 		count = c.CoinSource.HyperRankLimit
 	}

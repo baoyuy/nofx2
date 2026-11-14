@@ -155,7 +155,7 @@ export interface FreeForm {
   description: string
   // "pool" trades a saved coin pool from the Coin pool page; "horn"
   // re-screens Binance for the Bollinger horn every cycle.
-  coinSource?: 'static' | 'pool' | 'horn' | 'copy' | 'preserved'
+  coinSource?: 'static' | 'pool' | 'horn' | 'copy' | 'explosive' | 'hybrid' | 'preserved'
   // Sources this editor cannot configure are carried through without loss.
   preservedCoinSource?: AIStrategyConfig['coin_source']
   // Settings of the "copy" source (coins followed lead traders hold).
@@ -297,6 +297,8 @@ export function usesPaidSource(config?: StrategyConfig | null): boolean {
       'coin_pool',
       'bollinger_horn',
       'copy_trade',
+      'explosive',
+      'hybrid',
       'hyper_all',
       'hyper_main',
       'hyper_rank',
@@ -319,10 +321,12 @@ export function formFromStrategy(strategy: Strategy): FreeForm {
     ai?.coin_source.source_type === 'coin_pool' && ai.coin_source.coin_pool_id
   const horn = ai?.coin_source.source_type === 'bollinger_horn'
   const copy = ai?.coin_source.source_type === 'copy_trade'
+  const explosive = ai?.coin_source.source_type === 'explosive'
+  const hybrid = ai?.coin_source.source_type === 'hybrid'
   const src = ai?.coin_source
   const preserveSource =
     src &&
-    !['static', 'coin_pool', 'bollinger_horn', 'copy_trade'].includes(
+    !['static', 'coin_pool', 'bollinger_horn', 'copy_trade', 'explosive', 'hybrid'].includes(
       src.source_type
     )
   const timeframe = timeframeOptions.includes(
@@ -345,9 +349,13 @@ export function formFromStrategy(strategy: Strategy): FreeForm {
         ? 'copy'
         : horn
           ? 'horn'
-          : pool
-            ? 'pool'
-            : 'static',
+          : explosive
+            ? 'explosive'
+            : hybrid
+              ? 'hybrid'
+              : pool
+                ? 'pool'
+                : 'static',
     preservedCoinSource: preserveSource ? structuredClone(src) : undefined,
     copyTrade: {
       minConfidence: clampNumber(
@@ -498,6 +506,8 @@ export function configFromForm(
   const pool = form.coinSource === 'pool' && Boolean(form.coinPoolID)
   const horn = form.coinSource === 'horn'
   const copy = form.coinSource === 'copy'
+  const explosiveSrc = form.coinSource === 'explosive'
+  const hybrid = form.coinSource === 'hybrid'
   const copyTrade = { ...DEFAULT_COPY_TRADE, ...(form.copyTrade || {}) }
   const extra = (form.extraTimeframes || [])
     .filter((tf) => tf !== form.timeframe)
@@ -525,9 +535,13 @@ export function configFromForm(
                 ? 'copy_trade'
                 : horn
                   ? 'bollinger_horn'
-                  : pool
-                    ? 'coin_pool'
-                    : 'static',
+                  : explosiveSrc
+                    ? 'explosive'
+                    : hybrid
+                      ? 'hybrid'
+                      : pool
+                        ? 'coin_pool'
+                        : 'static',
               coin_pool_id: pool ? form.coinPoolID : '',
               horn_interval: horn
                 ? toHornInterval(form.hornInterval)

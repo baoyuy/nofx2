@@ -7,6 +7,7 @@ import (
 	"nofx/coinpool"
 	"nofx/config"
 	"nofx/crypto"
+	"nofx/explosive"
 	"nofx/internal/apischeduler"
 	"nofx/kernel"
 	"nofx/logger"
@@ -103,6 +104,26 @@ func main() {
 	// "bollinger_horn" re-screens Binance each cycle.
 	kernel.CoinPoolResolver = st.CoinPool().Symbols
 	kernel.HornResolver = coinpool.Shared.HornSymbols
+	// The 爆发榜 board feeds the "explosive" and "hybrid" coin sources.
+	kernel.ExplosiveResolver = func(ctx context.Context, limit int) ([]string, error) {
+		board, err := explosive.Shared.Board(ctx, false)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]string, 0, limit)
+		seen := make(map[string]bool, limit)
+		for _, r := range append(append([]explosive.Row(nil), board.Rows...), board.Radar...) {
+			if seen[r.Symbol] {
+				continue
+			}
+			seen[r.Symbol] = true
+			out = append(out, r.Symbol)
+			if len(out) >= limit {
+				break
+			}
+		}
+		return out, nil
+	}
 
 	// Set JWT secret
 	auth.SetJWTSecret(cfg.JWTSecret)

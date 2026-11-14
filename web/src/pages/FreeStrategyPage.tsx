@@ -230,6 +230,8 @@ export function FreeStrategyPage() {
       !usingHorn &&
       !preservingSource &&
       form.coinSource !== 'copy' &&
+      form.coinSource !== 'explosive' &&
+      form.coinSource !== 'hybrid' &&
       parsedCoins.length === 0
     ) {
       notify.error(
@@ -713,7 +715,7 @@ export function FreeStrategyPage() {
                 </Field>
               </div>
               <div
-                className="flex flex-col gap-2 sm:flex-row"
+                className="flex flex-col gap-2 sm:flex-row sm:flex-wrap"
                 role="radiogroup"
                 aria-label={text(language, '币种来源', 'Coin source')}
               >
@@ -759,6 +761,24 @@ export function FreeStrategyPage() {
                         'What your followed lead traders hold'
                       ),
                     ],
+                    [
+                      'explosive',
+                      text(language, '爆发榜', 'Explosive board'),
+                      text(
+                        language,
+                        `读取爆发榜当前榜单，取前 ${LIMITS.maxCoins} 个`,
+                        `Reads the live explosive board, top ${LIMITS.maxCoins}`
+                      ),
+                    ],
+                    [
+                      'hybrid',
+                      text(language, '混合源', 'Hybrid'),
+                      text(
+                        language,
+                        '爆发榜 + 喇叭口 + 带单，合并去重',
+                        'Explosive + horn + copy-trade, merged'
+                      ),
+                    ],
                   ] as const
                 ).map(([value, label, hint]) => (
                   <button
@@ -794,6 +814,22 @@ export function FreeStrategyPage() {
                   follow={form.copyTradeFollow || 'follow'}
                   onFollow={(copyTradeFollow) => patchForm({ copyTradeFollow })}
                 />
+              ) : form.coinSource === 'explosive' ? (
+                <p role="status" className="text-sm text-nofx-text-muted">
+                  {text(
+                    language,
+                    `每轮读取「爆发榜」当前榜单（埋伏区 + 妖币雷达），把这些币交给 AI，最多 ${LIMITS.maxCoins} 个，按预期最终涨幅排序。`,
+                    `Reads the live Explosive board (ambush + monster radar) each cycle and hands those coins to the AI, up to ${LIMITS.maxCoins}.`
+                  )}
+                </p>
+              ) : form.coinSource === 'hybrid' ? (
+                <p role="status" className="text-sm text-nofx-text-muted">
+                  {text(
+                    language,
+                    `混合源：把「爆发榜」「币池布林喇叭口」「带单币种」三个来源筛出的币合并去重，同时出现在多个来源的币优先，最多 ${LIMITS.maxCoins} 个。`,
+                    `Hybrid: unions the Explosive board, the Bollinger horn and the copy-trade coins, de-duplicated; coins from more than one source rank first, up to ${LIMITS.maxCoins}.`
+                  )}
+                </p>
               ) : usingHorn ? (
                 <>
                   <Field

@@ -117,8 +117,14 @@ export interface CoinSourceConfig {
     | 'hyper_main'
     | 'hyper_rank'
     | 'vergex_signal'
+    | 'explosive'
+    | 'hybrid'
   coin_pool_id?: string // Saved coin pool traded when source_type = 'coin_pool'
   horn_interval?: string // Bollinger horn interval (15m | 1h | 4h) when source_type = 'bollinger_horn'
+  // source_type = 'hybrid': which parts to union (all three when none is set)
+  hybrid_include_explosive?: boolean
+  hybrid_include_horn?: boolean
+  hybrid_include_copy_trade?: boolean
   // source_type = 'copy_trade': coins followed lead traders hold, by direction confidence
   copy_trade_min_confidence?: number // 0-100, default 40
   copy_trade_direction?: 'both' | 'long' | 'short'

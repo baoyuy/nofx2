@@ -337,6 +337,12 @@ func (e *StrategyEngine) candidateCoins() ([]CandidateCoin, error) {
 	case "copy_trade":
 		return e.filterExcludedCoins(copyTradeCandidates(coinSource)), nil
 
+	case "explosive":
+		return e.filterExcludedCoins(explosiveCandidates(coinSource)), nil
+
+	case "hybrid":
+		return e.filterExcludedCoins(hybridCandidates(coinSource)), nil
+
 	case "static":
 		for _, symbol := range coinSource.StaticCoins {
 			symbol = market.Normalize(symbol)

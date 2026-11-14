@@ -118,3 +118,28 @@ describe('strategy form', () => {
     expect(saved.ai_config!.coin_source.use_hyper_all).toBe(false)
   })
 })
+
+describe('explosive and hybrid sources', () => {
+  const base = { ...form }
+
+  it('saves the explosive source without a coin list and loads it back', () => {
+    const cfg = configFromForm(null, { ...base, coinSource: 'explosive', coinsInput: '' }, 'zh', null)
+    expect(cfg.ai_config!.coin_source.source_type).toBe('explosive')
+    expect(cfg.ai_config!.coin_source.static_coins).toEqual([])
+    const loaded = formFromStrategy({ id: 's', name: 'x', config: cfg } as Strategy)
+    expect(loaded.coinSource).toBe('explosive')
+  })
+
+  it('saves the hybrid source and keeps it editable', () => {
+    const cfg = configFromForm(null, { ...base, coinSource: 'hybrid', coinsInput: '' }, 'zh', null)
+    expect(cfg.ai_config!.coin_source.source_type).toBe('hybrid')
+    const loaded = formFromStrategy({ id: 's', name: 'x', config: cfg } as Strategy)
+    expect(loaded.coinSource).toBe('hybrid')
+    expect(loaded.preservedCoinSource).toBeUndefined()
+  })
+
+  it('does not treat explosive/hybrid as a paid source', () => {
+    const cfg = configFromForm(null, { ...base, coinSource: 'hybrid', coinsInput: '' }, 'zh', null)
+    expect(cfg.ai_config!.coin_source.source_type).toBe('hybrid')
+  })
+})
