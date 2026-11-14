@@ -212,6 +212,7 @@ export function ExplosivePage() {
     if (filters.has('oiUp')) out = out.filter((r) => r.oi_known && r.oi_change_1h > 0)
     if (filters.has('under30')) out = out.filter((r) => r.day_gain < 0.3)
     if (filters.has('good')) out = out.filter((r) => r.tradability === 'good')
+    if (filters.has('reversal')) out = out.filter((r) => r.reversal)
     out.sort((a, b) => {
       const d = sortValue(a, sort.key) - sortValue(b, sort.key)
       return sort.dir === 'asc' ? d : -d
@@ -269,6 +270,14 @@ export function ExplosivePage() {
           title={tr(language, `可交易性：${r.tradability}`, `Tradability: ${r.tradability}`)}
           style={{ background: r.tradability === 'good' ? BN.up : r.tradability === 'fair' ? '#b45309' : BN.down }}
         />
+        {r.reversal ? (
+          <span
+            className="rounded bg-[#7c3aed]/15 px-1 text-[10px] font-semibold text-[#7c3aed]"
+            title={tr(language, '反转信号：', 'Reversal: ') + (r.reversal_reasons || []).join(' · ')}
+          >
+            {tr(language, '反转', 'REV')}
+          </span>
+        ) : null}
         {r.is_new ? (
           <span className="rounded bg-nofx-gold/20 px-1 text-[10px] font-semibold text-nofx-gold">
             {tr(language, '新', 'NEW')}
@@ -342,6 +351,7 @@ export function ExplosivePage() {
                 {filterChip('vol3', tr(language, '量能≥3x', 'Vol≥3x'))}
                 {filterChip('oiUp', tr(language, 'OI 增加', 'OI up'))}
                 {filterChip('under30', tr(language, '今日<30%', 'Day<30%'))}
+                {filterChip('reversal', tr(language, '反转信号', 'Reversal'))}
                 {filterChip('good', tr(language, '可交易', 'Tradable'))}
                 {filters.size ? (
                   <button type="button" className={`text-xs ${ui.muted} underline`} onClick={() => setFilters(new Set())}>

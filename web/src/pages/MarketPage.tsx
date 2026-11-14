@@ -1,5 +1,5 @@
 import { NoticeText } from '../components/NoticeText'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { startVisiblePolling } from '../lib/visiblePolling'
 import { useLanguage } from '../contexts/LanguageContext'
 import { api } from '../lib/api'
@@ -13,6 +13,8 @@ import {
 } from '../components/market/BinanceChart'
 import { DEFAULT_LINE_KINDS, LINE_META, type LineKind, type LineKinds } from '../utils/chartAnalysis'
 import { AiPanel } from '../components/market/AiPanel'
+import { AiDrawingPanel } from '../components/market/AiDrawingPanel'
+import { viewportKey, type ChartViewport, type DrawingPrimitive } from '../utils/aiChartDrawings'
 import { AutoPanel } from '../components/market/AutoPanel'
 import {
   TradePanel,
@@ -56,6 +58,9 @@ export function MarketPage() {
   const [lineKinds, setLineKinds] = useState<LineKinds>(DEFAULT_LINE_KINDS)
   const [showLinePanel, setShowLinePanel] = useState(false)
   const [levelCount, setLevelCount] = useState(2)
+  const [drawingMode, setDrawingMode] = useState<'ai' | 'rules'>('ai')
+  const [viewport, setViewport] = useState<{ key: string; value: ChartViewport | null }>({ key: '', value: null })
+  const [aiShapes, setAiShapes] = useState<{ key: string; shapes: DrawingPrimitive[] }>({ key: '', shapes: [] })
   const [subs, setSubs] = useState<SubIndicator[]>(() =>
     loadPref('subs', 'VOL,MACD')
       .split(',')
@@ -77,6 +82,11 @@ export function MarketPage() {
   const [suggestion, setSuggestion] = useState<OrderSuggestion | null>(null)
 
   const key = `${symbol}|${interval}`
+  const currentViewport = viewport.key === key ? viewport.value : null
+  const currentViewportKey = viewportKey(symbol, interval, currentViewport)
+  const onViewportChange = useCallback((value: ChartViewport | null) => setViewport({ key, value }), [key])
+  const onAIDraw = useCallback((resultKey: string, shapes: DrawingPrimitive[]) => setAiShapes({ key: resultKey, shapes }), [])
+  const noRuleLines = useMemo(() => Object.fromEntries(Object.keys(DEFAULT_LINE_KINDS).map(k => [k, false])) as LineKinds, [])
 
   useEffect(() => {
     clearLegacyAnalyses()
@@ -292,8 +302,16 @@ export function MarketPage() {
                 {tr(language, '划线设置', 'Lines')}
               </button>
             </div>
-            {showLinePanel ? (
+            <div className="mt-2 flex gap-2 text-xs" role="group" aria-label="Drawing mode">
+              <button type="button" aria-pressed={drawingMode === 'ai'} className={tab(drawingMode === 'ai')} onClick={() => setDrawingMode('ai')}>{tr(language, 'AI 划线', 'AI drawings')}</button>
+              <button type="button" aria-pressed={drawingMode === 'rules'} className={tab(drawingMode === 'rules')} onClick={() => setDrawingMode('rules')}>{tr(language, '规则划线', 'Rule drawings')}</button>
+            </div>
+            <div hidden={drawingMode !== 'ai'}>
+              <AiDrawingPanel symbol={symbol} interval={interval} models={models} viewport={currentViewport} onDraw={onAIDraw} />
+            </div>
+            {showLinePanel && drawingMode === 'rules' ? (
               <div className="mt-2 grid grid-cols-1 gap-x-4 gap-y-1 rounded-lg border border-[rgba(25,36,52,0.12)] p-2 text-xs sm:grid-cols-2 lg:grid-cols-3">
+                <p className="col-span-full text-nofx-text-muted">{tr(language, '仅分析当前缩放/平移窗口内的已收盘K线，不引用窗口外锚点；可见不足30根时不画线。高低点需窗口内右侧3根确认，趋势至少3次触碰。规则候选，非交易信号。', 'Only closed candles in the visible zoom/pan window are analyzed; no offscreen anchors. Fewer than 30 visible bars means no lines. Pivots need 3 right-side bars within the window; trends need 3 touches. Rule candidates, not trade signals.')}</p>
                 {(Object.keys(LINE_META) as LineKind[]).map((k) => (
                   <label key={k} className="flex cursor-pointer items-start gap-2 py-0.5" title={LINE_META[k].desc}>
                     <input
@@ -343,7 +361,9 @@ export function MarketPage() {
                 subs={subs}
                 levels={levels}
                 resetKey={key}
-                lineKinds={lineKinds}
+                lineKinds={drawingMode === 'rules' ? lineKinds : noRuleLines}
+                onViewportChange={onViewportChange}
+                aiDrawings={drawingMode === 'ai' && aiShapes.key === currentViewportKey ? aiShapes.shapes : []}
                 levelCount={levelCount}
                 height={440 + subs.length * 110}
               />

@@ -23,10 +23,11 @@ import {
   type Time,
   type UTCTimestamp,
 } from 'lightweight-charts'
+import type { ChartViewport, DrawingPrimitive } from '../../utils/aiChartDrawings'
 import {
   DEFAULT_LINE_KINDS,
   LINE_META,
-  analyzeChart,
+  analyzeVisibleChart,
   type ChartAnalysis,
   type LineKinds,
 } from '../../utils/chartAnalysis'
@@ -92,6 +93,8 @@ interface Props {
   lineKinds?: LineKinds
   /** How many support/resistance lines to keep per side (1 or 2). */
   levelCount?: number
+  onViewportChange?: (viewport: ChartViewport | null) => void
+  aiDrawings?: DrawingPrimitive[]
 }
 
 /** Maps candle time and price to pixels in the K-line pane. */
@@ -224,6 +227,8 @@ export function BinanceChart({
   height = 620,
   lineKinds = DEFAULT_LINE_KINDS,
   levelCount = 2,
+  onViewportChange,
+  aiDrawings = [],
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -579,8 +584,16 @@ export function BinanceChart({
   // Re-project after every view move and data change (the chart updates
   // its coordinates synchronously in setData and range changes).
   const [proj, setProj] = useState<ChartProjector | null>(null)
-  const hasOverlay = Boolean(overlay || Object.values(lineKinds).some(Boolean))
-  const analysis = useMemo(() => analyzeChart(candles, levelCount), [candles, levelCount])
+  const hasOverlay = Boolean(overlay || onViewportChange || aiDrawings.length || Object.values(lineKinds).some(Boolean))
+  const viewportAnalysis = useMemo(() => analyzeVisibleChart(
+    candles, chartRef.current?.timeScale().getVisibleLogicalRange() ?? null, levelCount,
+  ), [candles, levelCount, viewTick])
+  useEffect(() => {
+    const range = chartRef.current?.timeScale().getVisibleLogicalRange()
+    if (!range) { onViewportChange?.(null); return }
+    const visible = candles.slice(Math.max(0, Math.ceil(range.from)), Math.min(candles.length - 1, Math.floor(range.to) + 1))
+    onViewportChange?.(visible.length ? { candles: visible, from: visible[0].time, to: visible[visible.length - 1].time } : null)
+  }, [candles, viewTick, onViewportChange, resetKey])
   useEffect(() => {
     const chart = chartRef.current
     const s = seriesRef.current
@@ -610,7 +623,8 @@ export function BinanceChart({
           style={{ width: proj.width, height: proj.height }}
         >
           {overlay?.(proj)}
-          {analysis ? <AutoLines proj={proj} data={analysis} kinds={lineKinds} /> : null}
+          {viewportAnalysis ? <AutoLines proj={proj} data={viewportAnalysis.analysis} kinds={lineKinds} from={viewportAnalysis.from} to={viewportAnalysis.to} /> : null}
+          <AIDrawingOverlay proj={proj} shapes={aiDrawings} />
         </div>
       ) : null}
       {legends.map((items, i) => (
@@ -631,18 +645,21 @@ export function BinanceChart({
 }
 
 /** Draws the analysed lines in chart pixel space, only the enabled kinds. */
-function AutoLines({ proj, data, kinds }: { proj: ChartProjector; data: ChartAnalysis; kinds: LineKinds }) {
+function AutoLines({ proj, data, kinds, from, to }: { proj: ChartProjector; data: ChartAnalysis; kinds: LineKinds; from: number; to: number }) {
   const W = proj.width
   const nodes: ReactNode[] = []
   const fmt = (v: number) => (v >= 100 ? v.toFixed(2) : v.toFixed(5))
 
   const hline = (key: string, value: number, color: string, label: string, dashed = false) => {
     const y = proj.y(value)
+    const x1 = proj.x(from)
+    const x2 = proj.x(to)
+    if (x1 == null || x2 == null) return
     if (y == null) return
     nodes.push(
       <g key={key}>
-        <line x1={0} x2={W} y1={y} y2={y} stroke={color} strokeWidth={1} strokeDasharray={dashed ? '5 4' : undefined} opacity={0.8} />
-        <text x={W - 4} y={y - 3} textAnchor="end" fontSize={9} fill={color} opacity={0.95}>
+        <line x1={Math.max(0, x1)} x2={Math.min(W, x2)} y1={y} y2={y} stroke={color} strokeWidth={1} strokeDasharray={dashed ? '5 4' : undefined} opacity={0.8} />
+        <text x={Math.min(W, x2) - 4} y={y - 3} textAnchor="end" fontSize={9} fill={color} opacity={0.95}>
           {label} {fmt(value)}
         </text>
       </g>
@@ -671,12 +688,12 @@ function AutoLines({ proj, data, kinds }: { proj: ChartProjector; data: ChartAna
   if (kinds.fib) data.fib?.levels.forEach((l) => hline(`f${l.ratio}`, l.price, LINE_META.fib.color, `${(l.ratio * 100).toFixed(1)}%`, true))
   if (kinds.horizontal) data.horizontals.forEach((v, i) => hline(`h${i}`, v, LINE_META.horizontal.color, '整数', true))
   if (kinds.neckline && data.neckline) hline('neckline', data.neckline.price, LINE_META.neckline.color, '颈线', true)
-  if (kinds.trend && data.trend) seg('trend', data.trend.a, data.trend.b, LINE_META.trend.color, '趋势')
+  if (kinds.trend && data.trend) seg('trend', data.trend.a, data.trend.b, LINE_META.trend.color, `趋势候选 · ${data.trend.touches}次触碰`)
   if (kinds.channel && data.channel) {
-    seg('chU', data.channel.upper.a, data.channel.upper.b, LINE_META.channel.color, '通道', true)
+    seg('chU', data.channel.upper.a, data.channel.upper.b, LINE_META.channel.color, '通道包络', true)
     seg('chL', data.channel.lower.a, data.channel.lower.b, LINE_META.channel.color, undefined, true)
   }
-  if (kinds.gann && data.gann) data.gann.forEach((g, i) => seg(`gann${i}`, g.a, g.b, LINE_META.gann.color, i === 1 ? '江恩' : undefined, true))
+  if (kinds.gann && data.gann) data.gann.forEach((g, i) => seg(`gann${i}`, g.a, g.b, LINE_META.gann.color, i === 1 ? '比例扇形' : undefined, true))
   if (kinds.pitchfork && data.pitchfork) data.pitchfork.forEach((g, i) => seg(`pf${i}`, g.a, g.b, LINE_META.pitchfork.color, i === 1 ? '音叉' : undefined, true))
 
   return (
@@ -684,4 +701,21 @@ function AutoLines({ proj, data, kinds }: { proj: ChartProjector; data: ChartAna
       {nodes}
     </svg>
   )
+}
+
+function AIDrawingOverlay({ proj, shapes }: { proj: ChartProjector; shapes: DrawingPrimitive[] }) {
+  return <svg width={proj.width} height={proj.height} className="absolute inset-0" aria-label="AI chart drawings">
+    {shapes.map(shape => {
+      const x1 = proj.x(shape.a.time), x2 = proj.x(shape.b.time)
+      const y1 = proj.y(shape.a.price), y2 = proj.y(shape.b.price)
+      if (x1 == null || x2 == null || y1 == null || y2 == null) return null
+      const color = shape.kind === 'support' ? '#2e8b57' : shape.kind === 'resistance' ? '#d6433a' : shape.kind === 'zone' ? '#d97706' : '#7c3aed'
+      return <g key={shape.id} data-ai-drawing={shape.kind}>
+        <title>{shape.label}: {shape.reason} · {shape.invalidation}</title>
+        {shape.region ? <rect x={Math.min(x1, x2)} y={Math.min(y1, y2)} width={Math.abs(x2 - x1)} height={Math.abs(y2 - y1)} fill={color} fillOpacity={0.12} stroke={color} strokeWidth={1} /> :
+          <line x1={x1} x2={x2} y1={y1} y2={y2} stroke={color} strokeWidth={1.5} strokeDasharray={['fib', 'gann', 'pitchfork'].includes(shape.kind) ? '5 3' : undefined} />}
+        <text x={Math.min(proj.width - 4, Math.max(4, x2))} y={Math.max(12, Math.min(proj.height - 4, y2 - 4))} textAnchor="end" fontSize={10} fill={color}>{shape.label}</text>
+      </g>
+    })}
+  </svg>
 }

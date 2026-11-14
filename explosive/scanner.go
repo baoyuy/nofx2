@@ -262,6 +262,7 @@ func (s *Screener) build(limit int) Board {
 		if !ok || row.DistanceHigh > MaxDistanceHigh {
 			continue
 		}
+		row.Reversal, row.ReversalScore, row.ReversalReasons, row.ReversalBreak = detectReversal(bars1)
 		rows = append(rows, row)
 	}
 	// Discovery tracking: stamp the first time each symbol reached the board so

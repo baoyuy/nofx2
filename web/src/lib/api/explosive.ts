@@ -28,6 +28,11 @@ export interface ExplosiveRow {
   predicted_remaining: number
   /** expected total gain by the day close, percent: the ambush ranking key */
   predicted_final: number
+  /** "fell first, now turning up" watch signal */
+  reversal: boolean
+  reversal_score: number
+  reversal_reasons?: string[]
+  reversal_break?: number
   /** already up 50%+ today */
   ran: boolean
   /** still early enough to enter */

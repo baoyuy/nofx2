@@ -13,6 +13,8 @@ export interface LinePoint {
 export interface Segment {
   a: LinePoint
   b: LinePoint
+  touches?: number
+  confirmedAt?: number
 }
 
 export type LineKind =
@@ -27,14 +29,14 @@ export type LineKind =
   | 'pitchfork'
 
 export const LINE_META: Record<LineKind, { label: string; color: string; desc: string }> = {
-  trend: { label: '趋势线', color: '#7c3aed', desc: '连接最近两个同向摆动高低点，判断方向' },
+  trend: { label: '趋势线', color: '#7c3aed', desc: '已收盘K线中至少三次独立触碰，排除异常插针与已穿越的线；仅供分析' },
   support: { label: '支撑线', color: '#2e8b57', desc: '多次止跌的价格，跌到这里可能反弹' },
   resistance: { label: '阻力线', color: '#d6433a', desc: '多次冲高回落的价格，涨到这里可能受阻' },
-  channel: { label: '通道线', color: '#295be8', desc: '趋势线的平行线，把价格框在通道里' },
+  channel: { label: '通道包络', color: '#295be8', desc: '有效趋势线的平行价格包络，另一侧不保证多次触碰' },
   fib: { label: '斐波那契', color: '#d97706', desc: '一段行情的 23.6%~78.6% 回调位' },
   neckline: { label: '颈线', color: '#0d9488', desc: '双顶/双底的颈线，跌破/突破代表形态成立' },
   horizontal: { label: '整数关口', color: '#64748b', desc: '整数价格，常有挂单和支撑阻力' },
-  gann: { label: '江恩扇形', color: '#db2777', desc: '从关键点按不同角度发出的扇形线' },
+  gann: { label: '比例扇形（非标准江恩）', color: '#db2777', desc: '按当前窗口价格范围/根数生成的比例扇形，不是固定价格时间单位的标准江恩角度' },
   pitchfork: { label: '音叉线', color: '#0891b2', desc: '三个关键点构成的安德鲁音叉通道' },
 }
 
@@ -82,6 +84,7 @@ interface Pivot {
   time: number
   price: number
   kind: 'high' | 'low'
+  index: number
 }
 
 const WINDOW = 180
@@ -94,30 +97,30 @@ function pivots(candles: Candle[], kind: 'high' | 'low'): Pivot[] {
     let ok = true
     for (let j = i - KERNEL; j <= i + KERNEL; j++) {
       if (j === i) continue
-      if (kind === 'high' ? candles[j].high > candles[i].high : candles[j].low < candles[i].low) {
+      if (kind === 'high' ? candles[j].high > candles[i].high || (j < i && candles[j].high === candles[i].high) : candles[j].low < candles[i].low || (j < i && candles[j].low === candles[i].low)) {
         ok = false
         break
       }
     }
     if (ok) {
-      out.push({ time: candles[i].time, price: kind === 'high' ? candles[i].high : candles[i].low, kind })
+      out.push({ time: candles[i].time, price: kind === 'high' ? candles[i].high : candles[i].low, kind, index: i })
     }
   }
   return out
 }
 
 function cluster(ps: Pivot[], tol: number): Level[] {
-  const groups: { price: number; touches: number }[] = []
-  for (const p of ps) {
-    const g = groups.find((x) => Math.abs(x.price - p.price) / x.price <= tol)
+  const groups: { price: number; points: Pivot[] }[] = []
+  for (const p of [...ps].sort((a, b) => a.price - b.price)) {
+    const g = groups.find(x => Math.abs(x.price - p.price) / x.price <= tol)
     if (g) {
-      g.price = (g.price * g.touches + p.price) / (g.touches + 1)
-      g.touches++
-    } else {
-      groups.push({ price: p.price, touches: 1 })
-    }
+      // One candle (or nearby platform) is not several independent tests.
+      if (g.points.some(q => Math.abs(q.index - p.index) <= KERNEL * 2)) continue
+      g.points.push(p)
+      g.price = g.points.reduce((sum, q) => sum + q.price, 0) / g.points.length
+    } else groups.push({ price: p.price, points: [p] })
   }
-  return groups.filter((g) => g.touches >= 2).sort((a, b) => b.touches - a.touches)
+  return groups.filter(g => g.points.length >= 2).map(g => ({ price: g.price, touches: g.points.length })).sort((a, b) => b.touches - a.touches)
 }
 
 function regressionSlope(candles: Candle[]): number {
@@ -183,8 +186,12 @@ function roundLevels(cs: Candle[]): number[] {
   return out
 }
 
-export function analyzeChart(candles: Candle[], maxLevels = MAX_LEVELS): ChartAnalysis {
-  const cs = candles.slice(-WINDOW)
+export function analyzeChart(candles: Candle[], maxLevels = MAX_LEVELS, options: { includeLast?: boolean; windowSize?: number } = {}): ChartAnalysis {
+  // The final bar may still be forming. Never use it for recognition.
+  const cs = [...new Map(candles.filter(c =>
+    [c.time, c.open, c.high, c.low, c.close].every(Number.isFinite) && c.low > 0 &&
+    c.low <= Math.min(c.open, c.close) && c.high >= Math.max(c.open, c.close),
+  ).map(c => [c.time, c])).values()].sort((a, b) => a.time - b.time).slice(0, options.includeLast ? undefined : -1).slice(-(options.windowSize ?? WINDOW))
   const empty: ChartAnalysis = { supports: [], resistances: [], horizontals: [] }
   if (cs.length < 30) return empty
 
@@ -196,8 +203,10 @@ export function analyzeChart(candles: Candle[], maxLevels = MAX_LEVELS): ChartAn
     hi = Math.max(hi, c.high)
     range += c.high - c.low
   }
-  const avgRange = range / cs.length
-  const tol = Math.max(avgRange / (lo || 1), 0.004)
+  const ranges = cs.map(c => c.high - c.low).sort((a, b) => a - b)
+  const typicalRange = ranges[Math.floor(ranges.length / 2)]
+  const avgRange = Math.max(typicalRange, range / cs.length * 0.25)
+  const tol = Math.min(0.02, Math.max(avgRange / cs[cs.length - 1].close * 0.5, 0.004))
 
   const lows = pivots(cs, 'low')
   const highs = pivots(cs, 'high')
@@ -207,11 +216,11 @@ export function analyzeChart(candles: Candle[], maxLevels = MAX_LEVELS): ChartAn
   const current = cs[cs.length - 1].close
   const levels = cluster([...highs, ...lows], tol)
   const supports = levels
-    .filter((l) => l.price < current)
+    .filter((l) => l.price < current && current - l.price <= Math.max(current * 0.12, avgRange * 6))
     .sort((a, b) => b.price - a.price) // nearest support first
     .slice(0, maxLevels)
   const resistances = levels
-    .filter((l) => l.price > current)
+    .filter((l) => l.price > current && l.price - current <= Math.max(current * 0.12, avgRange * 6))
     .sort((a, b) => a.price - b.price) // nearest resistance first
     .slice(0, maxLevels)
   const result: ChartAnalysis = { supports, resistances, horizontals: [] }
@@ -219,32 +228,38 @@ export function analyzeChart(candles: Candle[], maxLevels = MAX_LEVELS): ChartAn
   const barMs = cs.length > 1 ? Math.max(cs[1].time - cs[0].time, 1) : 3600000
   const slope = regressionSlope(cs)
   const upTrend = slope >= 0
-  const base = upTrend ? lows : highs
-  if (base.length >= 2) {
-    const a = base[base.length - 2]
-    const b = base[base.length - 1]
-    const rising = b.price > a.price
-    const consistent = upTrend ? rising : !rising
-    if (consistent && b.time !== a.time) {
-      result.trend = { a: { time: a.time, price: a.price }, b: { time: b.time, price: b.price } }
-      const opposite = upTrend ? highs : lows
-      const between = opposite.filter((p) => p.time >= a.time && p.time <= b.time)
-      if (between.length) {
-        const ext = upTrend
-          ? between.reduce((m, p) => (p.price > m.price ? p : m))
-          : between.reduce((m, p) => (p.price < m.price ? p : m))
-        const slopePrice = (b.price - a.price) / (b.time - a.time)
-        const shift = ext.price - (a.price + slopePrice * (ext.time - a.time))
-        const segA = { time: a.time, price: a.price }
-        const segB = { time: b.time, price: b.price }
-        const offA = { time: a.time, price: a.price + shift }
-        const offB = { time: b.time, price: b.price + shift }
-        result.channel = {
-          lower: { a: upTrend ? segA : offA, b: upTrend ? segB : offB },
-          upper: { a: upTrend ? offA : segA, b: upTrend ? offB : segB },
-        }
-      }
-    }
+  const base = (upTrend ? lows : highs).filter(p => {
+    const c = cs[p.index]
+    const wick = upTrend ? Math.min(c.open, c.close) - c.low : c.high - Math.max(c.open, c.close)
+    return wick <= Math.max(typicalRange * 3, Math.abs(c.close - c.open) * 3)
+  }).slice(-16)
+  const tolerance = Math.max(avgRange * 0.35, current * 0.001)
+  const candidates: { a: Pivot; b: Pivot; slope: number; touches: number }[] = []
+  for (let i = 0; i < base.length; i++) for (let j = i + 1; j < base.length; j++) {
+    const a = base[i], b = base[j]
+    if (b.index - a.index < KERNEL * 2) continue
+    const slope = (b.price - a.price) / (b.time - a.time)
+    if (upTrend ? slope <= 0 : slope >= 0) continue
+    const at = (time: number) => a.price + slope * (time - a.time)
+    const touches = base.filter(p => p.time >= a.time && Math.abs(p.price - at(p.time)) <= tolerance)
+      .reduce<Pivot[]>((accepted, p) => {
+        if (!accepted.length || p.index - accepted[accepted.length - 1].index >= KERNEL * 2) accepted.push(p)
+        return accepted
+      }, [])
+    if (touches.length < 3) continue
+    if (cs.slice(a.index).some(c => upTrend ? c.low < at(c.time) - tolerance : c.high > at(c.time) + tolerance)) continue
+    candidates.push({ a, b, slope, touches: touches.length })
+  }
+  const best = candidates.sort((a, b) => b.touches - a.touches || b.b.time - a.b.time)[0]
+  if (best) {
+    const end = cs[cs.length - 1]
+    const a = { time: best.a.time, price: best.a.price }
+    const b = { time: end.time, price: best.a.price + best.slope * (end.time - best.a.time) }
+    result.trend = { a, b, touches: best.touches, confirmedAt: end.time + barMs }
+    const offsets = cs.slice(best.a.index).map(c => (upTrend ? c.high : c.low) - (a.price + best.slope * (c.time - a.time)))
+    const shift = upTrend ? Math.max(...offsets) : Math.min(...offsets)
+    const shifted = { a: { time: a.time, price: a.price + shift }, b: { time: b.time, price: b.price + shift } }
+    result.channel = { lower: upTrend ? result.trend : shifted, upper: upTrend ? shifted : result.trend }
   }
 
   if (hi > lo) {
@@ -271,22 +286,41 @@ export function analyzeChart(candles: Candle[], maxLevels = MAX_LEVELS): ChartAn
     }
   }
 
-  // Andrew pitchfork: P0, P1, P2 alternating pivots; median through P1 and the
-  // P0-P2 midpoint, parallels through P0 and P2.
-  const all = [...highs, ...lows].sort((x, y) => x.time - y.time)
+  // Standard Andrews pitchfork: median from P0 through midpoint(P1, P2),
+  // with parallels through P1/P2. Require alternating, distinct pivots.
+  const all: Pivot[] = []
+  for (const p of [...highs, ...lows].sort((x, y) => x.time - y.time)) {
+    const prev = all[all.length - 1]
+    if (prev?.time === p.time) continue
+    if (!prev || prev.kind !== p.kind) all.push(p)
+    else if (p.kind === 'high' ? p.price > prev.price : p.price < prev.price) all[all.length - 1] = p
+  }
   if (all.length >= 3) {
     const [p0, p1, p2] = all.slice(-3)
-    const mid = { time: (p0.time + p2.time) / 2, price: (p0.price + p2.price) / 2 }
-    if (p0.time !== p1.time && p2.time !== p1.time && mid.time !== p1.time) {
-      const slopePrice = (mid.price - p1.price) / (mid.time - p1.time)
-      const endTime = cs[cs.length - 1].time
-      const line = (start: LinePoint, offset: number): Segment => ({
-        a: { time: start.time, price: start.price + offset },
-        b: { time: endTime, price: start.price + offset + slopePrice * (endTime - start.time) },
-      })
-      result.pitchfork = [line(p0, 0), line({ time: p1.time, price: p1.price }, 0), line(p2, 0)]
-    }
+    const mid = { time: (p1.time + p2.time) / 2, price: (p1.price + p2.price) / 2 }
+    const slopePrice = (mid.price - p0.price) / (mid.time - p0.time)
+    const endTime = cs[cs.length - 1].time
+    const line = (start: LinePoint): Segment => ({
+      a: { time: start.time, price: start.price },
+      b: { time: endTime, price: start.price + slopePrice * (endTime - start.time) },
+    })
+    result.pitchfork = [line(p1), line(p0), line(p2)]
   }
 
   return result
+}
+
+/** Logical indices match the candle series. Exclude the global forming bar,
+ * not the last bar of a historical viewport. Never borrow offscreen pivots. */
+export function analyzeVisibleChart(candles: Candle[], range: { from: number; to: number } | null, maxLevels = MAX_LEVELS) {
+  if (!range || !Number.isFinite(range.from) || !Number.isFinite(range.to)) return null
+  const first = Math.max(0, Math.ceil(range.from))
+  const end = Math.min(candles.length - 1, Math.floor(range.to) + 1)
+  const visible = end > first ? candles.slice(first, end) : []
+  if (!visible.length) return null
+  return {
+    from: visible[0].time,
+    to: visible[visible.length - 1].time,
+    analysis: analyzeChart(visible, maxLevels, { includeLast: true, windowSize: visible.length }),
+  }
 }

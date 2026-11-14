@@ -70,6 +70,13 @@ type Row struct {
 	Radar      bool    `json:"radar"`
 	// Tradability is a coarse liquidity label: good | fair | thin.
 	Tradability string `json:"tradability"`
+	// Reversal marks "fell first, now turning up": prior weakness, a break of
+	// the recent swing high, volume and momentum confirmation. Score is how
+	// many of the four conditions held (0-4).
+	Reversal        bool     `json:"reversal"`
+	ReversalScore   int      `json:"reversal_score"`
+	ReversalReasons []string `json:"reversal_reasons,omitempty"`
+	ReversalBreak   float64  `json:"reversal_break"`
 	// Multi-timeframe changes, percent, from 1h closes.
 	Change1h float64 `json:"change_1h"`
 	Change4h float64 `json:"change_4h"`

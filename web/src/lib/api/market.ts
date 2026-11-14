@@ -1,3 +1,5 @@
+import type { AIChartDrawingResult, AIDrawingKind } from '../../utils/aiChartDrawings'
+import type { Candle } from '../../utils/marketIndicators'
 import { API_BASE, httpClient } from './helpers'
 
 // Binance USDT-M market page: public data, AI analysis, manual orders.
@@ -150,6 +152,13 @@ export const marketApi = {
       analyses: Record<string, MarketAnalyzeResult>
     }>(`${API_BASE}/market/analyses`, { silent: true })
     return unwrap(r, 'Failed to load saved analyses').analyses || {}
+  },
+
+  async analyzeChartDrawings(body: { symbol: string; interval: string; model_id: string; lang: string; candles: Candle[]; kinds: AIDrawingKind[] }): Promise<AIChartDrawingResult> {
+    const response = await httpClient.request<AIChartDrawingResult>(`${API_BASE}/market/chart-drawings`, {
+      method: 'POST', data: body, timeout: 180000,
+    })
+    return unwrap(response, 'AI chart drawing analysis failed')
   },
 
   async analyzeMarket(body: {

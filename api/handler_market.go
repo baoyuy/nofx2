@@ -26,6 +26,7 @@ func (s *Server) registerMarketRoutes(api, protected *gin.RouterGroup) {
 	s.route(api, "GET", "/market/symbols", "Tradable Binance USDT perpetual symbols", s.handleMarketSymbols)
 	s.route(api, "GET", "/market/tickers", "Price and 24h change of all Binance USDT perpetuals", s.handleMarketTickers)
 	s.route(protected, "POST", "/market/analyze", "AI analysis of a symbol's chart (body: symbol, interval, model_id, lang)", s.handleMarketAnalyze)
+	s.route(protected, "POST", "/market/chart-drawings", "AI drawing suggestions for a visible closed-candle snapshot (no trading)", s.handleChartDrawings)
 	s.route(protected, "GET", "/market/analyses", "Saved latest AI analysis per symbol for the current user", s.handleMarketAnalyses)
 	s.route(protected, "GET", "/market/account", "Balance and positions of a Binance or Binance Paper account (?exchange_id=)", s.handleMarketAccount)
 	s.route(protected, "POST", "/market/order", "Open a manual position (live accounts require confirm_live=true)", s.handleMarketOrder)

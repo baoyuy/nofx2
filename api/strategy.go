@@ -790,7 +790,7 @@ func (s *Server) handleStrategyTestRun(c *gin.Context) {
 }
 
 // runRealAITest Execute real AI test call
-func (s *Server) runRealAITest(userID, modelID, systemPrompt, userPrompt string) (string, error) {
+func (s *Server) runRealAITest(userID, modelID, systemPrompt, userPrompt string, opts ...mcp.ClientOption) (string, error) {
 	// Get AI model configuration
 	model, err := s.store.AIModel().Get(userID, modelID)
 	if err != nil {
@@ -809,9 +809,9 @@ func (s *Server) runRealAITest(userID, modelID, systemPrompt, userPrompt string)
 	provider := model.Provider
 	apiKey := string(model.APIKey)
 
-	aiClient := mcp.NewAIClientByProvider(provider)
+	aiClient := mcp.NewAIClientByProvider(provider, opts...)
 	if aiClient == nil {
-		aiClient = mcp.NewClient()
+		aiClient = mcp.NewClient(opts...)
 	}
 
 	// Payment providers ignore custom URL

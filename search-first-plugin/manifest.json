@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "community.search-first",
+  "name": "Search First",
+  "version": "0.1.0",
+  "description": "Search live sources before building; compare existing tools and report sourced adoption decisions.",
+  "main": "main.js",
+  "contributes": {
+    "skills": [
+      "skills/pi-desktop-compatibility.md",
+      "skills/search-first.md"
+    ]
+  },
+  "permissions": [
+    "agent.prompt.inject"
+  ],
+  "engines": {
+    "piDesktop": ">=0.1.0"
+  },
+  "activationEvents": [
+    "onStartup"
+  ]
+}
