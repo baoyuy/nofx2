@@ -117,10 +117,7 @@ function cluster(ps: Pivot[], tol: number): Level[] {
       groups.push({ price: p.price, touches: 1 })
     }
   }
-  return groups
-    .filter((g) => g.touches >= 2)
-    .sort((a, b) => b.touches - a.touches)
-    .slice(0, MAX_LEVELS)
+  return groups.filter((g) => g.touches >= 2).sort((a, b) => b.touches - a.touches)
 }
 
 function regressionSlope(candles: Candle[]): number {
@@ -185,7 +182,7 @@ function roundLevels(cs: Candle[]): number[] {
   return out
 }
 
-export function analyzeChart(candles: Candle[]): ChartAnalysis {
+export function analyzeChart(candles: Candle[], maxLevels = MAX_LEVELS): ChartAnalysis {
   const cs = candles.slice(-WINDOW)
   const empty: ChartAnalysis = { supports: [], resistances: [], horizontals: [] }
   if (cs.length < 30) return empty
@@ -203,8 +200,19 @@ export function analyzeChart(candles: Candle[]): ChartAnalysis {
 
   const lows = pivots(cs, 'low')
   const highs = pivots(cs, 'high')
-  const supports = cluster(lows, tol)
-  const resistances = cluster(highs, tol)
+  // A level is support or resistance by where price is NOW, not by whether a
+  // swing high or low formed it: an old resistance that price broke above is
+  // support today, and vice versa.
+  const current = cs[cs.length - 1].close
+  const levels = cluster([...highs, ...lows], tol)
+  const supports = levels
+    .filter((l) => l.price < current)
+    .sort((a, b) => b.price - a.price) // nearest support first
+    .slice(0, maxLevels)
+  const resistances = levels
+    .filter((l) => l.price > current)
+    .sort((a, b) => a.price - b.price) // nearest resistance first
+    .slice(0, maxLevels)
   const result: ChartAnalysis = { supports, resistances, horizontals: [] }
 
   const slope = regressionSlope(cs)

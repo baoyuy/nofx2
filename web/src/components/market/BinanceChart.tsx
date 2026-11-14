@@ -90,6 +90,8 @@ interface Props {
   height?: number
   /** Which auto-drawn line kinds to show. */
   lineKinds?: LineKinds
+  /** How many support/resistance lines to keep per side (1 or 2). */
+  levelCount?: number
 }
 
 /** Maps candle time and price to pixels in the K-line pane. */
@@ -221,6 +223,7 @@ export function BinanceChart({
   resetKey,
   height = 620,
   lineKinds = DEFAULT_LINE_KINDS,
+  levelCount = 2,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -577,7 +580,7 @@ export function BinanceChart({
   // its coordinates synchronously in setData and range changes).
   const [proj, setProj] = useState<ChartProjector | null>(null)
   const hasOverlay = Boolean(overlay || Object.values(lineKinds).some(Boolean))
-  const analysis = useMemo(() => analyzeChart(candles), [candles])
+  const analysis = useMemo(() => analyzeChart(candles, levelCount), [candles, levelCount])
   useEffect(() => {
     const chart = chartRef.current
     const s = seriesRef.current
@@ -663,8 +666,8 @@ function AutoLines({ proj, data, kinds }: { proj: ChartProjector; data: ChartAna
     }
   }
 
-  if (kinds.resistance) data.resistances.forEach((l, i) => hline(`r${i}`, l.price, LINE_META.resistance.color, '阻力'))
-  if (kinds.support) data.supports.forEach((l, i) => hline(`s${i}`, l.price, LINE_META.support.color, '支撑'))
+  if (kinds.resistance) data.resistances.forEach((l, i) => hline(`r${i}`, l.price, LINE_META.resistance.color, `阻力${i + 1}`))
+  if (kinds.support) data.supports.forEach((l, i) => hline(`s${i}`, l.price, LINE_META.support.color, `支撑${i + 1}`))
   if (kinds.fib) data.fib?.levels.forEach((l) => hline(`f${l.ratio}`, l.price, LINE_META.fib.color, `${(l.ratio * 100).toFixed(1)}%`, true))
   if (kinds.horizontal) data.horizontals.forEach((v, i) => hline(`h${i}`, v, LINE_META.horizontal.color, '整数', true))
   if (kinds.neckline && data.neckline) hline('neckline', data.neckline.price, LINE_META.neckline.color, '颈线', true)

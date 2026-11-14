@@ -55,6 +55,7 @@ export function MarketPage() {
   })
   const [lineKinds, setLineKinds] = useState<LineKinds>(DEFAULT_LINE_KINDS)
   const [showLinePanel, setShowLinePanel] = useState(false)
+  const [levelCount, setLevelCount] = useState(2)
   const [subs, setSubs] = useState<SubIndicator[]>(() =>
     loadPref('subs', 'VOL,MACD')
       .split(',')
@@ -306,6 +307,17 @@ export function MarketPage() {
                     <span className="text-nofx-text-muted">{LINE_META[k].desc}</span>
                   </label>
                 ))}
+                <div className="col-span-full mt-1 flex items-center gap-2 border-t border-[rgba(25,36,52,0.10)] pt-1 text-nofx-text-muted">
+                  {tr(language, '支撑/阻力每侧条数', 'Levels per side')}
+                  <select
+                    className="rounded border border-[rgba(25,36,52,0.14)] bg-transparent px-1 py-0.5"
+                    value={levelCount}
+                    onChange={(e) => setLevelCount(Number(e.target.value))}
+                  >
+                    <option value={1}>1</option>
+                    <option value={2}>2</option>
+                  </select>
+                </div>
               </div>
             ) : null}
             {loadError && candles.length === 0 ? (
@@ -332,6 +344,7 @@ export function MarketPage() {
                 levels={levels}
                 resetKey={key}
                 lineKinds={lineKinds}
+                levelCount={levelCount}
                 height={440 + subs.length * 110}
               />
             )}
