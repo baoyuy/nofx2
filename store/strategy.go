@@ -353,6 +353,28 @@ func (c *StrategyConfig) NormalizeProductSchema() {
 		c.CoinSource.CoinPoolID = ""
 		c.CoinSource.CopyTradeContext = true
 		c.CoinSource.NormalizeCopyTrade()
+	case "explosive":
+		c.CoinSource.UseAI500 = false
+		c.CoinSource.UseOITop = false
+		c.CoinSource.UseOILow = false
+		c.CoinSource.UseHyperAll = false
+		c.CoinSource.UseHyperMain = false
+		c.CoinSource.CoinPoolID = ""
+	case "hybrid":
+		c.CoinSource.UseAI500 = false
+		c.CoinSource.UseOITop = false
+		c.CoinSource.UseOILow = false
+		c.CoinSource.UseHyperAll = false
+		c.CoinSource.UseHyperMain = false
+		c.CoinSource.CoinPoolID = ""
+		if !HornIntervals[c.CoinSource.HornInterval] {
+			c.CoinSource.HornInterval = DefaultHornInterval
+		}
+		if !c.CoinSource.HybridIncludeExplosive && !c.CoinSource.HybridIncludeHorn && !c.CoinSource.HybridIncludeCopyTrade {
+			c.CoinSource.HybridIncludeExplosive = true
+			c.CoinSource.HybridIncludeHorn = true
+			c.CoinSource.HybridIncludeCopyTrade = true
+		}
 	case "mixed":
 		// Keep the user's explicit per-source flags.
 	default:
