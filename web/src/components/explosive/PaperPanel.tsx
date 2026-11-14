@@ -14,7 +14,7 @@ const signedPct = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
 
 function EquitySpark({ points }: { points: { equity: number }[] }) {
   if (points.length < 2) return null
-  const vals = points.map((p) => p.equity)
+  const vals = points.map((p) => p.equity).filter((v) => Number.isFinite(v))
   const min = Math.min(...vals)
   const max = Math.max(...vals)
   const span = max - min || 1
@@ -141,8 +141,8 @@ export function PaperPanel({ language }: { language: string }) {
           <Stat label={tr(language, '平均亏损', 'Avg loss')} value={money(data.avg_loss)} color={BN.down} />
           <Stat label={tr(language, '盈亏比', 'Profit factor')} value={data.profit_factor ? data.profit_factor.toFixed(2) : '—'} />
           <Stat label={tr(language, '持仓', 'Open')} value={String(data.open_count)} />
-          <Stat label={tr(language, '单笔风险', 'Risk/trade')} value={`${(data.config.risk_per_trade_pct ?? 0).toFixed(1)}%`} />
-          <Stat label={tr(language, '止损/止盈', 'Stop/Target')} value={`${data.config.stop_atr ?? 0}/${data.config.target_atr ?? 0} ATR`} />
+          <Stat label={tr(language, '单笔风险', 'Risk/trade')} value={`${(data.config?.risk_per_trade_pct ?? 0).toFixed(1)}%`} />
+          <Stat label={tr(language, '止损/止盈', 'Stop/Target')} value={`${data.config?.stop_atr ?? 0}/${data.config?.target_atr ?? 0} ATR`} />
         </div>
         {data.equity_series.length > 1 ? (
           <div className="mt-3">

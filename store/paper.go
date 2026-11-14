@@ -6,39 +6,39 @@ import "gorm.io/gorm"
 // opened. No real money is involved; fills use the live price and a taker fee,
 // so the record measures whether the rule actually has an edge.
 type ExplosivePaperTrade struct {
-	ID     int64  `gorm:"column:id;primaryKey;autoIncrement"`
-	Symbol string `gorm:"column:symbol;index"`
-	Side   string `gorm:"column:side"` // long
+	ID     int64  `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
+	Symbol string `gorm:"column:symbol;index" json:"symbol"`
+	Side   string `gorm:"column:side" json:"side"` // long
 
-	OpenedAt int64   `gorm:"column:opened_at;index"`
-	Entry    float64 `gorm:"column:entry_price"`
-	Quantity float64 `gorm:"column:quantity"`
-	Notional float64 `gorm:"column:notional"`
-	Stop     float64 `gorm:"column:stop_price"`
-	Target   float64 `gorm:"column:target_price"`
-	ATRPct   float64 `gorm:"column:atr_pct"`
-	RiskUSD  float64 `gorm:"column:risk_usd"`
+	OpenedAt int64   `gorm:"column:opened_at;index" json:"opened_at"`
+	Entry    float64 `gorm:"column:entry_price" json:"entry_price"`
+	Quantity float64 `gorm:"column:quantity" json:"quantity"`
+	Notional float64 `gorm:"column:notional" json:"notional"`
+	Stop     float64 `gorm:"column:stop_price" json:"stop_price"`
+	Target   float64 `gorm:"column:target_price" json:"target_price"`
+	ATRPct   float64 `gorm:"column:atr_pct" json:"atr_pct"`
+	RiskUSD  float64 `gorm:"column:risk_usd" json:"risk_usd"`
 	// Signal snapshot at entry, for later analysis.
-	VolSpike float64 `gorm:"column:vol_spike"`
-	OIPct    float64 `gorm:"column:oi_pct"`
-	DayGain  float64 `gorm:"column:day_gain"`
+	VolSpike float64 `gorm:"column:vol_spike" json:"vol_spike"`
+	OIPct    float64 `gorm:"column:oi_pct" json:"oi_pct"`
+	DayGain  float64 `gorm:"column:day_gain" json:"day_gain"`
 
-	Status     string  `gorm:"column:status;index"` // open | closed
-	ClosedAt   int64   `gorm:"column:closed_at"`
-	ExitPrice  float64 `gorm:"column:exit_price"`
-	ExitReason string  `gorm:"column:exit_reason"` // stop | target | time
-	Fee        float64 `gorm:"column:fee"`
-	Realized   float64 `gorm:"column:realized_pnl"`
+	Status     string  `gorm:"column:status;index" json:"status"` // open | closed
+	ClosedAt   int64   `gorm:"column:closed_at" json:"closed_at"`
+	ExitPrice  float64 `gorm:"column:exit_price" json:"exit_price"`
+	ExitReason string  `gorm:"column:exit_reason" json:"exit_reason"` // stop | target | time
+	Fee        float64 `gorm:"column:fee" json:"fee"`
+	Realized   float64 `gorm:"column:realized_pnl" json:"realized_pnl"`
 }
 
 // ExplosivePaperEquity is one snapshot of the paper account.
 type ExplosivePaperEquity struct {
-	ID         int64   `gorm:"column:id;primaryKey;autoIncrement"`
-	TS         int64   `gorm:"column:ts;index"`
-	Equity     float64 `gorm:"column:equity"`
-	Realized   float64 `gorm:"column:realized"`
-	Unrealized float64 `gorm:"column:unrealized"`
-	OpenCount  int     `gorm:"column:open_count"`
+	ID         int64   `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
+	TS         int64   `gorm:"column:ts;index" json:"ts"`
+	Equity     float64 `gorm:"column:equity" json:"equity"`
+	Realized   float64 `gorm:"column:realized" json:"realized"`
+	Unrealized float64 `gorm:"column:unrealized" json:"unrealized"`
+	OpenCount  int     `gorm:"column:open_count" json:"open_count"`
 }
 
 // PaperStore persists the explosive board's paper trades and equity.
