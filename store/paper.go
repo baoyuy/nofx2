@@ -140,6 +140,9 @@ type ExplosivePaperSettings struct {
 	MaxNotionalX  float64 `gorm:"column:max_notional_x" json:"max_notional_x"` // per-trade notional cap × equity
 	MinVolSpike   float64 `gorm:"column:min_vol_spike" json:"min_vol_spike"`   // entry volume-spike gate
 	TimeStopHours float64 `gorm:"column:time_stop_hours" json:"time_stop_hours"`
+	// Leverage is carried for real-account execution (1-20x). In the paper
+	// account it sets the margin a position would require (notional/leverage).
+	Leverage float64 `gorm:"column:leverage" json:"leverage"`
 	// Entry gates for the coin's day gain and the OI confirmation.
 	GainMinPct float64 `gorm:"column:gain_min_pct" json:"gain_min_pct"`
 	GainMaxPct float64 `gorm:"column:gain_max_pct" json:"gain_max_pct"`

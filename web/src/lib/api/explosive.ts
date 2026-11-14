@@ -179,6 +179,7 @@ export interface OpenPosition {
   atr_pct: number
   unrealized_pnl: number
   unrealized_pct: number
+  margin: number
   opened_at: number
 }
 
@@ -194,6 +195,7 @@ export interface PaperSettings {
   gain_min_pct: number
   gain_max_pct: number
   oi_required: boolean
+  leverage: number
   updated_at: number
 }
 

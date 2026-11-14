@@ -22,6 +22,7 @@ type PaperConfig struct {
 	FeeRate       float64
 	TimeStopHours float64
 	Tick          time.Duration
+	Leverage      float64
 	MinVolSpike   float64
 	GainMin       float64
 	GainMax       float64
@@ -34,7 +35,7 @@ func DefaultPaperConfig() PaperConfig {
 		DefaultEquity: 1000, RiskPerTrade: 0.005,
 		StopATR: 1.5, TargetATR: 3.0, MaxPositions: 3, MaxNotionalX: 0.5,
 		FeeRate: 0.0005, TimeStopHours: 4, Tick: 60 * time.Second,
-		MinVolSpike: 3, GainMin: 0.02, GainMax: 0.30, OIRequired: false,
+		MinVolSpike: 3, Leverage: 5, GainMin: 0.02, GainMax: 0.30, OIRequired: false,
 	}
 }
 
@@ -75,6 +76,9 @@ func (p *PaperTrader) applyStoredSettings() {
 	if s.MinVolSpike > 0 {
 		p.cfg.MinVolSpike = s.MinVolSpike
 	}
+	if s.Leverage > 0 {
+		p.cfg.Leverage = s.Leverage
+	}
 	if s.TimeStopHours > 0 {
 		p.cfg.TimeStopHours = s.TimeStopHours
 	}
@@ -105,6 +109,9 @@ func (p *PaperTrader) Settings() store.ExplosivePaperSettings {
 	}
 	if s.GainMaxPct <= 0 {
 		s.GainMaxPct = p.cfg.GainMax * 100
+	}
+	if s.Leverage <= 0 {
+		s.Leverage = p.cfg.Leverage
 	}
 	return s
 }
@@ -140,6 +147,12 @@ func (p *PaperTrader) UpdateSettings(v store.ExplosivePaperSettings) store.Explo
 	}
 	if v.TimeStopHours < 0.5 {
 		v.TimeStopHours = 0.5
+	}
+	if v.Leverage < 1 {
+		v.Leverage = 1
+	}
+	if v.Leverage > 20 {
+		v.Leverage = 20
 	}
 	if v.GainMinPct < 0 {
 		v.GainMinPct = 0
@@ -387,6 +400,7 @@ type OpenPositionView struct {
 	ATRPct        float64 `json:"atr_pct"`
 	Unrealized    float64 `json:"unrealized_pnl"`
 	UnrealizedPct float64 `json:"unrealized_pct"`
+	Margin        float64 `json:"margin"`
 	OpenedAt      int64   `json:"opened_at"`
 }
 
@@ -418,14 +432,22 @@ func (p *PaperTrader) Snapshot(accID int64) ExplosivePaperView {
 	defer p.mu.Unlock()
 	name, start := p.startFor(accID)
 	v := ExplosivePaperView{AccountID: accID, Label: name, StartingEquity: start}
+	lev := p.cfg.Leverage
+	if lev <= 0 {
+		lev = 1
+	}
 	open, _ := p.store.OpenTrades(accID)
 	v.Open = make([]OpenPositionView, 0, len(open))
+	liveUnrealized := 0.0
+	liveEntryFees := 0.0
 	for _, t := range open {
 		cur := t.Entry
 		if pr, ok := Shared.Price(t.Symbol); ok && pr > 0 {
 			cur = pr
 		}
 		up := (cur - t.Entry) * t.Quantity
+		liveUnrealized += up
+		liveEntryFees += t.Fee
 		upPct := 0.0
 		if t.Entry > 0 {
 			upPct = (cur/t.Entry - 1) * 100
@@ -433,7 +455,8 @@ func (p *PaperTrader) Snapshot(accID int64) ExplosivePaperView {
 		v.Open = append(v.Open, OpenPositionView{
 			ID: t.ID, Symbol: t.Symbol, Entry: t.Entry, Current: cur,
 			Stop: t.Stop, Target: t.Target, Quantity: t.Quantity, Notional: t.Notional,
-			RiskUSD: t.RiskUSD, ATRPct: t.ATRPct, Unrealized: up, UnrealizedPct: upPct, OpenedAt: t.OpenedAt,
+			RiskUSD: t.RiskUSD, ATRPct: t.ATRPct, Unrealized: up, UnrealizedPct: upPct,
+			Margin: t.Notional / lev, OpenedAt: t.OpenedAt,
 		})
 	}
 	v.OpenCount = len(v.Open)
@@ -461,12 +484,12 @@ func (p *PaperTrader) Snapshot(accID int64) ExplosivePaperView {
 		series = []store.ExplosivePaperEquity{}
 	}
 	v.EquitySeries = series
-	if len(series) > 0 {
-		last := series[len(series)-1]
-		v.Equity, v.Unrealized, v.UpdatedAt = last.Equity, last.Unrealized, last.TS
-	} else {
-		v.Equity = start
-	}
+	// Live figures: the recorded snapshot only updates each engine tick, so
+	// recompute against the current prices to match what the position table
+	// shows (otherwise equity says profit while the positions are dropping).
+	v.Unrealized = liveUnrealized - liveEntryFees
+	v.Equity = start + v.Realized + v.Unrealized
+	v.UpdatedAt = time.Now().UnixMilli()
 	if v.Recent == nil {
 		v.Recent = []store.ExplosivePaperTrade{}
 	}
@@ -478,6 +501,7 @@ func (p *PaperTrader) Snapshot(accID int64) ExplosivePaperView {
 		"max_positions":      float64(p.cfg.MaxPositions),
 		"min_vol_spike":      p.cfg.MinVolSpike,
 		"time_stop_hours":    p.cfg.TimeStopHours,
+		"leverage":           p.cfg.Leverage,
 	}
 	return v
 }
@@ -489,12 +513,20 @@ func (p *PaperTrader) Accounts() []AccountSummary {
 	defer p.mu.Unlock()
 	var out []AccountSummary
 	for _, a := range p.accountList() {
-		equity := a.start
-		if series, _ := p.store.EquitySeries(a.id, 1); len(series) > 0 {
-			equity = series[0].Equity
-		}
-		n, wins, _, _, _ := p.store.ClosedStats(a.id)
+		realized, _ := p.store.RealizedTotal(a.id)
 		open, _ := p.store.OpenTrades(a.id)
+		unrealized := 0.0
+		fees := 0.0
+		for _, t := range open {
+			cur := t.Entry
+			if pr, ok := Shared.Price(t.Symbol); ok && pr > 0 {
+				cur = pr
+			}
+			unrealized += (cur - t.Entry) * t.Quantity
+			fees += t.Fee
+		}
+		equity := a.start + realized + unrealized - fees
+		n, wins, _, _, _ := p.store.ClosedStats(a.id)
 		winRate := 0.0
 		if n > 0 {
 			winRate = float64(wins) / float64(n)

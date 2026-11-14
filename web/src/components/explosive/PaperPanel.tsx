@@ -188,6 +188,7 @@ function SettingsForm({ language, settings, onSaved }: { language: string; setti
         {field(tr(language, '止损', 'Stop'), tr(language, '入场价往下几倍 ATR 止损', 'stop distance in ATR'), 'stop_atr', 0.1, 0.3, 5, '×ATR')}
         {field(tr(language, '止盈', 'Target'), tr(language, '入场价往上几倍 ATR 止盈', 'take-profit distance in ATR'), 'target_atr', 0.1, 0.5, 10, '×ATR')}
         {field(tr(language, '最大持仓', 'Max positions'), tr(language, '同时最多持有几个币', 'concurrent open trades'), 'max_positions', 1, 1, 8, tr(language, '个', ''))}
+        {field(tr(language, '杠杆', 'Leverage'), tr(language, '对接真实账户时使用的杠杆，同时决定保证金占用', 'leverage for real-account execution; also sets margin'), 'leverage', 1, 1, 20, 'x')}
         {field(tr(language, '单币仓位上限', 'Notional cap'), tr(language, '单个币名义仓位最多占权益几倍', 'per-trade notional cap × equity'), 'max_notional_x', 0.1, 0.1, 2, '×权益')}
         {field(tr(language, '量能阈值', 'Volume gate'), tr(language, '量能突增达到几倍才允许入场', 'enter only if volume spike ≥ this'), 'min_vol_spike', 0.5, 0, 20, 'x')}
         {field(tr(language, '时间止损', 'Time stop'), tr(language, '持仓超过几小时没触发止损止盈就平仓', 'close after N hours if neither hit'), 'time_stop_hours', 0.5, 0.5, 24, tr(language, '小时', 'h'))}
@@ -225,14 +226,14 @@ export function PaperPanel({ language }: { language: string }) {
   const [showSettings, setShowSettings] = useState(false)
 
   const { data: accounts = [], mutate: mutAccounts } = useSWR('market/explosive/paper/accounts', () => explosiveApi.paperAccounts(), {
-    refreshInterval: 20000,
+    refreshInterval: 10000,
     revalidateOnFocus: false,
   })
   const { data: settings, mutate: mutSettings } = useSWR('market/explosive/paper/settings', () => explosiveApi.paperSettings(), {
     revalidateOnFocus: false,
   })
   const { data, error, mutate } = useSWR(['market/explosive/paper', accId], () => explosiveApi.paper(accId), {
-    refreshInterval: 15000,
+    refreshInterval: 5000,
     revalidateOnFocus: false,
     keepPreviousData: true,
   })
@@ -378,7 +379,9 @@ export function PaperPanel({ language }: { language: string }) {
               <section className={ui.panel}>
                 <div className="mb-2 flex items-baseline gap-2">
                   <h3 className="text-sm font-semibold text-nofx-text">{data.label}</h3>
-                  <span className={`text-xs ${ui.muted}`}>{tr(language, '起始资金', 'Start')} {data.starting_equity.toFixed(0)} USDT</span>
+                  <span className={`text-xs ${ui.muted}`}>
+                  {tr(language, '起始资金', 'Start')} {data.starting_equity.toFixed(0)} USDT · {tr(language, '杠杆', 'Leverage')} {data.config?.leverage ?? '—'}x
+                </span>
                 </div>
 
                 <div className={`mb-1 text-[11px] font-semibold ${ui.muted}`}>{tr(language, '账户表现', 'Account')}</div>
@@ -399,7 +402,7 @@ export function PaperPanel({ language }: { language: string }) {
                 </div>
 
                 <div className="mt-3">
-                  <EquitySpark points={data.equity_series} />
+                  <EquitySpark points={[...data.equity_series, { equity: data.equity }]} />
                 </div>
                 <p className={`mt-1 text-[11px] ${ui.muted}`}>
                   {tr(
