@@ -2,13 +2,26 @@ package store
 
 import "gorm.io/gorm"
 
+// ExplosivePaperAccount is one simulated account the board's rule engine runs.
+// It can reference a configured exchange account (ExchangeID) and carries its
+// own starting equity, so several accounts can be compared side by side.
+// Account id 0 is the built-in default account.
+type ExplosivePaperAccount struct {
+	ID             int64   `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
+	ExchangeID     string  `gorm:"column:exchange_id;index" json:"exchange_id"`
+	Name           string  `gorm:"column:name" json:"name"`
+	StartingEquity float64 `gorm:"column:starting_equity" json:"starting_equity"`
+	Enabled        bool    `gorm:"column:enabled;default:true" json:"enabled"`
+	CreatedAt      int64   `gorm:"column:created_at" json:"created_at"`
+}
+
 // ExplosivePaperTrade is one simulated (paper) trade the board's rule engine
-// opened. No real money is involved; fills use the live price and a taker fee,
-// so the record measures whether the rule actually has an edge.
+// opened. No real money: fills use the live price and a taker fee.
 type ExplosivePaperTrade struct {
-	ID     int64  `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
-	Symbol string `gorm:"column:symbol;index" json:"symbol"`
-	Side   string `gorm:"column:side" json:"side"` // long
+	ID        int64  `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
+	AccountID int64  `gorm:"column:account_id;index" json:"account_id"`
+	Symbol    string `gorm:"column:symbol;index" json:"symbol"`
+	Side      string `gorm:"column:side" json:"side"`
 
 	OpenedAt int64   `gorm:"column:opened_at;index" json:"opened_at"`
 	Entry    float64 `gorm:"column:entry_price" json:"entry_price"`
@@ -18,7 +31,6 @@ type ExplosivePaperTrade struct {
 	Target   float64 `gorm:"column:target_price" json:"target_price"`
 	ATRPct   float64 `gorm:"column:atr_pct" json:"atr_pct"`
 	RiskUSD  float64 `gorm:"column:risk_usd" json:"risk_usd"`
-	// Signal snapshot at entry, for later analysis.
 	VolSpike float64 `gorm:"column:vol_spike" json:"vol_spike"`
 	OIPct    float64 `gorm:"column:oi_pct" json:"oi_pct"`
 	DayGain  float64 `gorm:"column:day_gain" json:"day_gain"`
@@ -31,9 +43,10 @@ type ExplosivePaperTrade struct {
 	Realized   float64 `gorm:"column:realized_pnl" json:"realized_pnl"`
 }
 
-// ExplosivePaperEquity is one snapshot of the paper account.
+// ExplosivePaperEquity is one snapshot of a paper account.
 type ExplosivePaperEquity struct {
 	ID         int64   `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
+	AccountID  int64   `gorm:"column:account_id;index" json:"account_id"`
 	TS         int64   `gorm:"column:ts;index" json:"ts"`
 	Equity     float64 `gorm:"column:equity" json:"equity"`
 	Realized   float64 `gorm:"column:realized" json:"realized"`
@@ -41,51 +54,60 @@ type ExplosivePaperEquity struct {
 	OpenCount  int     `gorm:"column:open_count" json:"open_count"`
 }
 
-// PaperStore persists the explosive board's paper trades and equity.
+// PaperStore persists the explosive board's paper accounts, trades and equity.
 type PaperStore struct{ db *gorm.DB }
 
 func NewPaperStore(db *gorm.DB) *PaperStore { return &PaperStore{db: db} }
 
 func (s *PaperStore) AutoMigrate() error {
-	return s.db.AutoMigrate(&ExplosivePaperTrade{}, &ExplosivePaperEquity{})
+	return s.db.AutoMigrate(&ExplosivePaperAccount{}, &ExplosivePaperTrade{}, &ExplosivePaperEquity{})
 }
 
-func (s *PaperStore) OpenTrades() ([]ExplosivePaperTrade, error) {
+func (s *PaperStore) Accounts() ([]ExplosivePaperAccount, error) {
+	var out []ExplosivePaperAccount
+	err := s.db.Order("id ASC").Find(&out).Error
+	return out, err
+}
+
+func (s *PaperStore) AddAccount(a *ExplosivePaperAccount) error { return s.db.Create(a).Error }
+
+func (s *PaperStore) RemoveAccount(id int64) error {
+	return s.db.Where("id = ?", id).Delete(&ExplosivePaperAccount{}).Error
+}
+
+func (s *PaperStore) OpenTrades(accountID int64) ([]ExplosivePaperTrade, error) {
 	var out []ExplosivePaperTrade
-	err := s.db.Where("status = ?", "open").Find(&out).Error
+	err := s.db.Where("account_id = ? AND status = ?", accountID, "open").Find(&out).Error
 	return out, err
 }
 
 func (s *PaperStore) CreateTrade(t *ExplosivePaperTrade) error { return s.db.Create(t).Error }
+func (s *PaperStore) SaveTrade(t *ExplosivePaperTrade) error   { return s.db.Save(t).Error }
 
-func (s *PaperStore) SaveTrade(t *ExplosivePaperTrade) error { return s.db.Save(t).Error }
-
-func (s *PaperStore) RecentTrades(limit int) ([]ExplosivePaperTrade, error) {
+func (s *PaperStore) RecentTrades(accountID int64, limit int) ([]ExplosivePaperTrade, error) {
 	var out []ExplosivePaperTrade
-	err := s.db.Order("opened_at DESC").Limit(limit).Find(&out).Error
+	err := s.db.Where("account_id = ?", accountID).Order("opened_at DESC").Limit(limit).Find(&out).Error
 	return out, err
 }
 
 func (s *PaperStore) CreateEquity(e *ExplosivePaperEquity) error { return s.db.Create(e).Error }
 
-func (s *PaperStore) EquitySeries(limit int) ([]ExplosivePaperEquity, error) {
+func (s *PaperStore) EquitySeries(accountID int64, limit int) ([]ExplosivePaperEquity, error) {
 	var out []ExplosivePaperEquity
-	err := s.db.Order("ts DESC").Limit(limit).Find(&out).Error
+	err := s.db.Where("account_id = ?", accountID).Order("ts DESC").Limit(limit).Find(&out).Error
 	return out, err
 }
 
-// RealizedTotal sums realised PnL of closed paper trades.
-func (s *PaperStore) RealizedTotal() (float64, error) {
+func (s *PaperStore) RealizedTotal(accountID int64) (float64, error) {
 	var sum float64
-	err := s.db.Model(&ExplosivePaperTrade{}).Where("status = ?", "closed").
+	err := s.db.Model(&ExplosivePaperTrade{}).Where("account_id = ? AND status = ?", accountID, "closed").
 		Select("COALESCE(SUM(realized_pnl),0)").Scan(&sum).Error
 	return sum, err
 }
 
-// ClosedStats returns count, wins, and gross win/loss sums for closed trades.
-func (s *PaperStore) ClosedStats() (n, wins int, winSum, lossSum float64, err error) {
+func (s *PaperStore) ClosedStats(accountID int64) (n, wins int, winSum, lossSum float64, err error) {
 	var rows []ExplosivePaperTrade
-	if err = s.db.Where("status = ?", "closed").Find(&rows).Error; err != nil {
+	if err = s.db.Where("account_id = ? AND status = ?", accountID, "closed").Find(&rows).Error; err != nil {
 		return
 	}
 	n = len(rows)

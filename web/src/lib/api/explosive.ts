@@ -166,7 +166,20 @@ export interface PaperEquityPoint {
   open_count: number
 }
 
+export interface PaperAccountSummary {
+  id: number
+  name: string
+  exchange_id: string
+  starting_equity: number
+  equity: number
+  return_pct: number
+  trades: number
+  win_rate: number
+  open_count: number
+}
+
 export interface ExplosivePaper {
+  account_id: number
   label: string
   starting_equity: number
   equity: number
@@ -196,12 +209,36 @@ export const explosiveApi = {
     return unwrap(r, 'Failed to load accuracy')
   },
 
-  async paper(): Promise<ExplosivePaper> {
+  async paper(accountId = 0): Promise<ExplosivePaper> {
     const r = await httpClient.request<ExplosivePaper>(
       `${API_BASE}/market/explosive/paper`,
-      { silent: true, timeout: 20000 }
+      { params: { account_id: accountId }, silent: true, timeout: 20000 }
     )
     return unwrap(r, 'Failed to load paper account')
+  },
+
+  async paperAccounts(): Promise<PaperAccountSummary[]> {
+    const r = await httpClient.request<{ accounts: PaperAccountSummary[] }>(
+      `${API_BASE}/market/explosive/paper/accounts`,
+      { silent: true, timeout: 20000 }
+    )
+    return unwrap(r, 'Failed to load paper accounts').accounts || []
+  },
+
+  async addPaperAccount(body: { exchange_id: string; name: string; starting_equity: number }): Promise<number> {
+    const r = await httpClient.request<{ id: number }>(
+      `${API_BASE}/market/explosive/paper/accounts`,
+      { method: 'POST', data: body, timeout: 20000 }
+    )
+    return unwrap(r, 'Failed to add paper account').id
+  },
+
+  async removePaperAccount(id: number): Promise<void> {
+    const r = await httpClient.request(
+      `${API_BASE}/market/explosive/paper/accounts/${id}`,
+      { method: 'DELETE', timeout: 20000 }
+    )
+    unwrap(r, 'Failed to remove paper account')
   },
 
   async board(refresh = false): Promise<ExplosiveBoard> {

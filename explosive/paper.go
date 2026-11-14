@@ -11,44 +11,40 @@ import (
 )
 
 // PaperConfig defines a deterministic rule set for the board's simulated
-// account. No real money: fills use the live price and a taker fee, so the
-// record shows whether the rule has an edge after costs.
+// accounts. No real money: fills use the live price and a taker fee.
 type PaperConfig struct {
-	Label          string
-	StartingEquity float64       // virtual USDT
-	RiskPerTrade   float64       // fraction of equity risked per trade (0.005 = 0.5%)
-	StopATR        float64       // stop distance in ATR (primary, from board ATR%)
-	TargetATR      float64       // take-profit distance in ATR
-	MaxPositions   int           // concurrent open trades
-	MaxNotionalX   float64       // cap notional per trade at this × equity
-	FeeRate        float64       // taker fee per side
-	TimeStopHours  float64       // close after this many hours if neither stop nor target
-	Tick           time.Duration // evaluation cadence
-	// Entry gates, straight from the board's live features.
-	MinVolSpike  float64
-	NeedOIRising bool
-	MaxDayGain   float64
+	DefaultEquity float64
+	RiskPerTrade  float64
+	StopATR       float64
+	TargetATR     float64
+	MaxPositions  int
+	MaxNotionalX  float64
+	FeeRate       float64
+	TimeStopHours float64
+	Tick          time.Duration
+	MinVolSpike   float64
+	NeedOIRising  bool
+	MaxDayGain    float64
 }
 
 // DefaultPaperConfig is a conservative short-term long-only rule.
 func DefaultPaperConfig() PaperConfig {
 	return PaperConfig{
-		Label: "爆发榜·规则模拟盘", StartingEquity: 1000, RiskPerTrade: 0.005,
+		DefaultEquity: 1000, RiskPerTrade: 0.005,
 		StopATR: 1.5, TargetATR: 3.0, MaxPositions: 3, MaxNotionalX: 0.5,
 		FeeRate: 0.0005, TimeStopHours: 4, Tick: 60 * time.Second,
 		MinVolSpike: 3, NeedOIRising: true, MaxDayGain: 0.5,
 	}
 }
 
-// PaperTrader runs the rule engine against the live board.
+// PaperTrader runs the rule engine for the built-in default account plus every
+// enabled configured account.
 type PaperTrader struct {
 	cfg   PaperConfig
 	store *store.PaperStore
 	mu    sync.Mutex
-	last  ExplosivePaperView
 }
 
-// NewPaperTrader builds a paper trader over the given storage.
 func NewPaperTrader(st *store.PaperStore, cfg PaperConfig) *PaperTrader {
 	return &PaperTrader{cfg: cfg, store: st}
 }
@@ -60,8 +56,8 @@ func StartPaper(ctx context.Context, st *store.PaperStore) *PaperTrader {
 		return nil
 	}
 	p := NewPaperTrader(st, DefaultPaperConfig())
-	logger.Infof("📝 Explosive paper engine started: equity=%.0f risk=%.2f%% stop=%.1fATR target=%.1fATR",
-		p.cfg.StartingEquity, p.cfg.RiskPerTrade*100, p.cfg.StopATR, p.cfg.TargetATR)
+	logger.Infof("📝 Explosive paper engine started: default equity=%.0f risk=%.2f%% stop=%.1fATR target=%.1fATR",
+		p.cfg.DefaultEquity, p.cfg.RiskPerTrade*100, p.cfg.StopATR, p.cfg.TargetATR)
 	go func() {
 		t := time.NewTicker(p.cfg.Tick)
 		defer t.Stop()
@@ -93,6 +89,30 @@ func (p *PaperTrader) priceMap(b Board) map[string]float64 {
 	return pm
 }
 
+type paperAccount struct {
+	id    int64
+	name  string
+	start float64
+}
+
+// accountList returns the default account (id 0) and every enabled configured
+// paper account.
+func (p *PaperTrader) accountList() []paperAccount {
+	out := []paperAccount{{id: 0, name: "默认模拟盘", start: p.cfg.DefaultEquity}}
+	rows, _ := p.store.Accounts()
+	for _, a := range rows {
+		if !a.Enabled {
+			continue
+		}
+		start := a.StartingEquity
+		if start <= 0 {
+			start = p.cfg.DefaultEquity
+		}
+		out = append(out, paperAccount{id: a.ID, name: a.Name, start: start})
+	}
+	return out
+}
+
 func (p *PaperTrader) tick(ctx context.Context) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -110,10 +130,15 @@ func (p *PaperTrader) tick(ctx context.Context) {
 		}
 		return 0
 	}
-
 	now := time.Now()
-	open, _ := p.store.OpenTrades()
-	realized, _ := p.store.RealizedTotal()
+	for _, acc := range p.accountList() {
+		p.processAccount(acc, board, priceOf, now)
+	}
+}
+
+func (p *PaperTrader) processAccount(acc paperAccount, board Board, priceOf func(string) float64, now time.Time) {
+	realized, _ := p.store.RealizedTotal(acc.id)
+	open, _ := p.store.OpenTrades(acc.id)
 	openEntryFees := 0.0
 	unrealized := 0.0
 	stillOpen := make(map[string]bool, len(open))
@@ -150,18 +175,13 @@ func (p *PaperTrader) tick(ctx context.Context) {
 		unrealized += (pr - t.Entry) * t.Quantity
 	}
 
-	equity := p.cfg.StartingEquity + realized + unrealized - openEntryFees
-
-	// Entries from the board's ambush rows (already ranked by expected final).
+	equity := acc.start + realized + unrealized - openEntryFees
 	openCount := len(stillOpen)
 	for _, r := range board.Rows {
 		if openCount >= p.cfg.MaxPositions {
 			break
 		}
-		if stillOpen[r.Symbol] {
-			continue
-		}
-		if !p.entryOK(r) {
+		if stillOpen[r.Symbol] || !p.entryOK(r) {
 			continue
 		}
 		atrFrac := r.ATRPct / 100
@@ -182,25 +202,25 @@ func (p *PaperTrader) tick(ctx context.Context) {
 		qty := notional / r.Price
 		fee := notional * p.cfg.FeeRate
 		t := &store.ExplosivePaperTrade{
-			Symbol: r.Symbol, Side: "long", OpenedAt: now.UnixMilli(),
+			AccountID: acc.id, Symbol: r.Symbol, Side: "long", OpenedAt: now.UnixMilli(),
 			Entry: r.Price, Quantity: qty, Notional: notional,
 			Stop: r.Price * (1 - stopDist), Target: r.Price * (1 + p.cfg.TargetATR*atrFrac),
 			ATRPct: r.ATRPct, RiskUSD: notional * stopDist, Fee: fee,
 			VolSpike: r.VolSpike1h, OIPct: r.OIChange1h, DayGain: r.DayGain, Status: "open",
 		}
 		if err := p.store.CreateTrade(t); err != nil {
-			logger.Warnf("explosive paper: create trade %s: %v", r.Symbol, err)
+			logger.Warnf("explosive paper: create trade %s/%s: %v", acc.name, r.Symbol, err)
 			continue
 		}
 		stillOpen[r.Symbol] = true
 		openCount++
 		openEntryFees += fee
-		logger.Infof("📝 paper open %s @%.6f stop=%.6f target=%.6f risk=%.1fUSD", r.Symbol, t.Entry, t.Stop, t.Target, t.RiskUSD)
+		logger.Infof("📝 paper[%s] open %s @%.6f stop=%.6f target=%.6f risk=%.1fUSD", acc.name, r.Symbol, t.Entry, t.Stop, t.Target, t.RiskUSD)
 	}
 
-	equity = p.cfg.StartingEquity + realized + unrealized - openEntryFees
+	equity = acc.start + realized + unrealized - openEntryFees
 	_ = p.store.CreateEquity(&store.ExplosivePaperEquity{
-		TS: now.UnixMilli(), Equity: equity, Realized: realized,
+		AccountID: acc.id, TS: now.UnixMilli(), Equity: equity, Realized: realized,
 		Unrealized: unrealized - openEntryFees, OpenCount: openCount,
 	})
 }
@@ -221,8 +241,9 @@ func (p *PaperTrader) entryOK(r Row) bool {
 	return true
 }
 
-// ExplosivePaperView is the read model the API returns.
+// ExplosivePaperView is the read model the API returns for one account.
 type ExplosivePaperView struct {
+	AccountID      int64                        `json:"account_id"`
 	Label          string                       `json:"label"`
 	StartingEquity float64                      `json:"starting_equity"`
 	Equity         float64                      `json:"equity"`
@@ -243,17 +264,43 @@ type ExplosivePaperView struct {
 	UpdatedAt      int64                        `json:"updated_at"`
 }
 
-// Snapshot assembles the current paper account state for the API.
-func (p *PaperTrader) Snapshot() ExplosivePaperView {
+// AccountSummary is a compact per-account card for the account switcher.
+type AccountSummary struct {
+	ID             int64   `json:"id"`
+	Name           string  `json:"name"`
+	ExchangeID     string  `json:"exchange_id"`
+	StartingEquity float64 `json:"starting_equity"`
+	Equity         float64 `json:"equity"`
+	ReturnPct      float64 `json:"return_pct"`
+	Trades         int     `json:"trades"`
+	WinRate        float64 `json:"win_rate"`
+	OpenCount      int     `json:"open_count"`
+}
+
+func (p *PaperTrader) startFor(accID int64) (name string, start float64) {
+	for _, a := range p.accountList() {
+		if a.id == accID {
+			return a.name, a.start
+		}
+	}
+	return "默认模拟盘", p.cfg.DefaultEquity
+}
+
+// Snapshot assembles one account's state for the API.
+func (p *PaperTrader) Snapshot(accID int64) ExplosivePaperView {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	v := ExplosivePaperView{Label: p.cfg.Label, StartingEquity: p.cfg.StartingEquity}
-	open, _ := p.store.OpenTrades()
+	name, start := p.startFor(accID)
+	v := ExplosivePaperView{AccountID: accID, Label: name, StartingEquity: start}
+	open, _ := p.store.OpenTrades(accID)
+	if open == nil {
+		open = []store.ExplosivePaperTrade{}
+	}
 	v.Open = open
 	v.OpenCount = len(open)
-	v.Recent, _ = p.store.RecentTrades(50)
-	v.Realized, _ = p.store.RealizedTotal()
-	n, wins, winSum, lossSum, _ := p.store.ClosedStats()
+	v.Recent, _ = p.store.RecentTrades(accID, 50)
+	v.Realized, _ = p.store.RealizedTotal(accID)
+	n, wins, winSum, lossSum, _ := p.store.ClosedStats(accID)
 	v.Trades, v.Wins = n, wins
 	if n > 0 {
 		v.WinRate = float64(wins) / float64(n)
@@ -267,28 +314,24 @@ func (p *PaperTrader) Snapshot() ExplosivePaperView {
 	if lossSum != 0 {
 		v.ProfitFactor = winSum / math.Abs(lossSum)
 	}
-	series, _ := p.store.EquitySeries(240)
-	// reverse to chronological
+	series, _ := p.store.EquitySeries(accID, 240)
 	for i, j := 0, len(series)-1; i < j; i, j = i+1, j-1 {
 		series[i], series[j] = series[j], series[i]
+	}
+	if series == nil {
+		series = []store.ExplosivePaperEquity{}
 	}
 	v.EquitySeries = series
 	if len(series) > 0 {
 		last := series[len(series)-1]
 		v.Equity, v.Unrealized, v.UpdatedAt = last.Equity, last.Unrealized, last.TS
 	} else {
-		v.Equity = p.cfg.StartingEquity
-	}
-	if v.Open == nil {
-		v.Open = []store.ExplosivePaperTrade{}
+		v.Equity = start
 	}
 	if v.Recent == nil {
 		v.Recent = []store.ExplosivePaperTrade{}
 	}
-	if v.EquitySeries == nil {
-		v.EquitySeries = []store.ExplosivePaperEquity{}
-	}
-	v.ReturnPct = (v.Equity/p.cfg.StartingEquity - 1) * 100
+	v.ReturnPct = (v.Equity/start - 1) * 100
 	v.Config = map[string]float64{
 		"risk_per_trade_pct": p.cfg.RiskPerTrade * 100,
 		"stop_atr":           p.cfg.StopATR,
@@ -297,6 +340,55 @@ func (p *PaperTrader) Snapshot() ExplosivePaperView {
 		"min_vol_spike":      p.cfg.MinVolSpike,
 		"time_stop_hours":    p.cfg.TimeStopHours,
 	}
-	p.last = v
 	return v
+}
+
+// Accounts lists the default account plus every enabled configured account with
+// a compact summary, so the UI can show an account switcher.
+func (p *PaperTrader) Accounts() []AccountSummary {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []AccountSummary
+	for _, a := range p.accountList() {
+		equity := a.start
+		if series, _ := p.store.EquitySeries(a.id, 1); len(series) > 0 {
+			equity = series[0].Equity
+		}
+		n, wins, _, _, _ := p.store.ClosedStats(a.id)
+		open, _ := p.store.OpenTrades(a.id)
+		winRate := 0.0
+		if n > 0 {
+			winRate = float64(wins) / float64(n)
+		}
+		exID := ""
+		out = append(out, AccountSummary{
+			ID: a.id, Name: a.name, ExchangeID: exID, StartingEquity: a.start,
+			Equity: equity, ReturnPct: (equity/a.start - 1) * 100,
+			Trades: n, WinRate: winRate, OpenCount: len(open),
+		})
+	}
+	return out
+}
+
+// AddAccount registers a new paper account linked to a configured exchange.
+func (p *PaperTrader) AddAccount(exchangeID, name string, startEquity float64) (int64, error) {
+	if startEquity <= 0 {
+		startEquity = p.cfg.DefaultEquity
+	}
+	a := &store.ExplosivePaperAccount{
+		ExchangeID: exchangeID, Name: name, StartingEquity: startEquity,
+		Enabled: true, CreatedAt: time.Now().UnixMilli(),
+	}
+	if err := p.store.AddAccount(a); err != nil {
+		return 0, err
+	}
+	return a.ID, nil
+}
+
+// RemoveAccount deletes a paper account (its trades/equity stay for history).
+func (p *PaperTrader) RemoveAccount(id int64) error {
+	if id == 0 {
+		return nil
+	}
+	return p.store.RemoveAccount(id)
 }
