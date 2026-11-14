@@ -140,14 +140,14 @@ function regressionSlope(candles: Candle[]): number {
 }
 
 /** Double top/bottom neckline: two similar pivots with a counter-swing between. */
-function neckline(highs: Pivot[], lows: Pivot[], tol: number): Neckline | undefined {
+function neckline(highs: Pivot[], lows: Pivot[], tol: number, barMs: number): Neckline | undefined {
   const find = (ps: Pivot[], other: Pivot[], kind: 'double_top' | 'double_bottom'): Neckline | undefined => {
     for (let i = ps.length - 1; i >= 1; i--) {
       for (let j = i - 1; j >= 0; j--) {
         const a = ps[j]
         const b = ps[i]
         if (Math.abs(a.price - b.price) / b.price > tol) continue
-        if (b.time - a.time < 3 * 3600 * 1000) continue
+        if (b.time - a.time < 3 * barMs) continue
         const between = other.filter((p) => p.time > a.time && p.time < b.time)
         if (!between.length) continue
         const ext = kind === 'double_top'
@@ -165,19 +165,20 @@ function neckline(highs: Pivot[], lows: Pivot[], tol: number): Neckline | undefi
 function roundLevels(cs: Candle[]): number[] {
   const last = cs[cs.length - 1].close
   if (last <= 0) return []
-  const mag = 10 ** Math.floor(Math.log10(last))
-  let step = mag
+  // Aim for a step around 1% of price, snapped to a "nice" 1/2/5 × 10^n.
+  const target = last / 100
+  const mag = 10 ** Math.floor(Math.log10(target))
+  let step = mag * 10
   for (const m of [1, 2, 5, 10]) {
-    if (last / (mag * m) <= 8) {
+    if (mag * m >= target) {
       step = mag * m
       break
     }
   }
   const out: number[] = []
-  const start = Math.ceil((last - 4 * step) / step) * step
-  for (let v = start; v <= last + 4 * step; v += step) {
-    if (v > 0) out.push(Number(v.toPrecision(10)))
-    if (out.length >= 5) break
+  const start = Math.ceil((last - 3 * step) / step) * step
+  for (let v = start; v <= last + 3 * step && out.length < 7; v += step) {
+    if (v > 0 && Math.abs(v - last) / last <= 0.06) out.push(Number(v.toPrecision(10)))
   }
   return out
 }
@@ -215,13 +216,16 @@ export function analyzeChart(candles: Candle[], maxLevels = MAX_LEVELS): ChartAn
     .slice(0, maxLevels)
   const result: ChartAnalysis = { supports, resistances, horizontals: [] }
 
+  const barMs = cs.length > 1 ? Math.max(cs[1].time - cs[0].time, 1) : 3600000
   const slope = regressionSlope(cs)
   const upTrend = slope >= 0
   const base = upTrend ? lows : highs
   if (base.length >= 2) {
     const a = base[base.length - 2]
     const b = base[base.length - 1]
-    if (b.time !== a.time) {
+    const rising = b.price > a.price
+    const consistent = upTrend ? rising : !rising
+    if (consistent && b.time !== a.time) {
       result.trend = { a: { time: a.time, price: a.price }, b: { time: b.time, price: b.price } }
       const opposite = upTrend ? highs : lows
       const between = opposite.filter((p) => p.time >= a.time && p.time <= b.time)
@@ -248,7 +252,7 @@ export function analyzeChart(candles: Candle[], maxLevels = MAX_LEVELS): ChartAn
     result.fib = { high: hi, low: lo, levels: ratios.map((r) => ({ ratio: r, price: hi - (hi - lo) * r })) }
   }
 
-  result.neckline = neckline(highs, lows, tol)
+  result.neckline = neckline(highs, lows, tol, barMs)
   result.horizontals = roundLevels(cs)
 
   // Gann fan from the last pivot in the trend direction.
@@ -258,10 +262,11 @@ export function analyzeChart(candles: Candle[], maxLevels = MAX_LEVELS): ChartAn
     const span = endTime - anchor.time
     if (span > 0) {
       const dir = upTrend ? 1 : -1
-      const unit = ((hi - lo) / cs.length) * dir
+      const unitPerBar = ((hi - lo) / cs.length) * dir
+      const bars = span / barMs
       result.gann = [0.5, 1, 2].map((k) => ({
         a: { time: anchor.time, price: anchor.price },
-        b: { time: endTime, price: anchor.price + unit * k * (span / (3600 * 1000)) },
+        b: { time: endTime, price: anchor.price + unitPerBar * k * bars },
       }))
     }
   }
@@ -270,9 +275,9 @@ export function analyzeChart(candles: Candle[], maxLevels = MAX_LEVELS): ChartAn
   // P0-P2 midpoint, parallels through P0 and P2.
   const all = [...highs, ...lows].sort((x, y) => x.time - y.time)
   if (all.length >= 3) {
-    const [p0, p2, p1] = all.slice(-3)
-    if (p0.time !== p1.time && p2.time !== p1.time) {
-      const mid = { time: (p0.time + p2.time) / 2, price: (p0.price + p2.price) / 2 }
+    const [p0, p1, p2] = all.slice(-3)
+    const mid = { time: (p0.time + p2.time) / 2, price: (p0.price + p2.price) / 2 }
+    if (p0.time !== p1.time && p2.time !== p1.time && mid.time !== p1.time) {
       const slopePrice = (mid.price - p1.price) / (mid.time - p1.time)
       const endTime = cs[cs.length - 1].time
       const line = (start: LinePoint, offset: number): Segment => ({
