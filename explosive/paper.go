@@ -452,7 +452,11 @@ func (p *PaperTrader) processAccount(acc paperAccount, board Board, priceOf func
 		if cfg.PartialTP && !t.PartialTaken && t.TP1 > 0 && t.Quantity > 0 {
 			hit := (!isShort && pr >= t.TP1) || (isShort && pr <= t.TP1)
 			if hit {
-				qtyClose := t.InitialQuantity * cfg.TP1Fraction
+				initial := t.InitialQuantity
+				if initial <= 0 {
+					initial = t.Quantity // legacy positions opened before the field existed
+				}
+				qtyClose := initial * cfg.TP1Fraction
 				if qtyClose > t.Quantity {
 					qtyClose = t.Quantity
 				}
