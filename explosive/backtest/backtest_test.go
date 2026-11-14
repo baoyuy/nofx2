@@ -67,6 +67,14 @@ func TestBuildRowsComputesAndLabels(t *testing.T) {
 	}
 }
 
+func TestBuildRowsSkipsIncompleteDays(t *testing.T) {
+	day, bars := syntheticDay()
+	partial := bars[:200] // the day is still running
+	if rows := BuildRows("TESTUSDT", partial, map[int64]float64{day: 0.01}, 0.05, 0); len(rows) != 0 {
+		t.Fatalf("a running day must not be labelled: %d rows", len(rows))
+	}
+}
+
 func TestSpearmanSigns(t *testing.T) {
 	var rows []Row
 	for i := 0; i < 20; i++ {

@@ -96,8 +96,9 @@ func BuildRows(symbol string, bars []Bar, btcDay map[int64]float64, minGain, min
 	var out []Row
 	for _, day := range days {
 		dayBars := byDay[day]
-		if len(dayBars) < 60 {
-			continue // need most of the day
+		// Only complete days: today's partial close would make a fake label.
+		if len(dayBars) < 60 || dayBars[len(dayBars)-1].Time+5*60*1000 < day+24*3600*1000 {
+			continue
 		}
 		open := dayBars[0].Open
 		if open <= 0 {
