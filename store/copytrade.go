@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // CopyTradeFollow is a Binance lead trader on the copy-trade monitor page.
@@ -84,7 +85,8 @@ func (s *CopyTradeStore) initTables() error {
 	// and its 72h result was never asked for.
 	old := s.db.Migrator().HasTable(&CopyTradeSignal{}) && !s.db.Migrator().HasColumn(&CopyTradeSignal{}, "ranked")
 	if err := s.db.AutoMigrate(&CopyTradeFollow{}, &CopyTradeFill{}, &CopyTradeSignal{},
-		&CopyTradeExclusion{}, &CopyTradeAutoLog{}); err != nil {
+		&CopyTradeExclusion{}, &CopyTradeAutoLog{},
+		&CopyTradeBoardMember{}, &CopyTradePaperRoster{}, &CopyTradePaperFill{}); err != nil {
 		return err
 	}
 	if old {
@@ -201,6 +203,11 @@ type CopyTradeSignal struct {
 	RankScore        float64 `gorm:"column:rank_score"`
 	RankStrength     float64 `gorm:"column:rank_strength"`
 	RankIndependence float64 `gorm:"column:rank_independence"`
+	// The per-style reading (copytrade.StyleReadings). Not stored yet: it is
+	// measured in backtests first, so it adds no column.
+	StyleDirection string  `gorm:"-"`
+	StyleScore     float64 `gorm:"-"`
+	StyleTraders   int     `gorm:"-"`
 	// Ranked: among the hour's top signals by confidence, the set recorded
 	// before every coin was. Hit rates of Confidence count only these, so the
 	// record stays comparable across the change.
@@ -374,4 +381,165 @@ func (s *CopyTradeStore) FillTraders() ([]string, error) {
 // PruneFills drops fills older than beforeMs.
 func (s *CopyTradeStore) PruneFills(beforeMs int64) error {
 	return s.db.Delete(&CopyTradeFill{}, "time < ?", beforeMs).Error
+}
+
+// CopyTradeBoardMember tracks one lead trader seen on Binance's 90-day copier
+// PnL leaderboard. The board sync follows the top public accounts and records
+// private ones (whose trades Binance hides) as observe-only, so the page can
+// still show them.
+type CopyTradeBoardMember struct {
+	PortfolioID string `gorm:"column:portfolio_id;primaryKey" json:"portfolio_id"`
+	Nickname    string `gorm:"column:nickname" json:"nickname"`
+	AvatarURL   string `gorm:"column:avatar_url" json:"avatar_url"`
+	// PortfolioType is PUBLIC, PRIVATE or SIGNAL as the board reported it.
+	PortfolioType string `gorm:"column:portfolio_type" json:"portfolio_type"`
+	// Rank is the 1-based position on the board when last seen.
+	Rank int `gorm:"column:rank" json:"rank"`
+	// Followed is true for a public account the sync follows; Observe marks a
+	// private account kept for display only.
+	Followed bool `gorm:"column:followed" json:"followed"`
+	Observe  bool `gorm:"column:observe" json:"observe"`
+	// Missed counts consecutive daily scans the trader was absent from the
+	// board (only meaningful while Followed).
+	Missed int `gorm:"column:missed" json:"missed"`
+	// LastSeenAt is when the trader was last present on the board (ms).
+	LastSeenAt int64 `gorm:"column:last_seen_at" json:"last_seen_at"`
+	// Observe-only display data: last trade time and 30-day results.
+	LastTradeTime int64   `gorm:"column:last_trade_time" json:"last_trade_time"`
+	ROI30         float64 `gorm:"column:roi30" json:"roi30"`
+	PnL30         float64 `gorm:"column:pnl30" json:"pnl30"`
+	MDD30         float64 `gorm:"column:mdd30" json:"mdd30"`
+	WinRate30     float64 `gorm:"column:win_rate30" json:"win_rate30"`
+	// CoinShare is a JSON array of {symbol, ratio} for the trader's 30-day trade
+	// mix, best effort (the endpoint may be unavailable).
+	CoinShare   string    `gorm:"column:coin_share" json:"coin_share,omitempty"`
+	CoinShareAt int64     `gorm:"column:coin_share_at" json:"coin_share_at,omitempty"`
+	UpdatedAt   time.Time `gorm:"autoUpdateTime" json:"-"`
+}
+
+func (CopyTradeBoardMember) TableName() string { return "copytrade_board_members" }
+
+// SaveBoardMember inserts or replaces one board member row.
+func (s *CopyTradeStore) SaveBoardMember(m *CopyTradeBoardMember) error {
+	return s.db.Save(m).Error
+}
+
+// ListBoardMembers returns every tracked board member, ranked first.
+func (s *CopyTradeStore) ListBoardMembers() ([]CopyTradeBoardMember, error) {
+	var out []CopyTradeBoardMember
+	err := s.db.Order("observe, rank").Find(&out).Error
+	return out, err
+}
+
+// BoardMember returns one tracked member or gorm.ErrRecordNotFound.
+func (s *CopyTradeStore) BoardMember(id string) (*CopyTradeBoardMember, error) {
+	var m CopyTradeBoardMember
+	if err := s.db.First(&m, "portfolio_id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// DeleteBoardMember forgets one tracked board member.
+func (s *CopyTradeStore) DeleteBoardMember(id string) error {
+	return s.db.Delete(&CopyTradeBoardMember{}, "portfolio_id = ?", id).Error
+}
+
+// CopyTradePaperRoster is one fixed roster of paper-copy recording: the set of
+// traders to record was captured at StartedAt, and later board changes do not
+// change who is recorded. This removes survivor bias.
+type CopyTradePaperRoster struct {
+	ID        string    `gorm:"column:id;primaryKey" json:"id"`
+	StartedAt int64     `gorm:"column:started_at" json:"started_at"`
+	Members   string    `gorm:"column:members" json:"members"` // comma separated portfolio IDs
+	Note      string    `gorm:"column:note" json:"note"`
+	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
+}
+
+func (CopyTradePaperRoster) TableName() string { return "copytrade_paper_rosters" }
+
+// CopyTradePaperFill is one simulated follower fill: a lead trader's action,
+// copied at the mark price seen when we noticed it, with the delay recorded.
+// The unique index on the trader action makes re-scanning idempotent.
+type CopyTradePaperFill struct {
+	ID          int64   `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
+	RosterID    string  `gorm:"column:roster_id;not null;uniqueIndex:idx_paper_fill,priority:1" json:"roster_id"`
+	PortfolioID string  `gorm:"column:portfolio_id;not null;uniqueIndex:idx_paper_fill,priority:2;index" json:"portfolio_id"`
+	Nickname    string  `gorm:"column:nickname" json:"nickname"`
+	Symbol      string  `gorm:"column:symbol;not null;uniqueIndex:idx_paper_fill,priority:3" json:"symbol"`
+	Side        string  `gorm:"column:side;not null;uniqueIndex:idx_paper_fill,priority:4" json:"side"`
+	Action      string  `gorm:"column:action;not null;uniqueIndex:idx_paper_fill,priority:5" json:"action"`
+	TradeTime   int64   `gorm:"column:trade_time;not null;uniqueIndex:idx_paper_fill,priority:6;index" json:"trade_time"`
+	Qty         float64 `gorm:"column:qty;not null;uniqueIndex:idx_paper_fill,priority:7" json:"qty"`
+	TraderPrice float64 `gorm:"column:trader_price;not null;uniqueIndex:idx_paper_fill,priority:8" json:"trader_price"`
+	// SeenAt is when we first recorded the action (ms); DelayMs = SeenAt -
+	// TradeTime is the copying delay. SeenPrice is the mark price then, and
+	// BenchPrice the same-side BTC mark, both 0 when no price was available.
+	SeenAt     int64   `gorm:"column:seen_at" json:"seen_at"`
+	DelayMs    int64   `gorm:"column:delay_ms" json:"delay_ms"`
+	SeenPrice  float64 `gorm:"column:seen_price" json:"seen_price"`
+	BenchPrice float64 `gorm:"column:bench_price" json:"bench_price"`
+	Style      string  `gorm:"column:style" json:"style"`
+	Fee        float64 `gorm:"column:fee" json:"fee"`
+}
+
+func (CopyTradePaperFill) TableName() string { return "copytrade_paper_fills" }
+
+// SavePaperRoster inserts or replaces a roster.
+func (s *CopyTradeStore) SavePaperRoster(r *CopyTradePaperRoster) error {
+	return s.db.Save(r).Error
+}
+
+// ActivePaperRoster returns the newest roster, or nil when none was started.
+func (s *CopyTradeStore) ActivePaperRoster() (*CopyTradePaperRoster, error) {
+	var r CopyTradePaperRoster
+	err := s.db.Order("started_at DESC").First(&r).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// ListPaperRosters returns every roster, newest first.
+func (s *CopyTradeStore) ListPaperRosters() ([]CopyTradePaperRoster, error) {
+	var out []CopyTradePaperRoster
+	err := s.db.Order("started_at DESC").Find(&out).Error
+	return out, err
+}
+
+// AddPaperFills inserts simulated fills, ignoring duplicates (same roster,
+// trader action and price), and returns how many were new.
+func (s *CopyTradeStore) AddPaperFills(rows []CopyTradePaperFill) (int, error) {
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	res := s.db.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(rows, 200)
+	return int(res.RowsAffected), res.Error
+}
+
+// PaperFills returns every recorded fill of one roster, oldest first.
+func (s *CopyTradeStore) PaperFills(rosterID string) ([]CopyTradePaperFill, error) {
+	var out []CopyTradePaperFill
+	err := s.db.Where("roster_id = ?", rosterID).Order("trade_time, id").Find(&out).Error
+	return out, err
+}
+
+// PaperCursor is the newest trade time recorded for a member of a roster, or 0
+// when nothing was recorded yet.
+func (s *CopyTradeStore) PaperCursor(rosterID, portfolioID string) (int64, error) {
+	var cursor int64
+	err := s.db.Model(&CopyTradePaperFill{}).
+		Where("roster_id = ? AND portfolio_id = ?", rosterID, portfolioID).
+		Select("COALESCE(MAX(trade_time), 0)").Scan(&cursor).Error
+	return cursor, err
+}
+
+// CountPaperFills counts the recorded fills of one roster.
+func (s *CopyTradeStore) CountPaperFills(rosterID string) (int64, error) {
+	var n int64
+	err := s.db.Model(&CopyTradePaperFill{}).Where("roster_id = ?", rosterID).Count(&n).Error
+	return n, err
 }

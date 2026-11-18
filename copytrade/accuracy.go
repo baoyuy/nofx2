@@ -71,10 +71,15 @@ func callsOf(events []Event) []call {
 // scoreCalls rates calls against hourly bars per coin (open time in s, sorted).
 // Calls whose horizon has not passed, or with no bar, are left out.
 func scoreCalls(calls []call, bars map[string][]Bar, now time.Time) Accuracy {
+	return scoreCallsOver(calls, bars, now, accuracyHorizon)
+}
+
+// scoreCallsOver is scoreCalls with the price read horizon after each call.
+func scoreCallsOver(calls []call, bars map[string][]Bar, now time.Time, horizon time.Duration) Accuracy {
 	var a Accuracy
 	var sum float64
 	for _, c := range calls {
-		target := time.UnixMilli(c.at).Add(accuracyHorizon)
+		target := time.UnixMilli(c.at).Add(horizon)
 		if target.After(now) {
 			continue
 		}

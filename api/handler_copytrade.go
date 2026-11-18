@@ -63,6 +63,8 @@ func (s *Server) StartCopyTrade(ctx context.Context) {
 	s.copyTrade = m
 	// Off until the user turns it on; runs only after the first polls.
 	m.SetAuto(s.loadCopyTradeAuto())
+	// The board sync decides who is followed; enabled by default.
+	m.SetBoardSync(s.loadCopyTradeBoard())
 	// Before traders start: their first cycle reads this.
 	m.Load()
 	kernel.CopyTradeResolver = func() kernel.CopyTradeView { return copyTradeView(m, time.Now()) }
@@ -247,6 +249,7 @@ func (s *Server) registerCopyTradeRoutes(protected *gin.RouterGroup) {
 	protected.PUT("/copytrade/proxy", s.handleCopyTradeProxyPut)
 	protected.POST("/copytrade/proxy/test", s.handleCopyTradeProxyTest)
 	s.registerCopyTradeAutoRoutes(protected)
+	s.registerCopyTradeBoardRoutes(protected)
 }
 
 func (s *Server) copyTradeReady(c *gin.Context) bool {
@@ -298,7 +301,11 @@ func (s *Server) handleCopyTradeStatus(c *gin.Context) {
 		if sn.Error != "" {
 			failing++
 		}
-		if !sn.UpdatedAt.IsZero() && (oldest.IsZero() || sn.UpdatedAt.Before(oldest)) {
+		// A dormant trader is polled slowly on purpose; counting it would make
+		// the status bar look stale whenever the quiet traders were last seen a
+		// while ago. Private/closed never refresh either.
+		if !sn.UpdatedAt.IsZero() && !copytrade.NoData(sn.Follow) && !sn.Dormant(now) &&
+			(oldest.IsZero() || sn.UpdatedAt.Before(oldest)) {
 			oldest = sn.UpdatedAt
 		}
 	}

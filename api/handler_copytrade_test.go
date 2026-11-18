@@ -78,7 +78,7 @@ func TestCopyTradeFollowNeedsAnID(t *testing.T) {
 	if w := call(router, "POST", "/copytrade/follows", "", `{"id":"hello"}`); w.Code != http.StatusBadRequest {
 		t.Fatalf("text without an ID must be rejected: %d", w.Code)
 	}
-	if w := call(router, "GET", "/copytrade/status", "", ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"max_follows":100`) {
+	if w := call(router, "GET", "/copytrade/status", "", ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"max_follows":200`) {
 		t.Fatalf("status: %s", w.Body.String())
 	}
 }

@@ -75,7 +75,7 @@ export interface FollowedTrader {
   /** the same trader's public portfolio, when private */
   public_id?: string
   /** auto = picked by auto-follow (may be dropped); manual = never dropped */
-  source?: 'auto' | 'manual'
+  source?: 'auto' | 'manual' | 'board'
   /** ms when auto-follow picked the trader */
   picked_at?: number
   followed_at: string
@@ -120,6 +120,8 @@ export interface TraderPosition {
   opened_recently?: boolean
   /** an already open position was added to within 24 hours */
   added_recently?: boolean
+  /** a stock or commodity contract, which a crypto-only strategy skips */
+  tradfi?: boolean
 }
 
 export interface TradeEvent {
@@ -134,6 +136,8 @@ export interface TradeEvent {
   fee: number
   position_qty: number
   untracked?: boolean
+  /** a stock or commodity contract (see TraderPosition.tradfi) */
+  tradfi?: boolean
 }
 
 export interface TraderSnapshot {
@@ -209,6 +213,84 @@ export interface AutoFollowInfo {
   manual_follows: number
   min_target: number
   max_target: number
+}
+
+export interface BoardSyncState {
+  config: { enabled: boolean }
+  last_run: string
+  error?: string
+  scanned: number
+  public: number
+  private: number
+  following: number
+  added: number
+  dropped: number
+  kept: number
+  running: boolean
+}
+
+export interface BoardMember {
+  portfolio_id: string
+  nickname: string
+  avatar_url: string
+  /** PUBLIC | PRIVATE | SIGNAL as the board reported it */
+  portfolio_type: string
+  rank: number
+  followed: boolean
+  observe: boolean
+  missed: number
+  last_seen_at: number
+  last_trade_time: number
+  roi30: number
+  pnl30: number
+  mdd30: number
+  win_rate30: number
+  /** JSON array of {symbol, ratio} for an observe-only private trader */
+  coin_share?: string
+  coin_share_at?: number
+}
+
+export interface BoardInfo {
+  state: BoardSyncState
+  members: BoardMember[] | null
+  following: number
+  observe: number
+  board_size: number
+  max_follows: number
+}
+
+/** One line of the simulated-following report. */
+export interface PaperRow {
+  table: string
+  label: string
+  trips: number
+  traders: number
+  win: number
+  avg: number
+  med: number
+  total: number
+  beat: number
+  avg_excess: number
+  max_open: number
+  max_dd: number
+  roi: number
+  avg_delay_min: number
+}
+
+export interface PaperRoster {
+  id: string
+  started_at: number
+  members: string
+  note: string
+  created_at: string
+}
+
+export interface PaperInfo {
+  roster: PaperRoster | null
+  rosters: PaperRoster[] | null
+  fills: number
+  rows: PaperRow[] | null
+  members?: number
 }
 
 export interface FeedItem extends TradeEvent {
@@ -483,6 +565,34 @@ export const copyTradeApi = {
 
   getHitRate: (days = 30) =>
     get<{ days: number; rows: HitRate[] }>('/copytrade/hit-rate', { days }),
+
+  getBoard: () => get<BoardInfo>('/copytrade/board'),
+
+  async setBoard(enabled: boolean): Promise<BoardSyncState> {
+    const r = await httpClient.request<{ state: BoardSyncState }>(
+      `${API_BASE}/copytrade/board`,
+      { method: 'PUT', data: { enabled }, silent: true }
+    )
+    return unwrap(r, 'Save failed').state
+  },
+
+  async runBoard(): Promise<void> {
+    const r = await httpClient.request<{ ok: boolean }>(
+      `${API_BASE}/copytrade/board/run`,
+      { method: 'POST', silent: true }
+    )
+    unwrap(r, 'Run failed')
+  },
+
+  getPaper: () => get<PaperInfo>('/copytrade/paper'),
+
+  async startPaper(ids?: string[]): Promise<PaperRoster> {
+    const r = await httpClient.request<{ roster: PaperRoster }>(
+      `${API_BASE}/copytrade/paper/start`,
+      { method: 'POST', data: { ids: ids || [] }, silent: true }
+    )
+    return unwrap(r, 'Start failed').roster
+  },
 
   getAutoFollow: () => get<AutoFollowInfo>('/copytrade/auto'),
 

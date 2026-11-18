@@ -35,7 +35,7 @@ func (s *Server) loadCopyTradeAuto() copytrade.AutoConfig {
 
 func (s *Server) registerCopyTradeAutoRoutes(protected *gin.RouterGroup) {
 	s.route(protected, "GET", "/copytrade/auto", "Auto-follow setting, latest run, recent actions and excluded traders", s.handleCopyTradeAutoGet)
-	s.route(protected, "PUT", "/copytrade/auto", "Set auto-follow (body: enabled bool, target 5-100 traders); runs soon when enabled", s.handleCopyTradeAutoPut)
+	s.route(protected, "PUT", "/copytrade/auto", "Set auto-follow (body: enabled bool, target 5-200 traders); runs soon when enabled", s.handleCopyTradeAutoPut)
 	s.route(protected, "DELETE", "/copytrade/auto/exclusions/:id", "Let auto-follow pick an excluded lead trader again", s.handleCopyTradeAutoUnexclude)
 }
 
@@ -78,7 +78,7 @@ func (s *Server) handleCopyTradeAutoPut(c *gin.Context) {
 		return
 	}
 	if req.Target < copytrade.MinAutoTarget || req.Target > copytrade.MaxFollows {
-		SafeBadRequest(c, "target must be 5-100")
+		SafeBadRequest(c, "target must be 5-200")
 		return
 	}
 	raw, _ := json.Marshal(req)

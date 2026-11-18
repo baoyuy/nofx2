@@ -148,7 +148,7 @@ func (s *Scheduler) policy(r *http.Request) requestPolicy {
 			weight = 80
 		}
 	case "binance-copytrade":
-		p.limits = append(p.limits, Limit{Key: provider + ":spacing", Capacity: 1, Window: 4 * time.Second, Weight: 1})
+		p.limits = append(p.limits, Limit{Key: provider + ":spacing", Capacity: 1, Window: 2 * time.Second, Weight: 1})
 	case "bybit":
 		// Group all API-key aliases by endpoint so they cannot multiply UID quotas.
 		if private {

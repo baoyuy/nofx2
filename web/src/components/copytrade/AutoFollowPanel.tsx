@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import useSWR from 'swr'
-import { Loader2 } from 'lucide-react'
+import { ChevronDown, Loader2 } from 'lucide-react'
 import { api } from '../../lib/api'
 import type { AutoFollowInfo } from '../../lib/api/copyTrade'
 import { notify } from '../../lib/notify'
@@ -15,7 +15,19 @@ const actionText = (language: string, a: string) =>
       ? tr(language, '淘汰', 'Dropped')
       : a === 'skip'
         ? tr(language, '未通过', 'Not picked')
-        : tr(language, '减员', 'Trimmed')
+        : tr(language, '清出', 'Trimmed')
+
+// The rules used to be one 250-character paragraph under the controls, which
+// everyone scrolled past. Remember whether this browser wanted them open.
+const RULES_KEY = 'nofx.copytrade.rulesOpen'
+
+const loadRulesOpen = () => {
+  try {
+    return localStorage.getItem(RULES_KEY) === '1'
+  } catch {
+    return false
+  }
+}
 
 /**
  * Auto-follow: the user sets how many lead traders to follow; the backend
@@ -36,6 +48,7 @@ export function AutoFollowPanel({
   const [target, setTarget] = useState('')
   const [saving, setSaving] = useState(false)
   const [showLog, setShowLog] = useState(false)
+  const [rulesOpen, setRulesOpen] = useState(loadRulesOpen)
   const cfg = data?.state.config
   const savedTarget = cfg?.target
   useEffect(() => {
@@ -46,6 +59,26 @@ export function AutoFollowPanel({
   const n = Number(target)
   const valid =
     Number.isInteger(n) && n >= data.min_target && n <= data.max_target
+  const following = data.auto_follows + data.manual_follows
+  const progress = cfg.target
+    ? Math.min(100, Math.round((following / cfg.target) * 100))
+    : 0
+  const log = data.log || []
+  const exclusions = data.exclusions || []
+  const ran = st.last_run && !st.last_run.startsWith('0001')
+  const lastRun = ran
+    ? [
+        st.added ? tr(language, `新关注 ${st.added}`, `+${st.added}`) : '',
+        st.dropped
+          ? tr(language, `淘汰 ${st.dropped}`, `${st.dropped} dropped`)
+          : '',
+        st.trimmed
+          ? tr(language, `清出 ${st.trimmed}`, `${st.trimmed} trimmed`)
+          : '',
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : ''
 
   const save = async (enabled: boolean) => {
     if (!valid) return
@@ -68,9 +101,25 @@ export function AutoFollowPanel({
       notify.error(e instanceof Error ? e.message : String(e))
     }
   }
-  const log = data.log || []
-  const exclusions = data.exclusions || []
-  const ran = st.last_run && !st.last_run.startsWith('0001')
+  const toggleRules = () => {
+    const next = !rulesOpen
+    setRulesOpen(next)
+    try {
+      localStorage.setItem(RULES_KEY, next ? '1' : '0')
+    } catch {
+      // storage unavailable: the toggle still works for this visit
+    }
+  }
+  const ruleBlock = (title: string, items: string[]) => (
+    <div>
+      <div className="mb-0.5 font-medium text-nofx-text">{title}</div>
+      <ul className="list-disc space-y-0.5 pl-4">
+        {items.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  )
 
   return (
     <section className={`${ui.panel} mb-3`}>
@@ -105,7 +154,7 @@ export function AutoFollowPanel({
               disabled={saving || !valid || n === cfg.target}
               onClick={() => void save(true)}
             >
-              {tr(language, '保存人数', 'Save target')}
+              {tr(language, '应用', 'Apply')}
             </button>
             <button
               type="button"
@@ -129,20 +178,71 @@ export function AutoFollowPanel({
         {saving || st.running ? (
           <Loader2 className="h-3 w-3 animate-spin text-nofx-text-muted" />
         ) : null}
+        <span className={`${ui.muted} tabular-nums`}>
+          {tr(
+            language,
+            `当前 ${following} / 目标 ${cfg.target}`,
+            `${following} of ${cfg.target}`
+          )}
+        </span>
+        <button
+          type="button"
+          onClick={toggleRules}
+          aria-expanded={rulesOpen}
+          className="inline-flex items-center gap-1 text-xs text-nofx-text-muted hover:text-nofx-gold"
+        >
+          {tr(language, '规则说明', 'How it picks')}
+          <ChevronDown
+            className={`h-3 w-3 transition-transform ${rulesOpen ? 'rotate-180' : ''}`}
+          />
+        </button>
+        {log.length || exclusions.length ? (
+          <button
+            type="button"
+            className="ml-auto inline-flex items-center gap-1 rounded-lg border border-[rgba(25,36,52,0.14)] px-2 py-1 text-xs text-nofx-gold hover:border-nofx-gold"
+            onClick={() => setShowLog(!showLog)}
+          >
+            {showLog
+              ? tr(language, '收起记录', 'Hide history')
+              : tr(
+                  language,
+                  `查看记录（${log.length} 条操作，${exclusions.length} 人排除）`,
+                  `History (${log.length} actions, ${exclusions.length} excluded)`
+                )}
+          </button>
+        ) : null}
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span
+          className="h-1.5 w-32 overflow-hidden rounded-full bg-nofx-bg-deeper"
+          title={tr(
+            language,
+            `已关注 ${following} 人，目标 ${cfg.target} 人`,
+            `${following} followed of a ${cfg.target} target`
+          )}
+        >
+          <span
+            className="block h-full rounded-full bg-nofx-gold"
+            style={{ width: `${progress}%` }}
+          />
+        </span>
         <span className={ui.muted}>
           {tr(
             language,
             `自动 ${data.auto_follows} 人 · 手动 ${data.manual_follows} 人`,
             `${data.auto_follows} auto · ${data.manual_follows} manual`
           )}
-          {ran
-            ? tr(
-                language,
-                ` · ${ago(language, Date.parse(st.last_run))}检查：新关注 ${st.added}，淘汰 ${st.dropped}，减员 ${st.trimmed}`,
-                ` · checked ${ago(language, Date.parse(st.last_run))}: +${st.added}, dropped ${st.dropped}, trimmed ${st.trimmed}`
-              )
-            : ''}
         </span>
+        {ran ? (
+          <span className={ui.muted}>
+            {tr(
+              language,
+              `· 上次检查 ${ago(language, Date.parse(st.last_run))}`,
+              `· checked ${ago(language, Date.parse(st.last_run))}`
+            )}
+            {lastRun ? ` · ${lastRun}` : ''}
+          </span>
+        ) : null}
       </div>
       {!valid && target !== '' ? (
         <p className="mt-1 text-xs text-nofx-danger">
@@ -158,27 +258,71 @@ export function AutoFollowPanel({
           <NoticeText text={st.error} />
         </p>
       ) : null}
-      <p className={`${ui.muted} mt-1`}>
-        {tr(
-          language,
-          '每小时检查一次。补人：从币安 90 天跟单收益榜里挑带单满 60 天、90 天收益为正且回撤不超过 30%、跟单者赚钱、不是私域账户、余额至少 5000 U、近 30 天也赚钱的人（不公开持仓的也可以，持仓按公开成交推算），每次最多补 10 人（每人要回填 30 天成交，比较慢）。新关注的人观察 7 天，期间投票只算一半。淘汰：摊平型、30 天收益为负、回撤超过 40%、余额低于 1000 U、过半持仓是一周以上的被套单、两周没交易，每天最多淘汰目标人数的 10%，淘汰后 30 天内不再选他。你手动关注的人只标记，不会被自动取关；你手动取关的人不会再被自动选回来。',
-          "Checks hourly. Picks from Binance's 90-day copier-PnL board: leading 60+ days, positive 90-day ROI with drawdown ≤ 30%, copiers in profit, not private (hidden positions are fine, they are inferred from public trades), balance ≥ 5,000 USDT and a profitable last 30 days; at most 10 per run (each backfills 30 days of trades, which is slow). New picks are watched for 7 days and vote half. Drops traders who average down, lose over 30 days, draw down over 40%, fall under 1,000 USDT, sit on week-old trapped positions for over half their book, or stop trading for two weeks; at most 10% of the target a day, kept out for 30 days. Your manual follows are only flagged, never dropped; traders you unfollow are not picked again."
-        )}
-      </p>
-      {log.length || exclusions.length ? (
-        <button
-          type="button"
-          className="mt-1 text-xs text-nofx-gold hover:underline"
-          onClick={() => setShowLog(!showLog)}
+      {rulesOpen ? (
+        <div
+          className={`${ui.muted} mt-2 space-y-1.5 border-t border-[rgba(25,36,52,0.08)] pt-2`}
         >
-          {showLog
-            ? tr(language, '收起记录', 'Hide history')
-            : tr(
-                language,
-                `查看记录（${log.length} 条操作，${exclusions.length} 人排除）`,
-                `Show history (${log.length} actions, ${exclusions.length} excluded)`
-              )}
-        </button>
+          <p>
+            {tr(
+              language,
+              '每小时检查一次，每次最多补 10 人、淘汰目标人数的 10%。',
+              'Runs hourly: at most 10 picks and 10% of the target dropped per run.'
+            )}
+          </p>
+          {ruleBlock(tr(language, '入选条件', 'To be picked'), [
+            tr(language, '带单满 60 天', 'Leading for 60+ days'),
+            tr(
+              language,
+              '90 天收益为正，回撤不超过 30%',
+              'Positive 90-day ROI, drawdown ≤ 30%'
+            ),
+            tr(
+              language,
+              '近 30 天也赚钱，且跟单者赚钱',
+              'A profitable last 30 days, with copiers in profit'
+            ),
+            tr(
+              language,
+              '不是私域账户，余额至少 5000 U（不公开持仓也可以，按成交推算）',
+              'Not private, balance ≥ 5,000 USDT (hidden positions are fine, they are inferred)'
+            ),
+          ])}
+          {ruleBlock(tr(language, '淘汰规则', 'To be dropped'), [
+            tr(
+              language,
+              '摊平型、两周没交易、过半持仓是一周以上的被套单',
+              'Averages down, no trades for two weeks, or over half the book is week-old trapped positions'
+            ),
+            tr(
+              language,
+              '30 天收益为负、回撤超过 40%',
+              'Negative 30-day ROI, drawdown over 40%'
+            ),
+            tr(language, '余额低于 1000 U', 'Balance under 1,000 USDT'),
+            tr(
+              language,
+              '成交记录两天都没读完',
+              'Trade history unreadable for two days'
+            ),
+          ])}
+          {ruleBlock(tr(language, '节奏与你', 'Timing and your choices'), [
+            tr(
+              language,
+              '新关注的人观察 7 天，期间投票只算一半',
+              'New picks are watched for 7 days; their votes count half'
+            ),
+            tr(
+              language,
+              '淘汰后 30 天内不再选他（已关闭或私域的 90 天）',
+              'Dropped traders stay out for 30 days (90 for closed or private)'
+            ),
+            tr(
+              language,
+              '你手动关注的人只标记不淘汰；你手动取关的人不会再被自动选回来',
+              'Your manual follows are only flagged; traders you unfollow are never picked again'
+            ),
+          ])}
+        </div>
       ) : null}
       {showLog ? (
         <div className="mt-2 grid gap-3 text-xs md:grid-cols-2">

@@ -31,7 +31,7 @@ const (
 	probation       = 7 * 24 * time.Hour
 	probationWeight = 0.5
 	// maxAddsPerRun bounds the backfills started at once: each takes up to a
-	// few dozen requests at one per 4 s, shared with live polling.
+	// few dozen requests at one per 2 s, shared with live polling.
 	maxAddsPerRun = 10
 	// maxChecksPerRun bounds the profile requests spent on candidates.
 	maxChecksPerRun = 20

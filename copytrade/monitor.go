@@ -16,8 +16,9 @@ import (
 
 const (
 	// MaxFollows bounds the followed traders so one refresh round stays a few
-	// minutes at the request spacing.
-	MaxFollows = 100
+	// minutes at the request spacing. It leaves room for the board's 100 public
+	// accounts plus the user's own manual follows.
+	MaxFollows = 200
 
 	// History is fetched one page at a time back to the retained range;
 	// per-page yielding replaces the old hard page cap that skipped fills.
@@ -95,6 +96,9 @@ type Snapshot struct {
 	Accuracy Accuracy `json:"accuracy"`
 	// AccuracyBy is the same record per market class (see ClassOf).
 	AccuracyBy map[string]Accuracy `json:"accuracy_by,omitempty"`
+	// StyleAccuracy is the record at the horizon of the trader's own style
+	// (see stylescore.go). Set in backtests only, until the reading is live.
+	StyleAccuracy Accuracy `json:"-"`
 
 	// Independent deadlines keep history backfills from blocking live work.
 	nextDue     time.Time // pause / initial stagger
@@ -132,6 +136,14 @@ type Monitor struct {
 	loadOnce sync.Once
 
 	auto autoManager
+
+	board boardManager
+
+	// paper recording: the fixed roster and per-member record cursors.
+	paperMu      sync.Mutex
+	paperRoster  *store.CopyTradePaperRoster
+	paperMembers map[string]bool
+	paperCursor  map[string]int64
 
 	accMu      sync.RWMutex
 	accuracy   map[string]Accuracy
@@ -185,6 +197,9 @@ func (m *Monitor) Load() {
 			m.mu.Lock()
 			m.snaps[f.PortfolioID] = snap
 			m.mu.Unlock()
+		}
+		if err := m.ReloadPaperRoster(); err != nil {
+			logger.Warnf("copy-trade: load paper roster: %v", err)
 		}
 	})
 }
@@ -258,7 +273,10 @@ func (m *Monitor) Run(ctx context.Context) {
 	m.Load()
 	go m.signalLoop(ctx)
 	go m.markLoop(ctx)
-	go m.autoLoop(ctx)
+	// Rule-based auto-follow is disabled; the board sync decides who is
+	// followed. autoLoop and RunAuto remain for rollback.
+	go m.boardLoop(ctx)
+	go m.paperLoop(ctx)
 	go m.accuracyLoop(ctx)
 	prune := time.NewTicker(time.Hour)
 	defer prune.Stop()
@@ -582,7 +600,10 @@ func (m *Monitor) view(s *Snapshot, marks map[string]float64, now time.Time, pee
 			}
 		}
 	}
-	snap.Positions = assessHealth(positions, marks, snap.Follow.MarginBalance, now)
+	snap.Positions, snap.Events = stampMarketClass(
+		assessHealth(positions, marks, snap.Follow.MarginBalance, now),
+		snap.Events,
+	)
 	snap.Accuracy, snap.AccuracyBy = m.accuracyOf(s.Follow.PortfolioID)
 	snap.Review = DropReasonsIn(snap, now, peers)
 	snap.Probation = onProbation(snap.Follow, now)
@@ -609,4 +630,21 @@ func (m *Monitor) Leaderboard(ctx context.Context, q LeaderQuery) (LeaderPage, e
 	m.boards[key] = cachedBoard{at: time.Now(), page: page}
 	m.boardMu.Unlock()
 	return page, nil
+}
+
+// stampMarketClass marks stock and commodity rows so the page can show which
+// of them a crypto-only strategy would skip. It copies both slices: the stored
+// snapshot is shared with the poller and with every reader.
+func stampMarketClass(positions []Position, events []Event) ([]Position, []Event) {
+	outPositions := make([]Position, len(positions))
+	copy(outPositions, positions)
+	for i := range outPositions {
+		outPositions[i].TradFi = ClassOf(outPositions[i].Symbol) == ClassTradFi
+	}
+	outEvents := make([]Event, len(events))
+	copy(outEvents, events)
+	for i := range outEvents {
+		outEvents[i].TradFi = ClassOf(outEvents[i].Symbol) == ClassTradFi
+	}
+	return outPositions, outEvents
 }

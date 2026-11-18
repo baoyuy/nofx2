@@ -591,8 +591,8 @@ export function DiscoverTab({
         <p className={`${ui.muted} mb-2`}>
           {tr(
             language,
-            `已扫描前 ${pages} 页 ${list.length} 人（币安共 ${total} 位带单员），符合筛选 ${rows.length} 人。筛选和点表头排序都在已扫描的人里进行，想找得更全就多扫几页。每页约 4 秒，榜单缓存 10 分钟。`,
-            `Scanned ${pages} page(s), ${list.length} traders (of ${total} on Binance); ${rows.length} match. Filters and column sorting apply to scanned traders, so scan more pages for a wider search. About 4 s per page; the ranking is cached for 10 minutes.`
+            `已扫描前 ${pages} 页 ${list.length} 人（币安共 ${total} 位带单员），符合筛选 ${rows.length} 人。筛选和点表头排序都在已扫描的人里进行，想找得更全就多扫几页。每页约 2 秒，榜单缓存 10 分钟。`,
+            `Scanned ${pages} page(s), ${list.length} traders (of ${total} on Binance); ${rows.length} match. Filters and column sorting apply to scanned traders, so scan more pages for a wider search. About 2 s per page; the ranking is cached for 10 minutes.`
           )}
         </p>
         {error ? (

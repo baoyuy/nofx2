@@ -44,7 +44,7 @@ func DefaultConfig() Config {
 		"default":           {60, 2, 4, 1},
 		"binance-futures":   {1200, 15, 8, 40},
 		"binance-spot":      {2400, 10, 8, 100},
-		"binance-copytrade": {12, 1, 1, 1},
+		"binance-copytrade": {30, 1, 1, 1},
 		"bybit":             {1800, 40, 8, 1},
 		"okx":               {600, 10, 8, 1},
 		"bitget":            {600, 10, 8, 1},

@@ -40,6 +40,8 @@ type Leader struct {
 	TradFiTag    string       `json:"tradFiTag"`
 	StartTime    int64        `json:"startTime"`
 	Chart        []ChartPoint `json:"chartItems"`
+	// PortfolioType is PUBLIC, PRIVATE or SIGNAL (see Detail).
+	PortfolioType string `json:"portfolioType"`
 }
 
 type LeaderPage struct {
@@ -132,6 +134,42 @@ func (c *Client) Performance(ctx context.Context, portfolioID, timeRange string)
 	err := c.do(ctx, "/v1/public/future/copy-trade/lead-portfolio/performance?portfolioId="+
 		url.QueryEscape(portfolioID)+"&timeRange="+url.QueryEscape(timeRange), nil, &out)
 	return out, err
+}
+
+// CoinShare is one coin's share of a portfolio's 30-day traded value. The
+// endpoint answers private portfolios too, which is why it is the one glimpse
+// of what an otherwise unreadable private trader is trading.
+type CoinShare struct {
+	Symbol string `json:"symbol"`
+	Coin   string `json:"coin"`
+	Ratio  Num    `json:"ratio"`
+	Share  Num    `json:"share"`
+	Rate   Num    `json:"rate"`
+}
+
+// CoinShares reads a portfolio's 30-day trade mix, largest first. Binance hides
+// the trades of private portfolios but still shows this aggregate.
+func (c *Client) CoinShares(ctx context.Context, portfolioID, timeRange string) ([]CoinShare, error) {
+	var rows []CoinShare
+	err := c.do(ctx, "/v1/public/future/copy-trade/lead-portfolio/performance/coin?portfolioId="+
+		url.QueryEscape(portfolioID)+"&timeRange="+url.QueryEscape(timeRange), nil, &rows)
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		if rows[i].Symbol == "" {
+			rows[i].Symbol = rows[i].Coin
+		}
+		if rows[i].Share == 0 {
+			switch {
+			case rows[i].Ratio != 0:
+				rows[i].Share = rows[i].Ratio
+			default:
+				rows[i].Share = rows[i].Rate
+			}
+		}
+	}
+	return rows, nil
 }
 
 // LivePosition is one row of a portfolio's public positions. Binance lists

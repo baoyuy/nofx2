@@ -136,6 +136,7 @@ func (m *Monitor) refresh(ctx context.Context, id string) {
 		interval = profileInterval
 	}
 	m.rebuild(cur, cur.live)
+	m.recordPaper(cur)
 	dormant := cur.dormant(now)
 	if kind == refreshFills {
 		if pending != nil {

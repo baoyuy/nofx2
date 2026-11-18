@@ -26,6 +26,10 @@ type BacktestInput struct {
 type BacktestResult struct {
 	Hours, Signals, Traders int
 	Rates                   []HitRate
+	// Styles is how each style's traders did on their own calls, as of To.
+	Styles []StyleStat
+	// Follow is what following each open would have returned (callfollow.go).
+	Follow []CallRow
 }
 
 // backtestScore stands in for the trader score in a backtest.
@@ -71,6 +75,7 @@ func Backtest(in BacktestInput) BacktestResult {
 		closes[symbol] = m
 	}
 	res := BacktestResult{Traders: len(traders)}
+	follow := newCallCollector()
 	var sigs []store.CopyTradeSignal
 	end := in.To.Unix()
 	for at := in.From.Truncate(time.Hour); !at.After(in.To); at = at.Add(time.Hour) {
@@ -83,6 +88,7 @@ func Backtest(in BacktestInput) BacktestResult {
 			}
 		}
 		snaps := make([]Snapshot, 0, len(traders))
+		var opens []rawOpen
 		for _, t := range traders {
 			ms, since := at.UnixMilli(), at.Add(-retention).UnixMilli()
 			hi := sort.Search(len(t.fills), func(i int) bool { return t.fills[i].Time > ms })
@@ -112,6 +118,7 @@ func Backtest(in BacktestInput) BacktestResult {
 			s.HighFreq = s.OrdersPerDay >= highFreqOrders
 			s.Positions = assessHealth(t.raw, marks, s.Follow.MarginBalance, at)
 			s.Accuracy = scoreCalls(t.calls, in.Bars, at)
+			s.StyleAccuracy = scoreCallsOver(t.calls, in.Bars, at, styleHorizon(s.Style.Kind))
 			s.AccuracyBy = map[string]Accuracy{}
 			by := map[string][]call{}
 			for _, c := range t.calls {
@@ -121,21 +128,59 @@ func Backtest(in BacktestInput) BacktestResult {
 				s.AccuracyBy[class] = scoreCalls(list, in.Bars, at)
 			}
 			snaps = append(snaps, s)
+			// This hour's opens, with what is known of the trader now.
+			for _, e := range s.Events {
+				if e.Time <= at.Add(-time.Hour).UnixMilli() {
+					break
+				}
+				if e.Action != "open" || e.Price <= 0 {
+					continue
+				}
+				opens = append(opens, rawOpen{trader: t.id, votes: styleVotes(s), callEvent: callEvent{
+					kind: styleKindOf(s), symbol: e.Symbol, side: e.Side, at: e.Time, hour: hour, price: e.Price,
+					own: int(styleHorizon(s.Style.Kind).Hours()), prior: priorBand(s.StyleAccuracy)}})
+			}
 		}
+		follow.add(opens)
 		coins := SymbolsAt(snaps, at)
 		sort.SliceStable(coins, func(a, b int) bool { return coins[a].Confidence.Score > coins[b].Confidence.Score })
+		// The per-style reading keeps its own hourly top, as Confidence does,
+		// so the two records are of the same size.
+		styles := StyleReadings(snaps, at)
+		styleTop := map[string]bool{}
+		{
+			order := make([]string, 0, len(styles))
+			for symbol, r := range styles {
+				if r.Direction != "neutral" && r.Score > 0 && marks[symbol] > 0 {
+					order = append(order, symbol)
+				}
+			}
+			sort.Slice(order, func(a, b int) bool {
+				if styles[order[a]].Score != styles[order[b]].Score {
+					return styles[order[a]].Score > styles[order[b]].Score
+				}
+				return order[a] < order[b]
+			})
+			for _, symbol := range order[:min(len(order), maxSignalsPerHour)] {
+				styleTop[symbol] = true
+			}
+		}
 		ranked := 0
 		for _, c := range coins {
 			called := c.Confidence.Direction != "neutral" && c.Confidence.Score > 0
 			shadowed := c.Shadow.Direction != "neutral" && c.Shadow.Score > 0
 			price := marks[c.Symbol]
-			if (!(called && ranked < maxSignalsPerHour) && !shadowed) || price <= 0 {
+			if (!(called && ranked < maxSignalsPerHour) && !shadowed && !styleTop[c.Symbol]) || price <= 0 {
 				continue
 			}
 			row := SignalRow(c, hour, price)
 			if called && ranked < maxSignalsPerHour {
 				ranked++
 				row.Ranked = true
+			}
+			if styleTop[c.Symbol] {
+				r := styles[c.Symbol]
+				row.StyleDirection, row.StyleScore, row.StyleTraders = r.Direction, r.Score, r.Traders
 			}
 			for _, h := range []struct {
 				hours      int64
@@ -158,6 +203,38 @@ func Backtest(in BacktestInput) BacktestResult {
 		res.Hours++
 	}
 	res.Signals = len(sigs)
+	res.Follow = followStats(follow.events, closes, in.Bars, in.From.Truncate(time.Hour).Unix(), end)
 	res.Rates = hitRates(sigs, 0)
+	// Each style's own record, from everything known at the end.
+	stats := map[string]*StyleStat{}
+	holds := map[string][]float64{}
+	for _, t := range traders {
+		if !t.built {
+			continue
+		}
+		s := t.snap
+		s.OrdersPerDay = ordersSince(s.Events, in.To.Add(-24*time.Hour).UnixMilli())
+		s.HighFreq = s.OrdersPerDay >= highFreqOrders
+		kind := styleKindOf(s)
+		st := stats[kind]
+		if st == nil {
+			st = &StyleStat{Kind: kind, OwnHours: int(styleHorizon(s.Style.Kind).Hours())}
+			stats[kind] = st
+		}
+		st.Traders++
+		st.Own = mergeAccuracy(st.Own, scoreCallsOver(t.calls, in.Bars, in.To, styleHorizon(s.Style.Kind)))
+		st.Day = mergeAccuracy(st.Day, scoreCalls(t.calls, in.Bars, in.To))
+		if s.Style.MedianHoldHours > 0 {
+			holds[kind] = append(holds[kind], s.Style.MedianHoldHours)
+		}
+	}
+	for kind, st := range stats {
+		if h := holds[kind]; len(h) > 0 {
+			sort.Float64s(h)
+			st.MedianHold = h[len(h)/2]
+		}
+		res.Styles = append(res.Styles, *st)
+	}
+	sort.Slice(res.Styles, func(a, b int) bool { return res.Styles[a].Kind < res.Styles[b].Kind })
 	return res
 }

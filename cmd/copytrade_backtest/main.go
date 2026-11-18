@@ -161,13 +161,16 @@ func loadBars(symbols map[string]bool, to time.Time, cachePath string) (map[stri
 
 func print(res copytrade.BacktestResult) {
 	titles := map[string]string{
-		copytrade.GroupConfidence: "Confidence (who holds) — top 30 an hour, by band",
-		copytrade.GroupOpeners:    "Confidence signals by fresh openers on the leading side",
-		copytrade.GroupShadow:     "Fresh-call score (who opened lately) — by band",
-		copytrade.GroupCalls:      "Fresh-call signals by independent callers",
+		copytrade.GroupConfidence:   "Confidence (who holds) — top 30 an hour, by band",
+		copytrade.GroupOpeners:      "Confidence signals by fresh openers on the leading side",
+		copytrade.GroupShadow:       "Fresh-call score (who opened lately) — by band",
+		copytrade.GroupCalls:        "Fresh-call signals by independent callers",
+		copytrade.GroupStyle:        "Per-style score (each trader rated inside their style) — top 30 an hour, by band",
+		copytrade.GroupStyleTraders: "Per-style signals by traders voting",
 	}
 	horizon := flag.Lookup("horizon").Value.String()
-	for _, group := range []string{copytrade.GroupConfidence, copytrade.GroupOpeners, copytrade.GroupShadow, copytrade.GroupCalls} {
+	for _, group := range []string{copytrade.GroupConfidence, copytrade.GroupOpeners, copytrade.GroupShadow, copytrade.GroupCalls,
+		copytrade.GroupStyle, copytrade.GroupStyleTraders} {
 		fmt.Printf("\n%s\n", titles[group])
 		fmt.Printf("%-5s %-5s %-4s %6s %6s %8s | %6s %8s\n", "band", "side", "hrz", "calls", "hit%", "avg%", "beat%", "excess%")
 		for _, r := range res.Rates {
@@ -178,6 +181,42 @@ func print(res copytrade.BacktestResult) {
 				100*r.Rate, 100*r.AvgReturn, 100*r.ExcessRate, 100*r.AvgExcess)
 		}
 	}
+	fmt.Printf("\nTraders by style, and their own opens/adds (repeats within 24h count once)\n")
+	fmt.Printf("%-12s %7s %9s | %6s %6s %7s %7s | %6s %6s %7s\n", "style", "traders", "med.hold", "hrz", "calls", "hit%", "avg%", "calls", "hit%", "avg%")
+	for _, st := range res.Styles {
+		fmt.Printf("%-12s %7d %8.1fh | %5dh %6d %7.1f %7.2f | %6d %6.1f %7.2f\n", st.Kind, st.Traders, st.MedianHold,
+			st.OwnHours, st.Own.Calls, 100*st.Own.Rate, 100*st.Own.AvgReturn, st.Day.Calls, 100*st.Day.Rate, 100*st.Day.AvgReturn)
+	}
+	fmt.Println("Left: at the style's own horizon. Right: the same calls at 24h.")
+	tables := []struct{ key, title string }{
+		{"style", "Following each open, entered at the close of the hour it happened in — by the trader's style"},
+		{"entry", "The same at the style's own horizon — what the entry delay costs"},
+		{"side", "Scalp and swing opens at their own horizon — by side"},
+		{"prior", "Scalp and swing opens at their own horizon — by the trader's earlier record at it"},
+		{"agree", "Scalp and swing opens at their own horizon — alone, or with another trader opening the same way within 4h"},
+		{"half", "Scalp and swing opens at their own horizon — first and second half of the period"},
+		{"placebo", "Placebo — the same coin and side three days away from the open"},
+	}
+	for _, tb := range tables {
+		fmt.Printf("\n%s\n", tb.title)
+		fmt.Printf("%-34s %4s %6s %6s | %6s %6s %8s %8s\n", "group", "hrz", "opens", "hit%", "vs BTC", "beat%", "excess%", "median%")
+		for _, r := range res.Follow {
+			if r.Table != tb.key || r.Calls == 0 {
+				continue
+			}
+			fmt.Printf("%-34s %3dh %6d %6.1f | %6d %6.1f %8.2f %8.2f\n", r.Label, r.Hours, r.Calls, 100*r.Hit, r.Excess,
+				100*r.Beat, 100*r.AvgExcess, 100*r.MedExcess)
+		}
+	}
+	fmt.Printf("\nHow many traders the result rests on\n")
+	for _, r := range res.Follow {
+		if r.Table == "spread" {
+			fmt.Printf("%-6s %3dh: %d traders opened; %d of them beat BTC more often than not; the busiest one made %.0f%% of the opens\n",
+				r.Label, r.Hours, r.Calls, r.Excess, 100*r.Hit)
+		}
+	}
+	fmt.Println("An open repeated by the same trader on the same coin and side within their own horizon counts once. Style, the")
+	fmt.Println("high-frequency mark and the earlier record are those known at the hour of the open. Fees are not taken off.")
 	fmt.Println("\nhit% / avg%: price moved the called way, mean move. beat% / excess%: the same against BTC over the same hours.")
 	fmt.Println("A run of the same call hour after hour counts once, from its first hour. Traders are those whose fills are stored")
 	fmt.Println("(the survivors), all positions are inferred from fills, and every trader scores the same: compare the rows, do not")

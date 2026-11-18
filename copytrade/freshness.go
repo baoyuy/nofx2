@@ -37,3 +37,7 @@ func (s Snapshot) Quality(maxAge time.Duration, now time.Time) DataQuality {
 func (q DataQuality) Complete() bool {
 	return q.PositionsFresh && q.FillsFresh && q.ProfileFresh && q.HistoryComplete
 }
+
+// Dormant reports a trader polled at the slow dormant rate (holds nothing and
+// has not traded for days): an old timestamp there is on schedule, not stale.
+func (s Snapshot) Dormant(now time.Time) bool { return s.dormant(now) }

@@ -155,6 +155,7 @@ export function ScoreBadge({
   return (
     <span
       title={title}
+      tabIndex={title ? 0 : undefined}
       className={`whitespace-nowrap rounded px-1.5 text-[11px] font-semibold tabular-nums ${tone}`}
     >
       {tr(language, '可信度', 'Score')} {Math.round(v)}
@@ -360,9 +361,7 @@ export function HitRatePanel({ language }: { language: string }) {
         <thead className="text-left text-nofx-text-muted">
           <tr>
             <th className="py-1 font-normal">
-              {group === 'confidence' ||
-              group === 'shadow' ||
-              group === 'rank'
+              {group === 'confidence' || group === 'shadow' || group === 'rank'
                 ? tr(language, '置信度', 'Confidence')
                 : tr(language, '人数', 'Traders')}
             </th>
@@ -447,17 +446,29 @@ export function HealthTag({
   language: string
 }) {
   const pct = (value: number | undefined) =>
-    typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(1)}%` : '—'
-  const basis = tr(language, h.pct_of_margin ? '保证金' : '价格', h.pct_of_margin ? 'margin' : 'price')
+    typeof value === 'number' && Number.isFinite(value)
+      ? `${value.toFixed(1)}%`
+      : '—'
+  const basis = tr(
+    language,
+    h.pct_of_margin ? '保证金' : '价格',
+    h.pct_of_margin ? 'margin' : 'price'
+  )
   const threshold = h.trapped_threshold_pct ?? (h.pct_of_margin ? 50 : 5)
-  const historyThreshold = h.first_entry_threshold_pct ?? (h.first_entry_pct_of_margin ? 50 : 5)
+  const historyThreshold =
+    h.first_entry_threshold_pct ?? (h.first_entry_pct_of_margin ? 50 : 5)
   const historyBasis = tr(
     language,
     h.first_entry_pct_of_margin ? '按当前杠杆折算' : '价格',
     h.first_entry_pct_of_margin ? 'scaled by current leverage' : 'price'
   )
   const tag = (cls: string, text: string, title: string) => (
-    <span tabIndex={0} aria-label={`${text}: ${title}`} title={title} className={`mr-1 rounded px-1.5 text-[10px] ${cls}`}>
+    <span
+      tabIndex={0}
+      aria-label={`${text}: ${title}`}
+      title={title}
+      className={`mr-1 rounded px-1.5 text-[11px] ${cls}`}
+    >
       {text}
     </span>
   )

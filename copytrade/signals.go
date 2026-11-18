@@ -325,6 +325,11 @@ const (
 	// and discounts crowded, thin and chased coins; this group is what says
 	// whether that ordering predicts better than Confidence.
 	GroupRank = "rank"
+	// GroupStyle is the per-style reading (see stylescore.go) on its own
+	// direction, and GroupStyleTraders the same signals by how many traders
+	// voted. Present only where the reading was computed (backtests).
+	GroupStyle        = "style"
+	GroupStyleTraders = "style_traders"
 )
 
 func openersBand(n int) string {
@@ -417,7 +422,8 @@ func hitRates(sigs []store.CopyTradeSignal, sinceHour int64) []HitRate {
 		dir  string
 	}
 	prevConf, prevShadow := map[string]last{}, map[string]last{}
-	prevRank := map[string]last{}
+	prevRank, prevStyle := map[string]last{}, map[string]last{}
+	styled := false
 	// starts tells whether a signal begins a run of dir, and notes it.
 	starts := func(prev map[string]last, s store.CopyTradeSignal, dir string) bool {
 		p, seen := prev[s.Symbol]
@@ -456,6 +462,16 @@ func hitRates(sigs []store.CopyTradeSignal, sinceHour int64) []HitRate {
 				})
 			}
 		}
+		if s.StyleDirection == "long" || s.StyleDirection == "short" {
+			styled = true
+			if starts(prevStyle, s, s.StyleDirection) {
+				band := confidenceBand(s.StyleScore)
+				each(s, func(h string, ret, bench *float64) {
+					t.add(GroupStyle, band, h, s.StyleDirection, ret, bench)
+					t.add(GroupStyleTraders, openersBand(s.StyleTraders), h, s.StyleDirection, ret, bench)
+				})
+			}
+		}
 		if s.RankDirection == "long" || s.RankDirection == "short" {
 			if starts(prevRank, s, s.RankDirection) {
 				band := confidenceBand(s.RankScore)
@@ -470,5 +486,10 @@ func hitRates(sigs []store.CopyTradeSignal, sinceHour int64) []HitRate {
 	out = append(out, t.rows(GroupOpeners, []string{"3+", "2", "1", "0", "all"})...)
 	out = append(out, t.rows(GroupShadow, bands)...)
 	out = append(out, t.rows(GroupRank, bands)...)
-	return append(out, t.rows(GroupCalls, []string{"3+", "2", "1", "all"})...)
+	out = append(out, t.rows(GroupCalls, []string{"3+", "2", "1", "all"})...)
+	if styled {
+		out = append(out, t.rows(GroupStyle, bands)...)
+		out = append(out, t.rows(GroupStyleTraders, []string{"3+", "2", "1", "all"})...)
+	}
+	return out
 }

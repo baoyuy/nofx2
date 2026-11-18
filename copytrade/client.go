@@ -30,7 +30,13 @@ const (
 	// Measured: 40 requests at 1.5 s spacing passed once, but a few hundred
 	// requests over an hour got trade-history refused (code 11012005) and
 	// then www.binance.com dropping connections from the IP. Stay well below.
-	minSpacing  = 4 * time.Second
+	// Measured again 2026-11-18 from one IP, trade-history and positions in
+	// turn: 150 requests at 2 s and 291 at 1 s all passed; at 0.5 s the 326th
+	// (767th in 13 minutes overall) was refused with 11012005. Whether that
+	// was the pace or the running total is not known, and nothing was run for
+	// an hour, so 2 s is the pace, not 1 s. The shared scheduler's
+	// binance-copytrade budget (internal/apischeduler) must match.
+	minSpacing  = 2 * time.Second
 	jitter      = 400 * time.Millisecond
 	backoffMin  = time.Minute
 	backoffMax  = time.Hour

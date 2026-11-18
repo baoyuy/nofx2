@@ -45,6 +45,9 @@ type Position struct {
 	// LastAddAt is the latest open or add in ms; 0 if not seen.
 	LastAddAt int64  `json:"last_add_at"`
 	Source    string `json:"source"`
+	// TradFi marks stock and commodity contracts, which a crypto-only
+	// strategy skips. Set when the snapshot is served, from ClassOf.
+	TradFi bool `json:"tradfi,omitempty"`
 	// Leverage and Margin are known for public positions only; MarkPrice and
 	// UnrealizedPnL are Binance's for public ones, estimated from the latest
 	// mark price for inferred ones.
@@ -70,6 +73,8 @@ type Event struct {
 	PositionQty float64 `json:"position_qty"`
 	// Untracked marks reductions of a position opened before monitoring.
 	Untracked bool `json:"untracked,omitempty"`
+	// TradFi: a stock or commodity contract (see Position.TradFi).
+	TradFi bool `json:"tradfi,omitempty"`
 
 	lastTime int64
 }

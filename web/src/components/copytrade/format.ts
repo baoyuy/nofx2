@@ -1,22 +1,32 @@
 import { tr } from '../market/marketUi'
 import type { TradeAction, TradeSide } from '../../lib/api/copyTrade'
 
+/**
+ * Money for tables: one rule for every amount, so a column never mixes an
+ * exact figure with a compact one (33.70K next to 2,012 read as a bug).
+ * 1.23B / 4.56M / 33.70K / 157.00
+ */
 export function usd(v: number): string {
-  const a = Math.abs(v)
+  const a = Math.abs(Math.round(v * 100) / 100)
   const sign = v < 0 ? '-' : ''
   if (a >= 1e9) return `${sign}$${(a / 1e9).toFixed(2)}B`
   if (a >= 1e6) return `${sign}$${(a / 1e6).toFixed(2)}M`
-  if (a >= 1e4) return `${sign}$${(a / 1e3).toFixed(1)}K`
-  return `${sign}$${a.toLocaleString('en-US', { maximumFractionDigits: a >= 100 ? 0 : 2 })}`
+  if (a >= 1e3) return `${sign}$${(a / 1e3).toFixed(2)}K`
+  return `${sign}$${a.toFixed(2)}`
 }
 
 export function signedUsd(v: number): string {
   return (v > 0 ? '+' : '') + usd(v)
 }
 
+/**
+ * Prices keep the precision entry prices actually carry: 73,692.9 / 356.353 /
+ * 71.8. The column is right-aligned with tabular figures, so the differing
+ * decimal counts do not read as a bug.
+ */
 export function price(v: number): string {
   if (!v) return '--'
-  const d = v >= 1000 ? 1 : v >= 1 ? 3 : v >= 0.01 ? 5 : 7
+  const d = v >= 1e3 ? 1 : v >= 1 ? 3 : v >= 0.01 ? 5 : 7
   return v.toLocaleString('en-US', { maximumFractionDigits: d })
 }
 
@@ -233,4 +243,62 @@ export function rulesLabel(language: string, codes: string): string {
     .filter(Boolean)
     .map((c) => ruleLabel(language, c))
     .join(tr(language, '、', ', '))
+}
+/** Clock time only: the day is carried by the group heading. */
+export function hhmm(ms: number): string {
+  if (!ms) return '--'
+  return new Date(ms).toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+/** A local calendar day key, for grouping events. */
+export function dayKey(ms: number): string {
+  const d = new Date(ms)
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+}
+
+/** 今天 / 昨天 / 11/15: keeps a repeated date out of every row. */
+export function dayLabel(
+  language: string,
+  ms: number,
+  now = Date.now()
+): string {
+  if (!ms) return '--'
+  if (dayKey(ms) === dayKey(now)) return tr(language, '今天', 'Today')
+  if (dayKey(ms) === dayKey(now - 24 * 3600 * 1000))
+    return tr(language, '昨天', 'Yesterday')
+  const d = new Date(ms)
+  return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
+}
+
+export type Staleness = { level: 'ok' | 'warn' | 'bad'; ms: number }
+
+/**
+ * How old a timestamp is, in the terms this page reacts to: the monitor polls
+ * every couple of minutes, so 15 minutes is already late and an hour is a gap
+ * worth showing in red.
+ */
+export function staleness(ms: number, now = Date.now()): Staleness {
+  if (!ms) return { level: 'bad', ms: 0 }
+  const age = Math.max(0, now - ms)
+  if (age >= 60 * 60 * 1000) return { level: 'bad', ms: age }
+  if (age >= 15 * 60 * 1000) return { level: 'warn', ms: age }
+  return { level: 'ok', ms: age }
+}
+
+/** Stock and commodity contracts, which a crypto-only strategy skips. */
+export function marketLabel(language: string, tradfi?: boolean): string {
+  if (!tradfi) return ''
+  return tr(language, '股票/商品', 'Stock/commodity')
+}
+
+/**
+ * The current time. Kept here so components read the clock through a function
+ * instead of calling Date.now during render (React's purity rule), the same way
+ * ago() already does.
+ */
+export function currentTime(): number {
+  return Date.now()
 }
