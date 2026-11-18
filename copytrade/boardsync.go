@@ -158,7 +158,9 @@ func (m *Monitor) runBoardSync(ctx context.Context, now time.Time, st *BoardSync
 	m.mu.RLock()
 	current := map[string]store.CopyTradeFollow{}
 	for id, s := range m.snaps {
-		if s.Follow.Source == "board" {
+		// "auto" follows are the legacy rule-based picks the board sync now
+		// replaces: reconcile them too, or they would linger unmaintained.
+		if s.Follow.Source == "board" || s.Follow.Source == "auto" {
 			current[id] = s.Follow
 		}
 	}
@@ -301,6 +303,20 @@ func (m *Monitor) runBoardSync(ctx context.Context, now time.Time, st *BoardSync
 	}
 	for id := range addedBoard {
 		following[id] = true
+	}
+	// A kept legacy auto-follow becomes a board follow: same trader, now
+	// governed by the board, and no longer on probation.
+	for id := range following {
+		if f, ok := current[id]; ok && f.Source == "auto" {
+			if err := m.store.SetFollowSource(id, "board"); err != nil {
+				logger.Warnf("copy-trade board sync: relabel %s as board: %v", id, err)
+			}
+			m.mu.Lock()
+			if sn, ok := m.snaps[id]; ok {
+				sn.Follow.Source, sn.Follow.PickedAt = "board", 0
+			}
+			m.mu.Unlock()
+		}
 	}
 	for id := range following {
 		mem := prev[id]
