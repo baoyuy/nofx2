@@ -14,20 +14,29 @@ import (
 // set at startup; the engine has no database access of its own.
 var CoinPoolResolver func(poolID string) ([]string, error)
 
+// CoinPoolDetailResolver returns the pool coins with their indicated direction.
+var CoinPoolDetailResolver func(poolID string) ([]store.CoinPoolCoin, error)
+
 // coinPoolCandidates reads the pool fresh each cycle, so edits on the coin
 // pool page reach running strategies. A missing pool falls back to the
 // snapshot saved with the strategy.
 func coinPoolCandidates(source store.CoinSourceConfig) []CandidateCoin {
-	symbols := source.StaticCoins
-	origin := "coin_pool_snapshot"
 	if CoinPoolResolver != nil && source.CoinPoolID != "" {
 		if live, err := CoinPoolResolver(source.CoinPoolID); err == nil && len(live) > 0 {
-			symbols, origin = live, "coin_pool"
+			dirs := map[string]string{}
+			if CoinPoolDetailResolver != nil {
+				if coins, derr := CoinPoolDetailResolver(source.CoinPoolID); derr == nil {
+					for _, c := range coins {
+						dirs[market.Normalize(c.Symbol)] = c.Direction
+					}
+				}
+			}
+			return toCandidatesDir(live, "coin_pool", dirs)
 		} else {
 			logger.Warnf("⚠️  Coin pool %s unavailable (%v), using the saved snapshot", source.CoinPoolID, err)
 		}
 	}
-	return toCandidates(symbols, origin)
+	return toCandidates(source.StaticCoins, "coin_pool_snapshot")
 }
 
 func toCandidates(symbols []string, origin string) []CandidateCoin {
@@ -37,6 +46,18 @@ func toCandidates(symbols []string, origin string) []CandidateCoin {
 	out := make([]CandidateCoin, 0, len(symbols))
 	for _, symbol := range symbols {
 		out = append(out, CandidateCoin{Symbol: market.Normalize(symbol), Sources: []string{origin}})
+	}
+	return out
+}
+
+func toCandidatesDir(symbols []string, origin string, dirs map[string]string) []CandidateCoin {
+	if len(symbols) > store.MaxCandidateCoins {
+		symbols = symbols[:store.MaxCandidateCoins]
+	}
+	out := make([]CandidateCoin, 0, len(symbols))
+	for _, symbol := range symbols {
+		sym := market.Normalize(symbol)
+		out = append(out, CandidateCoin{Symbol: sym, Sources: []string{origin}, Direction: dirs[sym]})
 	}
 	return out
 }

@@ -120,6 +120,16 @@ func (s *CoinPoolStore) Get(userID, id string) (*CoinPool, error) {
 	return &p, nil
 }
 
+// CoinsByID returns a pool's coins by id alone (used by the engine resolver).
+func (s *CoinPoolStore) CoinsByID(id string) ([]CoinPoolCoin, error) {
+	var p CoinPool
+	if err := s.db.Where("id = ?", id).First(&p).Error; err != nil {
+		return nil, err
+	}
+	decodePool(&p)
+	return p.Coins, nil
+}
+
 func (s *CoinPoolStore) Create(userID string, p *CoinPool) error {
 	if err := cleanPool(p); err != nil {
 		return err

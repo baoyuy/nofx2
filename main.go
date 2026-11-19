@@ -103,6 +103,7 @@ func main() {
 	// Strategies with coin source "coin_pool" read saved pools each cycle;
 	// "bollinger_horn" re-screens Binance each cycle.
 	kernel.CoinPoolResolver = st.CoinPool().Symbols
+	kernel.CoinPoolDetailResolver = st.CoinPool().CoinsByID
 	kernel.HornResolver = coinpool.Shared.HornSymbols
 	// The 爆发榜 board feeds the "explosive" and "hybrid" coin sources.
 	kernel.ExplosiveResolver = func(ctx context.Context, limit int) ([]string, error) {
@@ -155,6 +156,8 @@ func main() {
 	}
 	// Accounts copying AI traders need the traders loaded.
 	server.StartMirror(copyTradeCtx)
+	// Page-independent event collection + local retention pruning.
+	server.StartEventCollector(copyTradeCtx)
 
 	// Display loaded trader information
 	traders, err := st.Trader().List("default")

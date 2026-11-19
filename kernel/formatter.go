@@ -273,6 +273,9 @@ func formatCandidateCoinsZH(ctx *Context) string {
 
 	for i, coin := range ctx.CandidateCoins {
 		sb.WriteString(fmt.Sprintf("### %d. %s\n\n", i+1, coin.Symbol))
+		if coin.Direction == "long" || coin.Direction == "short" {
+			sb.WriteString(fmt.Sprintf("**AI coin-pool bias: %s only** — do NOT open the opposite side of this coin.\n\n", strings.ToUpper(coin.Direction)))
+		}
 
 		// Current price
 		if ctx.MarketDataMap != nil {
@@ -538,6 +541,9 @@ func formatCandidateCoinsEN(ctx *Context) string {
 
 	for i, coin := range ctx.CandidateCoins {
 		sb.WriteString(fmt.Sprintf("### %d. %s\n\n", i+1, coin.Symbol))
+		if coin.Direction == "long" || coin.Direction == "short" {
+			sb.WriteString(fmt.Sprintf("**AI coin-pool bias: %s only** — do NOT open the opposite side of this coin.\n\n", strings.ToUpper(coin.Direction)))
+		}
 
 		if ctx.MarketDataMap != nil {
 			if mdata, ok := ctx.MarketDataMap[coin.Symbol]; ok {

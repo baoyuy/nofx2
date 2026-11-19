@@ -57,8 +57,9 @@ type AccountInfo struct {
 
 // CandidateCoin candidate coin (from coin pool)
 type CandidateCoin struct {
-	Symbol  string   `json:"symbol"`
-	Sources []string `json:"sources"` // Sources: "ai500" and/or "oi_top"
+	Symbol    string   `json:"symbol"`
+	Sources   []string `json:"sources"`   // Sources: "ai500" and/or "oi_top"
+	Direction string   `json:"direction"` // pool-indicated side: long | short | ""
 }
 
 // OITopData open interest growth top data (for AI decision reference)
@@ -120,6 +121,68 @@ type Context struct {
 	// much of that view is fresh.
 	CopyTradeMap      map[string]*CopyTradeCoin `json:"-"`
 	CopyTradeCoverage *CopyTradeView            `json:"-"`
+
+	// EventContext holds recent news / prediction-market items per coin, fed to
+	// the AI as unverified context (never an order). Populated only when the
+	// strategy enables EnableEventContext. Keyed by normalized coin (BTC, NVDA).
+	EventContext map[string][]EventContextItem `json:"-"`
+	// EventBias is the two-model event stance per coin (bullish|bearish|neutral),
+	// produced by the tagging model when EventSignalEnabled. Drives the
+	// programmatic event gate; never places orders by itself.
+	EventBias map[string]string `json:"-"`
+	// EventCards are tagged information events (catalysts) for this cycle.
+	EventCards []EventCard `json:"-"`
+}
+
+// EventContextItem is one read-only news/prediction item shown to the AI.
+// Titles, summaries and implied probabilities come from public sources and are
+// explicitly unverified: they are context, not facts or trade instructions.
+type EventContextItem struct {
+	ID                string                 `json:"id"`
+	Title             string                 `json:"title"`
+	Source            string                 `json:"source"`
+	Kind              string                 `json:"kind"` // prediction | news | community
+	Publisher         string                 `json:"publisher,omitempty"`
+	Summary           string                 `json:"summary,omitempty"`
+	PublishedAt       time.Time              `json:"published_at"`
+	EndAt             *time.Time             `json:"end_at,omitempty"`
+	Markets           []EventContextMarket   `json:"markets,omitempty"`
+	SignificantChange bool                   `json:"significant_change,omitempty"`
+	EndingSoon        bool                   `json:"ending_soon,omitempty"`
+}
+
+// EventCard is a tagged information event (catalyst) shown to the trading AI.
+// It is unverified intelligence: what happened, which coin it hits, direction,
+// whether it beat expectations, importance, and whether it is a scheduled node.
+type EventCard struct {
+	Coin       string     `json:"coin"`
+	Type       string     `json:"type"`
+	Title      string     `json:"title"`
+	Summary    string     `json:"summary"`
+	Direction  string     `json:"direction"` // bullish | bearish | neutral
+	Surprise   string     `json:"surprise"`  // above | below | inline | unknown
+	Importance int        `json:"importance"`
+	IsNode     bool       `json:"is_node"`
+	NodeAt     *time.Time `json:"node_at,omitempty"`
+	ValidUntil *time.Time `json:"valid_until,omitempty"`
+	Source     string     `json:"source"`
+	EvidenceIDs []string  `json:"evidence_ids"`
+	Reason     string     `json:"reason"`
+	Horizon    string     `json:"horizon,omitempty"` // near|far|unknown
+	Global     bool       `json:"global,omitempty"`  // market-wide, not a single coin
+	TaggedAt   time.Time  `json:"tagged_at,omitempty"`
+}
+
+// EventContextMarket is a bounded prediction-market view inside one event.
+type EventContextMarket struct {
+	Question string                `json:"question"`
+	Outcomes []EventContextOutcome `json:"outcomes,omitempty"`
+}
+
+// EventContextOutcome is a market outcome priced as an implied probability.
+type EventContextOutcome struct {
+	Name  string  `json:"name"`
+	Price float64 `json:"price"`
 }
 
 // Decision AI trading decision
@@ -352,6 +415,20 @@ func (e *StrategyEngine) candidateCoins() ([]CandidateCoin, error) {
 			})
 		}
 
+		return e.filterExcludedCoins(candidates), nil
+
+	case "event_signals":
+		// Event-driven watchlist: the static coins are the universe; the event
+		// gate (trader layer) decides per cycle which of them have a usable
+		// stance. Keeping the universe explicit avoids scanning the whole market
+		// for news on every cycle.
+		for _, symbol := range coinSource.StaticCoins {
+			symbol = market.Normalize(symbol)
+			candidates = append(candidates, CandidateCoin{
+				Symbol:  symbol,
+				Sources: []string{"event"},
+			})
+		}
 		return e.filterExcludedCoins(candidates), nil
 
 	case "ai500":
