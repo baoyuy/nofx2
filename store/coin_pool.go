@@ -28,6 +28,9 @@ type CoinPoolCoin struct {
 	Direction string  `json:"direction,omitempty"` // long | short | neutral
 	Score     float64 `json:"score,omitempty"`
 	Note      string  `json:"note,omitempty"`
+	// ExpiryAt (ms) is when this pick goes stale; 0 = no expiry. The engine
+	// ignores expired picks so a stale AI pool never trades.
+	ExpiryAt int64 `json:"expiry_at,omitempty"`
 }
 
 // CoinPool is a named list of coins a user picked on the coin pool page.

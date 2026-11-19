@@ -26,8 +26,17 @@ func coinPoolCandidates(source store.CoinSourceConfig) []CandidateCoin {
 			dirs := map[string]string{}
 			if CoinPoolDetailResolver != nil {
 				if coins, derr := CoinPoolDetailResolver(source.CoinPoolID); derr == nil {
+					now := time.Now().UnixMilli()
+					fresh := make([]string, 0, len(coins))
 					for _, c := range coins {
+						if c.ExpiryAt > 0 && now > c.ExpiryAt {
+							continue // stale AI pick: never trade it
+						}
 						dirs[market.Normalize(c.Symbol)] = c.Direction
+						fresh = append(fresh, c.Symbol)
+					}
+					if len(fresh) > 0 {
+						return toCandidatesDir(fresh, "coin_pool", dirs)
 					}
 				}
 			}

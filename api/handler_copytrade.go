@@ -362,8 +362,10 @@ func (s *Server) handleCopyTradeFollows(c *gin.Context) {
 	}
 	snaps := s.copyTrade.Snapshots()
 	for i := range snaps {
-		if len(snaps[i].Events) > 5 {
-			snaps[i].Events = snaps[i].Events[:5]
+		// Enough recent actions for the search box to match coins, without
+		// shipping the whole (up to 300) event list for every followed trader.
+		if len(snaps[i].Events) > 20 {
+			snaps[i].Events = snaps[i].Events[:20]
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"follows": snaps, "max_follows": copytrade.MaxFollows})

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -67,6 +68,7 @@ func (s *Server) buildCoinPool(userID string) (*store.CoinPool, error) {
 	}
 	sort.SliceStable(cands, func(i, j int) bool { return cands[i].conv > cands[j].conv })
 
+	expiry := time.Now().Add(60 * time.Minute).UnixMilli()
 	longN, shortN := 0, 0
 	picks := make([]store.CoinPoolCoin, 0, poolMaxTotal)
 	for _, c := range cands {
@@ -92,7 +94,7 @@ func (s *Server) buildCoinPool(userID string) (*store.CoinPool, error) {
 			shortN++
 		}
 		picks = append(picks, store.CoinPoolCoin{Symbol: c.symbol, Direction: c.side, Score: c.conv,
-			Note: fmt.Sprintf("edge %+.0f conv %.0f", c.smoothed, c.conv)})
+			Note: fmt.Sprintf("edge %+.0f conv %.0f", c.smoothed, c.conv), ExpiryAt: expiry})
 	}
 
 	p := &store.CoinPool{Name: poolName, Screener: poolScreener, Coins: picks}
