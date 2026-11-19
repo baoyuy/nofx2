@@ -345,6 +345,7 @@ export interface CoinScoreBrief {
 
 export interface CoinScoreSettings {
   enabled: boolean
+  pool_auto: boolean
   interval_minutes: number
   min_interval: number
   running: boolean
@@ -355,6 +356,19 @@ export interface CoinScoreSettings {
   last_error?: string
   model: string
   coin_count: number
+}
+
+export interface CoinPoolCoinBrief {
+  symbol: string
+  direction: 'long' | 'short' | 'neutral'
+  score?: number
+  note?: string
+}
+export interface CoinPoolInfo {
+  id: string
+  name?: string
+  coins: CoinPoolCoinBrief[]
+  count: number
 }
 
 export interface CoinScoreModelInfo {
@@ -675,12 +689,23 @@ export const copyTradeApi = {
   getCoinScores: () =>
     get<{ items: CoinScoreBrief[] }>('/copytrade/coin-scores'),
 
+  getCoinPool: () => get<CoinPoolInfo>('/copytrade/coin-pool'),
+
+  async generateCoinPool(): Promise<CoinPoolInfo> {
+    const r = await httpClient.request<CoinPoolInfo>(
+      `${API_BASE}/copytrade/coin-pool/generate`,
+      { method: 'POST', silent: true }
+    )
+    return unwrap(r, 'Generate failed')
+  },
+
   getCoinScoreSettings: () =>
     get<CoinScoreSettings>('/copytrade/coin-score/settings'),
 
   async setCoinScoreSettings(cfg: {
     enabled: boolean
     interval_minutes: number
+    pool_auto?: boolean
   }): Promise<void> {
     const r = await httpClient.request<{ enabled: boolean; interval_minutes: number }>(
       `${API_BASE}/copytrade/coin-score/settings`,

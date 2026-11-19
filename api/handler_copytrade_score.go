@@ -323,6 +323,7 @@ const (
 type coinScoreAutoConfig struct {
 	Enabled         bool `json:"enabled"`
 	IntervalMinutes int  `json:"interval_minutes"`
+	PoolAuto        bool `json:"pool_auto"`
 }
 
 func (s *Server) loadCoinScoreAuto() coinScoreAutoConfig {
@@ -432,6 +433,11 @@ func (s *Server) runCoinScoreAll(ctx context.Context, userID string) {
 	}
 	wg.Wait()
 	s.coinScoreFinish(ok, lastErr)
+	if cfg := s.loadCoinScoreAuto(); cfg.PoolAuto && ok > 0 {
+		if _, err := s.buildCoinPool(uid); err != nil {
+			logger.Warnf("copy-trade auto pool: %v", err)
+		}
+	}
 }
 
 // StartCoinScoreAuto starts the scheduled analyze-all loop. Runs on app start.
@@ -481,7 +487,7 @@ func (s *Server) handleCoinScoreSettingsGet(c *gin.Context) {
 		coins = len(copytrade.Symbols(s.copyTrade.Snapshots()))
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes, "min_interval": coinScoreMinInterval,
+		"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes, "pool_auto": cfg.PoolAuto, "min_interval": coinScoreMinInterval,
 		"running": running, "done": done, "total": total, "last_run": lastRun, "last_count": lastCount,
 		"last_error": lastErr, "model": modelName, "coin_count": coins,
 	})
@@ -504,7 +510,7 @@ func (s *Server) handleCoinScoreSettingsPut(c *gin.Context) {
 		SafeInternalError(c, "Save coin-score settings", err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"enabled": req.Enabled, "interval_minutes": req.IntervalMinutes})
+	c.JSON(http.StatusOK, gin.H{"enabled": req.Enabled, "interval_minutes": req.IntervalMinutes, "pool_auto": req.PoolAuto})
 }
 
 func (s *Server) handleCoinScoreRunAll(c *gin.Context) {

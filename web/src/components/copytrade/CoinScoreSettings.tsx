@@ -3,6 +3,7 @@ import useSWR from 'swr'
 import { Play, Save, Loader2 } from 'lucide-react'
 import { api } from '../../lib/api'
 import type {
+  CoinPoolInfo,
   CoinScoreModelInfo,
   CoinScoreSettings as Settings,
 } from '../../lib/api/copyTrade'
@@ -23,7 +24,13 @@ export function CoinScoreSettings({ language }: { language: string }) {
     () => api.getCoinScoreModels(),
     { revalidateOnFocus: false }
   )
+  const { data: pool, mutate: mutatePool } = useSWR<CoinPoolInfo>(
+    'copytrade/coin-pool',
+    () => api.getCoinPool(),
+    { refreshInterval: 15000 }
+  )
   const [enabled, setEnabled] = useState(false)
+  const [poolAuto, setPoolAuto] = useState(false)
   const [interval, setIntervalMin] = useState('60')
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
@@ -46,6 +53,7 @@ export function CoinScoreSettings({ language }: { language: string }) {
   useEffect(() => {
     if (data && !dirty) {
       setEnabled(data.enabled)
+      setPoolAuto(Boolean(data.pool_auto))
       setIntervalMin(String(data.interval_minutes))
     }
   }, [data, dirty])
@@ -61,7 +69,7 @@ export function CoinScoreSettings({ language }: { language: string }) {
     if (!valid) return
     setSaving(true)
     try {
-      await api.setCoinScoreSettings({ enabled: nextEnabled, interval_minutes: n })
+      await api.setCoinScoreSettings({ enabled: nextEnabled, interval_minutes: n, pool_auto: poolAuto })
       setDirty(false)
       await mutate()
     } catch (e) {
@@ -223,6 +231,37 @@ export function CoinScoreSettings({ language }: { language: string }) {
           <NoticeText text={data.last_error} />
         </p>
       ) : null}
+
+      <div className="flex flex-wrap items-center gap-2 border-t border-[rgba(25,36,52,0.08)] pt-3">
+        <label className="flex items-center gap-1.5 text-sm text-nofx-text">
+          <input
+            type="checkbox"
+            checked={poolAuto}
+            onChange={(e) => {
+              setPoolAuto(e.target.checked)
+              setDirty(true)
+            }}
+          />
+          {tr(language, '分析后自动生成币池', 'Auto-build coin pool after analysis')}
+        </label>
+        <button
+          type="button"
+          className={ui.btnGhost}
+          onClick={async () => {
+            try {
+              await api.generateCoinPool()
+              await mutatePool()
+            } catch (e) {
+              notify.error(e instanceof Error ? e.message : String(e))
+            }
+          }}
+        >
+          {tr(language, '立即生成币池', 'Build pool now')}
+        </button>
+        <span className={`${ui.muted} text-xs tabular-nums`}>
+          {tr(language, `当前币池 ${pool?.count ?? 0} 个`, `pool: ${pool?.count ?? 0} coins`)}
+        </span>
+      </div>
 
       <p className="text-xs text-nofx-gold">
         {tr(
