@@ -206,7 +206,7 @@ export function TerminalDashboard({
     () => api.getCoinPool(),
     { ...SNAPSHOT_READ_OPTIONS, refreshInterval: 30000 }
   )
-  const [matrixSource, setMatrixSource] = useState<MatrixSource>('pool')
+  const [matrixSource, setMatrixSource] = useState<MatrixSource>('trader')
   // The signal matrix (and through it the cost/liquidation map and the
   // topology's signal column) follows the AI: it scores only this cycle's
   // candidates plus whatever the trader still holds. Hyperliquid synthetic
