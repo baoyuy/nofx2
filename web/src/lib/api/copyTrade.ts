@@ -375,6 +375,7 @@ export interface CoinPoolCoinBrief {
   direction: 'long' | 'short' | 'neutral'
   score?: number
   note?: string
+  expiry_at?: number
 }
 export interface CoinPoolInfo {
   id: string

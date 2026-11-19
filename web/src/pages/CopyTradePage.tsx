@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
 import useSWR from 'swr'
 import { LOCAL_SNAPSHOT_OPTIONS } from '../lib/liveSnapshot'
 import { useNavigate } from 'react-router-dom'
@@ -13,6 +12,7 @@ import { DiscoverTab } from '../components/copytrade/DiscoverTab'
 import { FollowingTab } from '../components/copytrade/FollowingTab'
 import { FeedTab } from '../components/copytrade/FeedTab'
 import { CoinsTab } from '../components/copytrade/CoinsTab'
+import { CoinPoolPanel } from '../components/copytrade/CoinPoolPanel'
 import { PaperTab } from '../components/copytrade/PaperTab'
 import { ago, staleness } from '../components/copytrade/format'
 import { NoticeText } from '../components/NoticeText'
@@ -176,15 +176,9 @@ function StatusBar({
   )
 }
 
-const TABS: Tab[] = ['discover', 'following', 'feed', 'coins', 'paper']
-
 export function CopyTradePage() {
   const { language } = useLanguage()
-  const [searchParams, setSearchParams] = useSearchParams()
-  const [tab, setTab] = useState<Tab>(() => {
-    const t = searchParams.get('tab') as Tab | null
-    return t && TABS.includes(t) ? t : 'following'
-  })
+  const [tab, setTab] = useState<Tab>('following')
   // These endpoints read local monitor snapshots. Do not tie their completion
   // together: a slow/failing status request must not hold positions or feed up.
   const { data: status } = useSWR(
@@ -199,25 +193,14 @@ export function CopyTradePage() {
     error: followsError,
   } = useSWR('copytrade/follows', api.getFollows, LOCAL_SNAPSHOT_OPTIONS)
   const snaps = follows?.follows || EMPTY_SNAPS
-  const [coin, setCoin] = useState(() => searchParams.get('symbol') || '')
-  // Keep the tab and selected coin in the URL so a reload keeps place.
-  const changeTab = (t: Tab) => {
-    setTab(t)
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev)
-      next.set('tab', t)
-      if (coin) next.set('symbol', coin)
-      return next
-    })
-  }
+  const [coin, setCoin] = useState('')
+  // NOTE: tab/coin are kept in local state, not the URL: the app shell remounts
+  // the page subtree on any location.search change (AnimatePresence key), which
+  // would reset the By-coin sort/filter every time a coin is clicked.
+  const changeTab = (t: Tab) => setTab(t)
   const changeCoin = (symbol: string) => {
     setCoin(symbol)
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev)
-      next.set('tab', 'coins')
-      if (symbol) next.set('symbol', symbol)
-      return next
-    })
+    setTab('coins')
   }
   // The long caveat about polling used to sit under the title on every visit.
   const [help, setHelp] = useState(false)
@@ -310,7 +293,10 @@ export function CopyTradePage() {
         <FeedTab language={language} snaps={snaps} onSymbol={openCoin} />
       ) : null}
       {tab === 'coins' ? (
-        <CoinsTab language={language} selected={coin} onSelect={changeCoin} />
+        <>
+          <CoinPoolPanel language={language} />
+          <CoinsTab language={language} selected={coin} onSelect={changeCoin} />
+        </>
       ) : null}
       {tab === 'paper' ? <PaperTab language={language} /> : null}
     </div>
