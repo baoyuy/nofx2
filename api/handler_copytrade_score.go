@@ -390,7 +390,7 @@ func (s *Server) coinScoreFinish(ok int, lastErr string) {
 
 // runCoinScoreAll analyzes every coin currently on the by-coin page. Runs at
 // most one at a time; the scheduler and the manual button share this.
-func (s *Server) runCoinScoreAll(ctx context.Context, userID string, topN int) {
+func (s *Server) runCoinScoreAll(ctx context.Context, userID string, topN, skipFreshMins int) {
 	if !s.coinScoreBegin() {
 		return
 	}
@@ -405,6 +405,18 @@ func (s *Server) runCoinScoreAll(ctx context.Context, userID string, topN int) {
 	}
 	if topN > 0 && topN < len(symbols) {
 		symbols = symbols[:topN]
+	}
+	if skipFreshMins > 0 {
+		kept := make([]string, 0, len(symbols))
+		for _, sym := range symbols {
+			if m := s.loadScoreMemory(uid, sym); m != nil {
+				if time.Since(time.UnixMilli(m.LastAt)) < time.Duration(skipFreshMins)*time.Minute {
+					continue
+				}
+			}
+			kept = append(kept, sym)
+		}
+		symbols = kept
 	}
 	s.coinScoreSetTotal(len(symbols))
 	sem := make(chan struct{}, 4)
@@ -472,7 +484,7 @@ func (s *Server) coinScoreAutoLoop(ctx context.Context) {
 			continue
 		}
 		next = now.Add(time.Duration(cfg.IntervalMinutes) * time.Minute)
-		go s.runCoinScoreAll(ctx, "", cfg.TopN)
+		go s.runCoinScoreAll(ctx, "", cfg.TopN, cfg.IntervalMinutes)
 	}
 }
 
@@ -521,7 +533,7 @@ func (s *Server) handleCoinScoreRunAll(c *gin.Context) {
 	if !s.copyTradeReady(c) {
 		return
 	}
-	go s.runCoinScoreAll(context.Background(), c.GetString("user_id"), 0)
+	go s.runCoinScoreAll(context.Background(), c.GetString("user_id"), 0, 0)
 	c.JSON(http.StatusOK, gin.H{"started": true})
 }
 
