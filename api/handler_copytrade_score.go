@@ -401,6 +401,28 @@ func (s *Server) coinScoreFinish(ok int, lastErr string) {
 
 // runCoinScoreAll analyzes every coin currently on the by-coin page. Runs at
 // most one at a time; the scheduler and the manual button share this.
+// coinUniverse returns the tradable coin symbols with real 24h quote volumes
+// attached, filtered by a minimum volume (unknown/0 volume is not filtered) and
+// capped by topN. The copy-trade snapshots themselves do not carry volume, so we
+// must attach it here or the volume filter would see 0 for every coin.
+func (s *Server) coinUniverse(ctx context.Context, minVol float64, topN int) []string {
+	sums := copytrade.Symbols(s.copyTrade.Snapshots())
+	if vols, err := binance.PublicQuoteVolumes(ctx); err == nil && len(vols) > 0 {
+		copytrade.AttachRanks(sums, vols)
+	}
+	out := make([]string, 0, len(sums))
+	for _, x := range sums {
+		if minVol > 0 && x.Volume24h > 0 && x.Volume24h < minVol {
+			continue
+		}
+		out = append(out, x.Symbol)
+	}
+	if topN > 0 && topN < len(out) {
+		out = out[:topN]
+	}
+	return out
+}
+
 func (s *Server) runCoinScoreAll(ctx context.Context, userID string, topN, skipFreshMins int) {
 	if !s.coinScoreBegin() {
 		return
@@ -410,19 +432,8 @@ func (s *Server) runCoinScoreAll(ctx context.Context, userID string, topN, skipF
 		s.coinScoreFinish(0, "no AI model: "+err.Error())
 		return
 	}
-	var symbols []string
 	minVol := s.loadCoinScoreAuto().MinQuoteVolume
-	for _, x := range copytrade.Symbols(s.copyTrade.Snapshots()) {
-		// Skip thin coins (low 24h quote volume) so AI scoring ignores coins that
-		// are easy to wick / manipulate.
-		if minVol > 0 && x.Volume24h > 0 && x.Volume24h < minVol {
-			continue
-		}
-		symbols = append(symbols, x.Symbol)
-	}
-	if topN > 0 && topN < len(symbols) {
-		symbols = symbols[:topN]
-	}
+	symbols := s.coinUniverse(ctx, minVol, topN)
 	if skipFreshMins > 0 {
 		kept := make([]string, 0, len(symbols))
 		for _, sym := range symbols {
@@ -526,20 +537,9 @@ func (s *Server) tickCoinScoreAuto(ctx context.Context) {
 		return
 	}
 
-	var universe []string
 	minVol := cfg.MinQuoteVolume
 	snaps := s.copyTrade.Snapshots()
-	for _, x := range copytrade.Symbols(snaps) {
-		// Only filter coins whose 24h volume is KNOWN and below the floor; a 0
-		// (unknown) volume must not silently drop every coin.
-		if minVol > 0 && x.Volume24h > 0 && x.Volume24h < minVol {
-			continue
-		}
-		universe = append(universe, x.Symbol)
-	}
-	if cfg.TopN > 0 && cfg.TopN < len(universe) {
-		universe = universe[:cfg.TopN]
-	}
+	universe := s.coinUniverse(ctx, minVol, cfg.TopN)
 
 	now := time.Now().UnixMilli()
 	intervalMs := int64(interval) * 60 * 1000
