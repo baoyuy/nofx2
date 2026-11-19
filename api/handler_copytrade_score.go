@@ -34,6 +34,7 @@ type coinScoreAuto struct {
 	total         int
 	inflight      map[string]bool
 	manualRunning bool
+	lastDiagMs    int64
 }
 
 
@@ -414,7 +415,7 @@ func (s *Server) runCoinScoreAll(ctx context.Context, userID string, topN, skipF
 	for _, x := range copytrade.Symbols(s.copyTrade.Snapshots()) {
 		// Skip thin coins (low 24h quote volume) so AI scoring ignores coins that
 		// are easy to wick / manipulate.
-		if minVol > 0 && x.Volume24h < minVol {
+		if minVol > 0 && x.Volume24h > 0 && x.Volume24h < minVol {
 			continue
 		}
 		symbols = append(symbols, x.Symbol)
@@ -478,6 +479,7 @@ func (s *Server) runCoinScoreAll(ctx context.Context, userID string, topN, skipF
 
 // StartCoinScoreAuto starts the scheduled analyze-all loop. Runs on app start.
 func (s *Server) StartCoinScoreAuto(ctx context.Context) {
+	logger.Info("copy-trade: coin-score rolling scheduler started")
 	go s.coinScoreAutoLoop(ctx)
 }
 
@@ -520,13 +522,17 @@ func (s *Server) tickCoinScoreAuto(ctx context.Context) {
 	}
 	model, uid, err := s.resolveScoreModelAny("")
 	if err != nil {
+		logger.Warnf("coin-score: resolve model failed: %v", err)
 		return
 	}
 
 	var universe []string
 	minVol := cfg.MinQuoteVolume
-	for _, x := range copytrade.Symbols(s.copyTrade.Snapshots()) {
-		if minVol > 0 && x.Volume24h < minVol {
+	snaps := s.copyTrade.Snapshots()
+	for _, x := range copytrade.Symbols(snaps) {
+		// Only filter coins whose 24h volume is KNOWN and below the floor; a 0
+		// (unknown) volume must not silently drop every coin.
+		if minVol > 0 && x.Volume24h > 0 && x.Volume24h < minVol {
 			continue
 		}
 		universe = append(universe, x.Symbol)
@@ -593,6 +599,18 @@ func (s *Server) tickCoinScoreAuto(ctx context.Context) {
 			delete(s.coinScore.inflight, sym)
 			s.coinScore.mu.Unlock()
 		}(d.sym)
+	}
+
+	if len(universe) == 0 {
+		if now-s.coinScore.lastDiagMs > 60000 {
+			logger.Warnf("coin-score: universe empty (snapshots=%d, minVol=%.0f)", len(snaps), minVol)
+			s.coinScore.lastDiagMs = now
+		}
+	} else if launched > 0 {
+		logger.Infof("coin-score tick: universe=%d due=%d fresh=%d launched=%d conc=%d interval=%dm", len(universe), len(due), fresh, launched, conc, interval)
+	} else if now-s.coinScore.lastDiagMs > 60000 {
+		logger.Infof("coin-score tick idle: universe=%d due=%d fresh=%d conc=%d interval=%dm", len(universe), len(due), fresh, conc, interval)
+		s.coinScore.lastDiagMs = now
 	}
 
 	s.coinScore.mu.Lock()
