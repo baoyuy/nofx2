@@ -351,6 +351,11 @@ func publicTTL(provider, path string) time.Duration {
 		return time.Second
 	case "/fapi/v1/openInterest", "/fapi/v1/fundingRate", "/futures/data/openInterestHist":
 		return 10 * time.Second
+	case "/futures/data/globalLongShortAccountRatio", "/futures/data/topLongShortAccountRatio",
+		"/futures/data/topLongShortPositionRatio", "/futures/data/takerlongshortRatio":
+		// Position/ratio stats change slowly; cache them so repeated analyses of
+		// the same coin within a round (and manual+rolling overlap) reuse them.
+		return 60 * time.Second
 	default:
 		return 0 // order books, timestamps and execution price checks are never reused
 	}
