@@ -329,8 +329,10 @@ type coinScoreAutoConfig struct {
 	IntervalMinutes int  `json:"interval_minutes"`
 	PoolAuto        bool `json:"pool_auto"`
 	TopN            int     `json:"top_n"`
-	Concurrency     int     `json:"concurrency"`
-	MinQuoteVolume  float64 `json:"min_quote_volume"`
+	Concurrency        int     `json:"concurrency"`
+	MinQuoteVolume     float64 `json:"min_quote_volume"`
+	PoolRefreshMinutes int     `json:"pool_refresh_minutes"`
+	PoolTTLMinutes     int     `json:"pool_ttl_minutes"`
 }
 
 func (s *Server) loadCoinScoreAuto() coinScoreAutoConfig {
@@ -343,6 +345,15 @@ func (s *Server) loadCoinScoreAuto() coinScoreAutoConfig {
 	}
 	if cfg.Concurrency < 1 {
 		cfg.Concurrency = 4
+	}
+	if cfg.PoolRefreshMinutes < 1 {
+		cfg.PoolRefreshMinutes = 5
+	}
+	if cfg.PoolTTLMinutes < 1 {
+		cfg.PoolTTLMinutes = 12
+	}
+	if cfg.PoolTTLMinutes < cfg.PoolRefreshMinutes {
+		cfg.PoolTTLMinutes = cfg.PoolRefreshMinutes * 2
 	}
 	return cfg
 }
@@ -639,7 +650,7 @@ func (s *Server) handleCoinScoreSettingsGet(c *gin.Context) {
 		coins = len(copytrade.Symbols(s.copyTrade.Snapshots()))
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes, "pool_auto": cfg.PoolAuto, "top_n": cfg.TopN, "concurrency": cfg.Concurrency, "min_quote_volume": cfg.MinQuoteVolume, "min_interval": coinScoreMinInterval,
+		"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes, "pool_auto": cfg.PoolAuto, "top_n": cfg.TopN, "concurrency": cfg.Concurrency, "min_quote_volume": cfg.MinQuoteVolume, "pool_refresh_minutes": cfg.PoolRefreshMinutes, "pool_ttl_minutes": cfg.PoolTTLMinutes, "min_interval": coinScoreMinInterval,
 		"running": running, "done": done, "total": total, "last_run": lastRun, "last_count": lastCount,
 		"last_error": lastErr, "model": modelName, "coin_count": coins,
 	})
@@ -653,8 +664,10 @@ func (s *Server) handleCoinScoreSettingsPut(c *gin.Context) {
 		IntervalMinutes *int     `json:"interval_minutes"`
 		PoolAuto        *bool    `json:"pool_auto"`
 		TopN            *int     `json:"top_n"`
-		Concurrency     *int     `json:"concurrency"`
-		MinQuoteVolume  *float64 `json:"min_quote_volume"`
+		Concurrency        *int     `json:"concurrency"`
+		MinQuoteVolume     *float64 `json:"min_quote_volume"`
+		PoolRefreshMinutes *int     `json:"pool_refresh_minutes"`
+		PoolTTLMinutes     *int     `json:"pool_ttl_minutes"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		SafeBadRequest(c, "invalid settings body")
@@ -679,6 +692,12 @@ func (s *Server) handleCoinScoreSettingsPut(c *gin.Context) {
 	if req.MinQuoteVolume != nil {
 		cfg.MinQuoteVolume = *req.MinQuoteVolume
 	}
+	if req.PoolRefreshMinutes != nil {
+		cfg.PoolRefreshMinutes = *req.PoolRefreshMinutes
+	}
+	if req.PoolTTLMinutes != nil {
+		cfg.PoolTTLMinutes = *req.PoolTTLMinutes
+	}
 	if cfg.IntervalMinutes < coinScoreMinInterval {
 		cfg.IntervalMinutes = coinScoreMinInterval
 	}
@@ -691,13 +710,22 @@ func (s *Server) handleCoinScoreSettingsPut(c *gin.Context) {
 	if cfg.MinQuoteVolume < 0 {
 		cfg.MinQuoteVolume = 0
 	}
+	if cfg.PoolRefreshMinutes < 1 {
+		cfg.PoolRefreshMinutes = 5
+	}
+	if cfg.PoolTTLMinutes < 1 {
+		cfg.PoolTTLMinutes = 12
+	}
+	if cfg.PoolTTLMinutes < cfg.PoolRefreshMinutes {
+		cfg.PoolTTLMinutes = cfg.PoolRefreshMinutes * 2
+	}
 	raw, _ := json.Marshal(cfg)
 	if err := s.store.SetSystemConfig(coinScoreAutoKey, string(raw)); err != nil {
 		SafeInternalError(c, "Save coin-score settings", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes,
-		"pool_auto": cfg.PoolAuto, "top_n": cfg.TopN, "concurrency": cfg.Concurrency, "min_quote_volume": cfg.MinQuoteVolume})
+		"pool_auto": cfg.PoolAuto, "top_n": cfg.TopN, "concurrency": cfg.Concurrency, "min_quote_volume": cfg.MinQuoteVolume, "pool_refresh_minutes": cfg.PoolRefreshMinutes, "pool_ttl_minutes": cfg.PoolTTLMinutes})
 }
 
 func (s *Server) handleCoinScoreRunAll(c *gin.Context) {

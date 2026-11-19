@@ -49,13 +49,27 @@ type CoinPool struct {
 
 func (CoinPool) TableName() string { return "coin_pools" }
 
+// CoinPoolLog records what changed on each rebuild of an auto pool, so the page
+// can show "updated X ago, +N/-M this round" and a short history to review.
+type CoinPoolLog struct {
+	ID          string `gorm:"column:id;primaryKey" json:"id"`
+	UserID      string `gorm:"column:user_id;not null;index" json:"-"`
+	At          int64  `gorm:"column:at;index" json:"at"`
+	Added       int    `gorm:"column:added" json:"added"`
+	Removed     int    `gorm:"column:removed" json:"removed"`
+	AddedJSON   string `gorm:"column:added_json;type:text" json:"-"`
+	RemovedJSON string `gorm:"column:removed_json;type:text" json:"-"`
+}
+
+func (CoinPoolLog) TableName() string { return "coin_pool_logs" }
+
 type CoinPoolStore struct {
 	db *gorm.DB
 }
 
 func NewCoinPoolStore(db *gorm.DB) *CoinPoolStore { return &CoinPoolStore{db: db} }
 
-func (s *CoinPoolStore) initTables() error { return s.db.AutoMigrate(&CoinPool{}) }
+func (s *CoinPoolStore) initTables() error { return s.db.AutoMigrate(&CoinPool{}, &CoinPoolLog{}) }
 
 // cleanPool normalizes symbols, drops duplicates and enforces limits.
 func cleanPool(p *CoinPool) error {
@@ -189,4 +203,28 @@ func (s *CoinPoolStore) Symbols(id string) ([]string, error) {
 		out = append(out, c.Symbol)
 	}
 	return out, nil
+}
+
+// AppendLog stores one rebuild's add/remove diff (only meaningful when it changed).
+func (s *CoinPoolStore) AppendLog(userID string, added, removed []string) error {
+	a, _ := json.Marshal(added)
+	r, _ := json.Marshal(removed)
+	if err := s.db.Create(&CoinPoolLog{ID: uuid.NewString(), UserID: userID, At: time.Now().UnixMilli(),
+		Added: len(added), Removed: len(removed), AddedJSON: string(a), RemovedJSON: string(r)}).Error; err != nil {
+		return err
+	}
+	// Keep only the latest 200 rebuild logs per user.
+	s.db.Where("user_id = ? AND id NOT IN (SELECT id FROM coin_pool_logs WHERE user_id = ? ORDER BY at DESC LIMIT 200)",
+		userID, userID).Delete(&CoinPoolLog{})
+	return nil
+}
+
+// ListLogs returns the most recent rebuild diffs for a user, newest first.
+func (s *CoinPoolStore) ListLogs(userID string, limit int) ([]CoinPoolLog, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	var out []CoinPoolLog
+	err := s.db.Where("user_id = ?", userID).Order("at DESC").Limit(limit).Find(&out).Error
+	return out, err
 }
