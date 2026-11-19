@@ -325,6 +325,7 @@ type coinScoreAutoConfig struct {
 	IntervalMinutes int  `json:"interval_minutes"`
 	PoolAuto        bool `json:"pool_auto"`
 	TopN            int  `json:"top_n"`
+	Concurrency     int  `json:"concurrency"`
 }
 
 func (s *Server) loadCoinScoreAuto() coinScoreAutoConfig {
@@ -334,6 +335,12 @@ func (s *Server) loadCoinScoreAuto() coinScoreAutoConfig {
 	}
 	if cfg.IntervalMinutes < coinScoreMinInterval {
 		cfg.IntervalMinutes = coinScoreDefaultMins
+	}
+	if cfg.Concurrency < 1 {
+		cfg.Concurrency = 4
+	}
+	if cfg.Concurrency > 8 {
+		cfg.Concurrency = 8
 	}
 	return cfg
 }
@@ -419,7 +426,14 @@ func (s *Server) runCoinScoreAll(ctx context.Context, userID string, topN, skipF
 		symbols = kept
 	}
 	s.coinScoreSetTotal(len(symbols))
-	sem := make(chan struct{}, 4)
+	conc := s.loadCoinScoreAuto().Concurrency
+	if conc < 1 {
+		conc = 4
+	}
+	if conc > 8 {
+		conc = 8
+	}
+	sem := make(chan struct{}, conc)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	ok := 0
@@ -503,7 +517,7 @@ func (s *Server) handleCoinScoreSettingsGet(c *gin.Context) {
 		coins = len(copytrade.Symbols(s.copyTrade.Snapshots()))
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes, "pool_auto": cfg.PoolAuto, "top_n": cfg.TopN, "min_interval": coinScoreMinInterval,
+		"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes, "pool_auto": cfg.PoolAuto, "top_n": cfg.TopN, "concurrency": cfg.Concurrency, "min_interval": coinScoreMinInterval,
 		"running": running, "done": done, "total": total, "last_run": lastRun, "last_count": lastCount,
 		"last_error": lastErr, "model": modelName, "coin_count": coins,
 	})
@@ -521,12 +535,18 @@ func (s *Server) handleCoinScoreSettingsPut(c *gin.Context) {
 	if req.IntervalMinutes > 1440 {
 		req.IntervalMinutes = 1440
 	}
+	if req.Concurrency < 1 {
+		req.Concurrency = 4
+	}
+	if req.Concurrency > 8 {
+		req.Concurrency = 8
+	}
 	raw, _ := json.Marshal(req)
 	if err := s.store.SetSystemConfig(coinScoreAutoKey, string(raw)); err != nil {
 		SafeInternalError(c, "Save coin-score settings", err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"enabled": req.Enabled, "interval_minutes": req.IntervalMinutes, "pool_auto": req.PoolAuto, "top_n": req.TopN})
+	c.JSON(http.StatusOK, gin.H{"enabled": req.Enabled, "interval_minutes": req.IntervalMinutes, "pool_auto": req.PoolAuto, "top_n": req.TopN, "concurrency": req.Concurrency})
 }
 
 func (s *Server) handleCoinScoreRunAll(c *gin.Context) {

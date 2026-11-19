@@ -38,6 +38,7 @@ export function CoinScoreSettings({ language }: { language: string }) {
   const [enabled, setEnabled] = useState(false)
   const [poolAuto, setPoolAuto] = useState(false)
   const [topN, setTopN] = useState('0')
+  const [conc, setConc] = useState('4')
   const [interval, setIntervalMin] = useState('60')
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
@@ -62,6 +63,7 @@ export function CoinScoreSettings({ language }: { language: string }) {
       setEnabled(data.enabled)
       setPoolAuto(Boolean(data.pool_auto))
       setTopN(String(data.top_n ?? 0))
+      setConc(String(data.concurrency ?? 4))
       setIntervalMin(String(data.interval_minutes))
     }
   }, [data, dirty])
@@ -77,7 +79,7 @@ export function CoinScoreSettings({ language }: { language: string }) {
     if (!valid) return
     setSaving(true)
     try {
-      await api.setCoinScoreSettings({ enabled: nextEnabled, interval_minutes: n, pool_auto: poolAuto, top_n: Number(topN) || 0 })
+      await api.setCoinScoreSettings({ enabled: nextEnabled, interval_minutes: n, pool_auto: poolAuto, top_n: Number(topN) || 0, concurrency: Number(conc) || 4 })
       setDirty(false)
       await mutate()
     } catch (e) {
@@ -171,6 +173,21 @@ export function CoinScoreSettings({ language }: { language: string }) {
             }}
             className={`${ui.inputInline} w-16`}
             title={tr(language, '0 表示全部；定时分析可用它控制花费', '0 = all; caps cost for scheduled runs')}
+          />
+        </label>
+        <label className={`${ui.muted} flex items-center gap-1`}>
+          {tr(language, '并发', 'Concurrency')}
+          <input
+            type="number"
+            min={1}
+            max={8}
+            value={conc}
+            onChange={(e) => {
+              setConc(e.target.value)
+              setDirty(true)
+            }}
+            className={`${ui.inputInline} w-16`}
+            title={tr(language, '同时调用模型的币数量，1–8；越大越快但越容易被限流/花更多钱', 'How many coins are analyzed at once, 1–8; higher is faster but may hit rate limits / cost more')}
           />
         </label>
         <button
