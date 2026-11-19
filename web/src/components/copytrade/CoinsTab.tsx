@@ -1,9 +1,10 @@
 import { NoticeText } from '../NoticeText'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { LOCAL_SNAPSHOT_OPTIONS } from '../../lib/liveSnapshot'
 import { api } from '../../lib/api'
 import type {
+  CoinScoreBrief,
   CoinScoreResult,
   HitRate,
   SideSummary,
@@ -52,6 +53,7 @@ function sideHealth(language: string, s: SideSummary): string {
 export type CoinSort =
   | 'rank'
   | 'confidence'
+  | 'ai'
   | 'traders'
   | 'long'
   | 'short'
@@ -67,11 +69,13 @@ const consensus = (s: SymbolSummary) =>
 export function sortCoins(
   list: SymbolSummary[],
   sort: CoinSort,
-  bias: CoinBias
+  bias: CoinBias,
+  aiScore: (symbol: string) => number = () => 0
 ): SymbolSummary[] {
   const key: Record<CoinSort, (s: SymbolSummary) => number> = {
     rank: (s) => s.rank?.score || 0,
     confidence: (s) => s.confidence?.score || 0,
+    ai: (s) => aiScore(s.symbol),
     traders: traderCount,
     long: (s) => s.long.traders,
     short: (s) => s.short.traders,
@@ -92,6 +96,39 @@ export function sortCoins(
         traderCount(b) - traderCount(a) ||
         b.long.value + b.short.value - (a.long.value + a.short.value)
     )
+}
+
+function AiTag({ b, language }: { b?: CoinScoreBrief; language: string }) {
+  if (!b) {
+    return (
+      <span className="text-[11px] text-nofx-text-muted">
+        {tr(language, 'AI —', 'AI —')}
+      </span>
+    )
+  }
+  const color =
+    b.bias === 'long'
+      ? 'text-nofx-success'
+      : b.bias === 'short'
+        ? 'text-nofx-danger'
+        : 'text-nofx-text-muted'
+  const arrow = b.bias === 'long' ? '▲' : b.bias === 'short' ? '▼' : '•'
+  const biasText =
+    b.bias === 'long'
+      ? tr(language, '看多', 'Long')
+      : b.bias === 'short'
+        ? tr(language, '看空', 'Short')
+        : tr(language, '中性', 'Neutral')
+  return (
+    <span
+      className={`text-[11px] tabular-nums ${color}`}
+      title={`${biasText} · ${tr(language, '置信', 'conf')} ${Math.round(b.confidence)}${
+        b.horizon ? ' · ' + b.horizon : ''
+      } · ${ago(language, b.analyzed_at)}`}
+    >
+      AI {Math.round(b.score)} {arrow}
+    </span>
+  )
 }
 
 function Bar({ s }: { s: SymbolSummary }) {
@@ -804,11 +841,29 @@ export function CoinsTab({
     LOCAL_SNAPSHOT_OPTIONS
   )
   const symbols = data?.symbols || []
+  const { data: scoreData } = useSWR(
+    'copytrade/coin-scores',
+    () => api.getCoinScores(),
+    { refreshInterval: 30000 }
+  )
+  const scoreMap = useMemo(() => {
+    const mp = new Map<string, CoinScoreBrief>()
+    for (const it of scoreData?.items || []) mp.set(it.symbol, it)
+    return mp
+  }, [scoreData])
+  const aiScore = useCallback(
+    (symbol: string) => {
+      const b = scoreMap.get(symbol)
+      if (!b) return -1
+      return b.bias === 'short' ? -b.score - 1 : b.score
+    },
+    [scoreMap]
+  )
   const [sort, setSort] = useState<CoinSort>('rank')
   const [bias, setBias] = useState<CoinBias>('all')
   const shown = useMemo(
-    () => sortCoins(symbols, sort, bias),
-    [symbols, sort, bias]
+    () => sortCoins(symbols, sort, bias, aiScore),
+    [symbols, sort, bias, aiScore]
   )
   const current = selected || shown[0]?.symbol || ''
 
@@ -831,6 +886,9 @@ export function CoinsTab({
               </option>
               <option value="confidence">
                 {tr(language, '置信度最高', 'Highest confidence')}
+              </option>
+              <option value="ai">
+                {tr(language, 'AI 分最高', 'Highest AI score')}
               </option>
               <option value="traders">
                 {tr(language, '关注的人最多', 'Most traders')}
@@ -907,11 +965,14 @@ export function CoinsTab({
                           </span>
                         ) : null}
                       </span>
-                      <ConfidenceBadge
-                        c={s.confidence}
-                        language={language}
-                        compact
-                      />
+                      <span className="flex items-center gap-2">
+                        <AiTag b={scoreMap.get(s.symbol)} language={language} />
+                        <ConfidenceBadge
+                          c={s.confidence}
+                          language={language}
+                          compact
+                        />
+                      </span>
                     </div>
                     {s.rank && s.rank.direction !== 'neutral' ? (
                       <div className="mt-1 flex items-center justify-between gap-1">

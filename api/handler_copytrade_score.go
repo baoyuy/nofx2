@@ -62,6 +62,7 @@ func (s *Server) registerCopyTradeScoreRoutes(protected *gin.RouterGroup) {
 	s.route(protected, "POST", "/copytrade/coin-score", "Run the AI reading for one coin now (body: symbol, interval?, model_id?, lang?)", s.handleCoinScoreAnalyze)
 	s.route(protected, "GET", "/copytrade/coin-score/models", "Enabled models and the saved coin-score model", s.handleCoinScoreModels)
 	s.route(protected, "PUT", "/copytrade/coin-score/model", "Set the coin-score model (body: model_id)", s.handleCoinScoreModelPut)
+	s.route(protected, "GET", "/copytrade/coin-scores", "Saved AI readings for every coin (list column)", s.handleCoinScoresList)
 	s.route(protected, "GET", "/copytrade/coin-score/settings", "Scheduled analyze-all settings and latest run status", s.handleCoinScoreSettingsGet)
 	s.route(protected, "PUT", "/copytrade/coin-score/settings", "Save scheduled analyze-all settings (body: enabled, interval_minutes)", s.handleCoinScoreSettingsPut)
 	s.route(protected, "POST", "/copytrade/coin-score/run-all", "Analyze every coin on the by-coin page now (async; poll settings for progress)", s.handleCoinScoreRunAll)
@@ -576,4 +577,33 @@ func sideExtra(s copytrade.SideSummary) string {
 		extra += fmt.Sprintf(", %d trapped", s.Trapped)
 	}
 	return extra
+}
+
+// coinScoreBrief is the compact reading shown as a list column.
+type coinScoreBrief struct {
+	Symbol     string  `json:"symbol"`
+	Bias       string  `json:"bias"`
+	Horizon    string  `json:"horizon"`
+	Score      float64 `json:"score"`
+	Confidence float64 `json:"confidence"`
+	AnalyzedAt int64   `json:"analyzed_at"`
+	ModelID    string  `json:"model_id"`
+}
+
+func (s *Server) handleCoinScoresList(c *gin.Context) {
+	rows, err := s.store.CopyTrade().ListCoinScores(c.GetString("user_id"))
+	if err != nil {
+		SafeInternalError(c, "Read coin scores", err)
+		return
+	}
+	out := make([]coinScoreBrief, 0, len(rows))
+	for _, r := range rows {
+		var res coinScoreResult
+		if json.Unmarshal([]byte(r.Payload), &res) != nil || res.Analysis == nil {
+			continue
+		}
+		out = append(out, coinScoreBrief{Symbol: r.Symbol, Bias: res.Analysis.Bias, Horizon: res.Analysis.Horizon,
+			Score: res.Analysis.Score, Confidence: res.Analysis.Confidence, AnalyzedAt: r.AnalyzedAt, ModelID: r.ModelID})
+	}
+	c.JSON(http.StatusOK, gin.H{"items": out})
 }

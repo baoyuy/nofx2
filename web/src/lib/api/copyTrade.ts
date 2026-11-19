@@ -316,6 +316,16 @@ export interface CoinScoreResult {
   parse_error?: string
 }
 
+export interface CoinScoreBrief {
+  symbol: string
+  bias: 'long' | 'short' | 'neutral'
+  horizon: string
+  score: number
+  confidence: number
+  analyzed_at: number
+  model_id: string
+}
+
 export interface CoinScoreSettings {
   enabled: boolean
   interval_minutes: number
@@ -644,6 +654,9 @@ export const copyTradeApi = {
     )
     return unwrap(r, 'Analysis failed')
   },
+
+  getCoinScores: () =>
+    get<{ items: CoinScoreBrief[] }>('/copytrade/coin-scores'),
 
   getCoinScoreSettings: () =>
     get<CoinScoreSettings>('/copytrade/coin-score/settings'),
