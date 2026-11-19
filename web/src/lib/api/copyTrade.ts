@@ -295,8 +295,19 @@ export interface PaperInfo {
 
 export interface CoinScore {
   bias: 'long' | 'short' | 'neutral'
-  score: number
+  bull_score?: number
+  bear_score?: number
+  edge?: number
+  conviction?: number
   horizon: 'short' | 'swing' | ''
+  tf_alignment?: Record<string, number>
+  long_case?: string[]
+  short_case?: string[]
+  changed?: boolean
+  change_reason?: string
+  market_context?: string
+  /** legacy/derived for display */
+  score: number
   confidence: number
   reasons: string[]
   risks: string[]
@@ -320,6 +331,10 @@ export interface CoinScoreBrief {
   symbol: string
   bias: 'long' | 'short' | 'neutral'
   horizon: string
+  bull_score: number
+  bear_score: number
+  edge: number
+  conviction: number
   score: number
   confidence: number
   analyzed_at: number

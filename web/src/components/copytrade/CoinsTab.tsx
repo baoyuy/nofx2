@@ -119,14 +119,20 @@ function AiTag({ b, language }: { b?: CoinScoreBrief; language: string }) {
       : b.bias === 'short'
         ? tr(language, '看空', 'Short')
         : tr(language, '中性', 'Neutral')
+  const sideTag =
+    b.bias === 'long'
+      ? tr(language, '多', 'L')
+      : b.bias === 'short'
+        ? tr(language, '空', 'S')
+        : tr(language, '中', 'N')
   return (
     <span
       className={`text-[11px] tabular-nums ${color}`}
-      title={`${biasText} · ${tr(language, '置信', 'conf')} ${Math.round(b.confidence)}${
+      title={`${biasText} · bull ${Math.round(b.bull_score)} / bear ${Math.round(b.bear_score)} · ${tr(language, '置信', 'conf')} ${Math.round(b.conviction)}${
         b.horizon ? ' · ' + b.horizon : ''
       } · ${ago(language, b.analyzed_at)}`}
     >
-      AI {Math.round(b.score)} {arrow}
+      AI {sideTag} {Math.round(b.score)} {arrow}
     </span>
   )
 }
@@ -225,7 +231,9 @@ function CoinAiScore({
               {biasLabel(a.bias)}
             </span>
             <span className="tabular-nums text-nofx-text">
-              {Math.round(a.score)}/100
+              {tr(language, '多', 'B')} {Math.round(a.bull_score ?? a.score)}
+              {' · '}
+              {tr(language, '空', 'S')} {Math.round(a.bear_score ?? 0)}
             </span>
             {a.horizon ? (
               <span className={ui.muted}>
@@ -237,10 +245,15 @@ function CoinAiScore({
             <span className={ui.muted}>
               {tr(
                 language,
-                `置信 ${Math.round(a.confidence)}`,
-                `conf ${Math.round(a.confidence)}`
+                `强度 ${Math.round(a.conviction ?? a.confidence)}`,
+                `conv ${Math.round(a.conviction ?? a.confidence)}`
               )}
             </span>
+            {a.changed ? (
+              <span className="text-nofx-gold" title={a.change_reason || ''}>
+                {tr(language, '已修订', 'revised')}
+              </span>
+            ) : null}
           </>
         ) : (
           <span className={ui.muted}>
@@ -855,7 +868,8 @@ export function CoinsTab({
     (symbol: string) => {
       const b = scoreMap.get(symbol)
       if (!b) return -1
-      return b.bias === 'short' ? -b.score - 1 : b.score
+      // Rank by conviction (|edge|) so strong shorts surface too, not just longs.
+      return b.conviction ?? Math.abs((b.bull_score || 0) - (b.bear_score || 0))
     },
     [scoreMap]
   )

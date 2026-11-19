@@ -35,15 +35,27 @@ type coinScoreAuto struct {
 
 
 type coinScoreAnalysis struct {
-	Bias        string   `json:"bias"` // long | short | neutral
-	Score       float64  `json:"score"`
-	Horizon     string   `json:"horizon"` // short | swing
-	Confidence  float64  `json:"confidence"`
-	Reasons     []string `json:"reasons"`
-	Risks       []string `json:"risks"`
+	Bias        string  `json:"bias"` // long | short | neutral
+	BullScore   float64 `json:"bull_score"`
+	BearScore   float64 `json:"bear_score"`
+	Edge        float64 `json:"edge"`       // bull - bear
+	Conviction  float64 `json:"conviction"` // |edge|
+	Horizon     string  `json:"horizon"`    // short | swing
+	TFAlignment map[string]int `json:"tf_alignment,omitempty"`
+	LongCase    []string `json:"long_case"`
+	ShortCase   []string `json:"short_case"`
 	Invalidates string   `json:"invalidates"`
+	Changed     bool     `json:"changed,omitempty"`
+	ChangeReason string  `json:"change_reason,omitempty"`
+	MarketContext string `json:"market_context,omitempty"`
 	Sources     []string `json:"sources,omitempty"`
+	// Legacy display fields, derived from the v2 fields above.
+	Score      float64  `json:"score"`
+	Confidence float64  `json:"confidence"`
+	Reasons    []string `json:"reasons"`
+	Risks      []string `json:"risks"`
 }
+
 
 type coinScoreResult struct {
 	Symbol     string             `json:"symbol"`
@@ -218,12 +230,21 @@ func (s *Server) handleCoinScoreAnalyze(c *gin.Context) {
 // the strict JSON and saves the reading. A parse failure is kept in the result
 // (with the raw text); only a transport/AI error is returned as err.
 func (s *Server) analyzeCoinCore(ctx context.Context, userID string, model *store.AIModel, symbol, interval, lang string) (coinScoreResult, error) {
-	klines, err := binance.GetPublicKlines(ctx, symbol, interval, 200)
-	if err != nil || len(klines) < 30 {
-		return coinScoreResult{}, fmt.Errorf("not enough candles for %s: %v", symbol, err)
+	var tfs []scoreTF
+	for _, spec := range []struct {
+		iv string
+		n  int
+	}{{"15m", 80}, {"1h", 120}, {"4h", 60}} {
+		k, err := binance.GetPublicKlines(ctx, symbol, spec.iv, spec.n)
+		if err != nil || len(k) < 25 {
+			continue
+		}
+		tfs = append(tfs, scoreTF{Interval: spec.iv, Klines: k, Ind: computeIndicators(k)})
+	}
+	if len(tfs) == 0 {
+		return coinScoreResult{}, fmt.Errorf("not enough candles for %s", symbol)
 	}
 	ticker, _ := binance.GetPublicTicker(ctx, symbol)
-	ind := computeIndicators(klines)
 	snaps := s.copyTrade.Snapshots()
 	var sum *copytrade.SymbolSummary
 	for _, x := range copytrade.Symbols(snaps) {
@@ -234,25 +255,39 @@ func (s *Server) analyzeCoinCore(ctx context.Context, userID string, model *stor
 		}
 	}
 	holders := copytrade.Holders(snaps, symbol)
-	system, user := buildCoinScorePrompt(lang, symbol, interval, ticker, klines, ind, sum, holders)
+	prev := s.loadScoreMemory(userID, symbol)
+	system, user := buildCoinScorePrompt(lang, symbol, tfs, ticker, sum, holders, prev)
+
+	primary := "1h"
+	if interval != "" {
+		primary = interval
+	}
+	price := tfs[0].Klines[len(tfs[0].Klines)-1].Close
+	for _, tf := range tfs {
+		if tf.Interval == "1h" {
+			price = tf.Klines[len(tf.Klines)-1].Close
+		}
+	}
 	raw, err := s.runRealAITest(userID, model.ID, system, user)
 	if err != nil {
 		return coinScoreResult{}, err
 	}
-	res := coinScoreResult{Symbol: symbol, Interval: interval, ModelID: model.ID, ModelName: model.Name,
-		AnalyzedAt: time.Now().UnixMilli(), Price: klines[len(klines)-1].Close, Raw: raw}
+	res := coinScoreResult{Symbol: symbol, Interval: "15m+1h+4h", ModelID: model.ID, ModelName: model.Name,
+		AnalyzedAt: time.Now().UnixMilli(), Price: price, Raw: raw}
 	if a, perr := parseCoinScore(raw); perr != nil {
 		res.ParseError = "The AI reply was not valid JSON; showing the raw text."
 	} else {
 		res.Analysis = a
 	}
+	_ = primary
 	if data, merr := json.Marshal(res); merr == nil {
-		row := store.CopyTradeCoinScore{UserID: userID, Symbol: symbol, ModelID: model.ID, Interval: interval,
+		row := store.CopyTradeCoinScore{UserID: userID, Symbol: symbol, ModelID: model.ID, Interval: "15m+1h+4h",
 			Payload: string(data), AnalyzedAt: res.AnalyzedAt}
 		if serr := s.store.CopyTrade().SaveCoinScore(&row); serr != nil {
 			logger.Warnf("copy-trade coin score: save %s: %v", symbol, serr)
 			res.ParseError = strings.TrimSpace(res.ParseError + " (result not saved)")
 		}
+		s.saveScoreMemory(userID, symbol, res)
 	}
 	return res, nil
 }
@@ -460,6 +495,31 @@ func (s *Server) handleCoinScoreRunAll(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"started": true})
 }
 
+func (s *Server) loadScoreMemory(userID, symbol string) *store.CopyTradeScoreMemory {
+	m, err := s.store.CopyTrade().GetScoreMemory(userID, symbol)
+	if err != nil {
+		return nil
+	}
+	return m
+}
+
+func (s *Server) saveScoreMemory(userID, symbol string, res coinScoreResult) {
+	if res.Analysis == nil {
+		return
+	}
+	a := res.Analysis
+	thesis := a.MarketContext
+	if thesis == "" && len(a.Reasons) > 0 {
+		thesis = a.Reasons[0]
+	}
+	m := &store.CopyTradeScoreMemory{UserID: userID, Symbol: symbol, Bias: a.Bias,
+		Bull: a.BullScore, Bear: a.BearScore, Conviction: a.Conviction,
+		Invalidation: a.Invalidates, Thesis: thesis, LastAt: res.AnalyzedAt, LastPrice: res.Price}
+	if err := s.store.CopyTrade().SaveScoreMemory(m); err != nil {
+		logger.Warnf("copy-trade score memory: save %s: %v", symbol, err)
+	}
+}
+
 func parseCoinScore(raw string) (*coinScoreAnalysis, error) {
 	text := raw
 	if i := strings.LastIndex(text, "</think>"); i >= 0 {
@@ -474,20 +534,55 @@ func parseCoinScore(raw string) (*coinScoreAnalysis, error) {
 		return nil, err
 	}
 	a.Bias = strings.ToLower(strings.TrimSpace(a.Bias))
-	switch a.Bias {
-	case "long", "short", "neutral":
-	default:
-		a.Bias = "neutral"
-	}
 	a.Horizon = strings.ToLower(strings.TrimSpace(a.Horizon))
-	switch a.Horizon {
-	case "short", "swing":
-	default:
+	if a.Horizon != "short" && a.Horizon != "swing" {
 		a.Horizon = ""
 	}
-	a.Score = clampScore(a.Score)
-	a.Confidence = clampScore(a.Confidence)
+	// v2 scores; fall back to legacy single score for old-style replies.
+	if a.BullScore == 0 && a.BearScore == 0 && a.Score > 0 {
+		switch a.Bias {
+		case "short":
+			a.BearScore = a.Score
+		default:
+			a.BullScore = a.Score
+		}
+	}
+	a.BullScore = clampScore(a.BullScore)
+	a.BearScore = clampScore(a.BearScore)
+	a.Edge = a.BullScore - a.BearScore
+	if a.Bias != "long" && a.Bias != "short" && a.Bias != "neutral" {
+		switch {
+		case a.Edge > 5:
+			a.Bias = "long"
+		case a.Edge < -5:
+			a.Bias = "short"
+		default:
+			a.Bias = "neutral"
+		}
+	}
+	a.Conviction = clampScore(absf(a.Edge))
+	if a.Conviction == 0 {
+		a.Conviction = clampScore(a.Confidence)
+	}
+	// Derive legacy display fields.
+	a.Score = a.BullScore
+	if a.BearScore > a.Score {
+		a.Score = a.BearScore
+	}
+	a.Confidence = a.Conviction
+	if a.Bias == "short" {
+		a.Reasons, a.Risks = a.ShortCase, a.LongCase
+	} else {
+		a.Reasons, a.Risks = a.LongCase, a.ShortCase
+	}
 	return &a, nil
+}
+
+func absf(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func clampScore(v float64) float64 {
@@ -500,70 +595,12 @@ func clampScore(v float64) float64 {
 	return v
 }
 
-func buildCoinScorePrompt(lang, symbol, interval string, t *binance.MarketTicker, k []binance.MarketKline, ind indicatorSnapshot, sum *copytrade.SymbolSummary, holders []copytrade.Holder) (string, string) {
-	language := "English"
-	if lang == "zh" {
-		language = "Simplified Chinese"
-	}
-	system := `You are a disciplined crypto perpetual futures analyst. You judge ONE coin using the copy-trade consensus and the technicals provided. ` +
-		`Reply with ONE strict JSON object and nothing else:
-{"bias":"long|short|neutral","score":0-100,"horizon":"short|swing","confidence":0-100,"reasons":["..."],"risks":["..."],"invalidates":"one sentence","sources":["copytrade","technicals"]}
-Rules: score is the strength/credibility of the bias, 0-100 (>=70 strong, 40-70 mixed, <40 weak). ` +
-		`Use "neutral" when unclear. Do NOT give entry, stop-loss or take-profit prices, and do not tell the user to place an order. ` +
-		`State conditionally ("if you are trading X, then ..."), never as certainty. When copy-trade consensus and technicals disagree, say so and say which you weight more. ` +
-		`Write reasons, risks and invalidates in ` + language + `.`
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "Coin: %s (Binance USDT-M perpetual)\nTimeframe: %s\n", symbol, interval)
-	if t != nil {
-		fmt.Fprintf(&b, "Last price: %s  Mark: %s  24h change: %.2f%%  24h high/low: %s / %s  24h quote volume: %s USDT  Funding rate: %.4f%%\n",
-			fmtNum(t.LastPrice), fmtNum(t.MarkPrice), t.PriceChangePct, fmtNum(t.High24h), fmtNum(t.Low24h), fmtNum(t.QuoteVolume24h), t.FundingRate*100)
-	}
-	fmt.Fprintf(&b, "\nIndicators (last bar):\nMA7 %s  MA25 %s  MA99 %s\nEMA12 %s  EMA26 %s\nMACD DIF %s  DEA %s  HIST %s\nRSI6 %.2f  RSI14 %.2f\nKDJ K %.2f  D %.2f  J %.2f\nBOLL up %s  mid %s  low %s\nATR14 %s\n",
-		fmtNum(ind.MA7), fmtNum(ind.MA25), fmtNum(ind.MA99), fmtNum(ind.EMA12), fmtNum(ind.EMA26),
-		fmtNum(ind.MACD), fmtNum(ind.MACDSignal), fmtNum(ind.MACDH), ind.RSI6, ind.RSI14, ind.K, ind.D, ind.J,
-		fmtNum(ind.BollUp), fmtNum(ind.BollMid), fmtNum(ind.BollDn), fmtNum(ind.ATR14))
-
-	recent := k
-	if len(recent) > 40 {
-		recent = recent[len(recent)-40:]
-	}
-	b.WriteString("\nLast candles (UTC time, open, high, low, close, volume):\n")
-	for _, c := range recent {
-		fmt.Fprintf(&b, "%s,%s,%s,%s,%s,%s\n", time.Unix(c.Time, 0).UTC().Format("01-02 15:04"),
-			fmtNum(c.Open), fmtNum(c.High), fmtNum(c.Low), fmtNum(c.Close), fmtNum(c.Volume))
-	}
-
-	b.WriteString("\nFollowed copy-trade consensus (this is the lead-trader crowd):\n")
-	if sum == nil {
-		b.WriteString("no followed trader currently holds or traded this coin.\n")
-	} else {
-		fmt.Fprintf(&b, "Long: %d traders, %s USDT%s\n", sum.Long.Traders, fmtNum(sum.Long.Value), sideExtra(sum.Long))
-		fmt.Fprintf(&b, "Short: %d traders, %s USDT%s\n", sum.Short.Traders, fmtNum(sum.Short.Value), sideExtra(sum.Short))
-		fmt.Fprintf(&b, "Confidence: %s %.0f/100 (agreement %.2f, quality %.2f, health %.2f, long share %.2f)\n",
-			sum.Confidence.Direction, sum.Confidence.Score, sum.Confidence.Agreement, sum.Confidence.Quality, sum.Confidence.Health, sum.Confidence.LongShare)
-		fmt.Fprintf(&b, "Rank score: %.0f dir=%s strength=%.0f independence=%.2f crowding=%.2f liquidity=%.2f entry=%.2f\n",
-			sum.Rank.Score, sum.Rank.Direction, sum.Rank.Strength, sum.Rank.Independence, sum.Rank.Crowding, sum.Rank.Liquidity, sum.Rank.Entry)
-		fmt.Fprintf(&b, "Fresh-call (opens/adds): dir=%s score=%.0f longCalls=%d shortCalls=%d burst=%d entryGapPct=%.2f\n",
-			sum.Shadow.Direction, sum.Shadow.Score, sum.Shadow.LongCalls, sum.Shadow.ShortCalls, sum.Shadow.Burst, sum.Shadow.EntryGapPct)
-		if sum.HighFreq > 0 {
-			fmt.Fprintf(&b, "Note: %d high-frequency holders (weighted down).\n", sum.HighFreq)
-		}
-		fmt.Fprintf(&b, "24h quote volume: %s USDT\n", fmtNum(sum.Volume24h))
-	}
-	if len(holders) > 0 {
-		b.WriteString("Top holders:\n")
-		n := len(holders)
-		if n > 5 {
-			n = 5
-		}
-		for _, h := range holders[:n] {
-			fmt.Fprintf(&b, "- %s %s %s USDT entry=%s return=%.1f%% style=%s score=%.0f\n",
-				h.Nickname, h.Side, fmtNum(h.EntryValue), fmtNum(h.EntryPrice), h.ReturnPct, h.Style, h.Score)
-		}
-	}
-	return system, b.String()
+type scoreTF struct {
+	Interval string
+	Klines   []binance.MarketKline
+	Ind      indicatorSnapshot
 }
+
 
 func sideExtra(s copytrade.SideSummary) string {
 	extra := ""
@@ -584,6 +621,10 @@ type coinScoreBrief struct {
 	Symbol     string  `json:"symbol"`
 	Bias       string  `json:"bias"`
 	Horizon    string  `json:"horizon"`
+	BullScore  float64 `json:"bull_score"`
+	BearScore  float64 `json:"bear_score"`
+	Edge       float64 `json:"edge"`
+	Conviction float64 `json:"conviction"`
 	Score      float64 `json:"score"`
 	Confidence float64 `json:"confidence"`
 	AnalyzedAt int64   `json:"analyzed_at"`
@@ -603,7 +644,87 @@ func (s *Server) handleCoinScoresList(c *gin.Context) {
 			continue
 		}
 		out = append(out, coinScoreBrief{Symbol: r.Symbol, Bias: res.Analysis.Bias, Horizon: res.Analysis.Horizon,
-			Score: res.Analysis.Score, Confidence: res.Analysis.Confidence, AnalyzedAt: r.AnalyzedAt, ModelID: r.ModelID})
+			BullScore: res.Analysis.BullScore, BearScore: res.Analysis.BearScore, Edge: res.Analysis.Edge,
+			Conviction: res.Analysis.Conviction, Score: res.Analysis.Score, Confidence: res.Analysis.Confidence,
+			AnalyzedAt: r.AnalyzedAt, ModelID: r.ModelID})
 	}
 	c.JSON(http.StatusOK, gin.H{"items": out})
+}
+
+func buildCoinScorePrompt(lang, symbol string, tfs []scoreTF, t *binance.MarketTicker, sum *copytrade.SymbolSummary, holders []copytrade.Holder, prev *store.CopyTradeScoreMemory) (string, string) {
+	language := "English"
+	if lang == "zh" {
+		language = "Simplified Chinese"
+	}
+	system := `You are a disciplined crypto perpetual futures analyst. Judge ONE coin from BOTH sides using the copy-trade consensus, multi-timeframe technicals and derivatives data provided.
+Reply with ONE strict JSON object and nothing else:
+{"bull_score":0-100,"bear_score":0-100,"bias":"long|short|neutral","conviction":0-100,"horizon":"short|swing","tf_alignment":{"15m":-1|0|1,"1h":-1|0|1,"4h":-1|0|1},"long_case":["..."],"short_case":["..."],"invalidates":"one sentence","market_context":"one sentence","changed":true|false,"change_reason":"..."}
+Rules:
+- Score bull and bear INDEPENDENTLY and symmetrically. Do NOT favor long; a coin trends down about half the time.
+- bias = the side with the clearly higher score. Use neutral ONLY when |bull_score-bear_score| <= 10, and say why.
+- conviction = |bull_score - bear_score|. Low conviction is allowed and honest.
+- Check SHORT evidence explicitly: price below EMA/MA, lower highs, MACD<0, RSI<50, breakdown, positive/rising funding (longs crowded), OI up while price falls, underperformance vs BTC, copy-trade crowd long and trapped/underwater.
+- Check LONG evidence symmetrically.
+- If a PREVIOUS READING is given below, treat this as a re-evaluation: change only on new evidence or a triggered invalidation, and set changed=true with change_reason; otherwise keep it and set changed=false.
+- NEVER give entry/stop/take-profit and never instruct an order. Conditional wording only.
+- Write long_case, short_case, invalidates and market_context in ` + language + `.`
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Coin: %s (Binance USDT-M perpetual)\n", symbol)
+	if t != nil {
+		fmt.Fprintf(&b, "Last %s  mark %s  24h %.2f%%  24h high/low %s/%s  24h vol %s USDT  funding %.4f%%\n",
+			fmtNum(t.LastPrice), fmtNum(t.MarkPrice), t.PriceChangePct, fmtNum(t.High24h), fmtNum(t.Low24h), fmtNum(t.QuoteVolume24h), t.FundingRate*100)
+	}
+	for _, tf := range tfs {
+		fmt.Fprintf(&b, "\n[%s] MA7 %s MA25 %s MA99 %s EMA12 %s EMA26 %s MACD %s/%s/%s RSI6 %.1f RSI14 %.1f KDJ %.1f/%.1f/%.1f BOLL %s/%s/%s ATR %s\n",
+			tf.Interval, fmtNum(tf.Ind.MA7), fmtNum(tf.Ind.MA25), fmtNum(tf.Ind.MA99), fmtNum(tf.Ind.EMA12), fmtNum(tf.Ind.EMA26),
+			fmtNum(tf.Ind.MACD), fmtNum(tf.Ind.MACDSignal), fmtNum(tf.Ind.MACDH), tf.Ind.RSI6, tf.Ind.RSI14, tf.Ind.K, tf.Ind.D, tf.Ind.J,
+			fmtNum(tf.Ind.BollUp), fmtNum(tf.Ind.BollMid), fmtNum(tf.Ind.BollDn), fmtNum(tf.Ind.ATR14))
+		recent := tf.Klines
+		if len(recent) > 40 {
+			recent = recent[len(recent)-40:]
+		}
+		b.WriteString("candles(time,o,h,l,c,v):\n")
+		for _, c := range recent {
+			fmt.Fprintf(&b, "%s,%s,%s,%s,%s,%s\n", time.Unix(c.Time, 0).UTC().Format("01-02 15:04"),
+				fmtNum(c.Open), fmtNum(c.High), fmtNum(c.Low), fmtNum(c.Close), fmtNum(c.Volume))
+		}
+	}
+
+	b.WriteString("\nFollowed copy-trade consensus (lead-trader crowd; treat crowded-and-underwater longs as a REVERSE/short signal):\n")
+	if sum == nil {
+		b.WriteString("no followed trader currently holds or traded this coin.\n")
+	} else {
+		fmt.Fprintf(&b, "Long: %d traders, %s USDT%s\n", sum.Long.Traders, fmtNum(sum.Long.Value), sideExtra(sum.Long))
+		fmt.Fprintf(&b, "Short: %d traders, %s USDT%s\n", sum.Short.Traders, fmtNum(sum.Short.Value), sideExtra(sum.Short))
+		fmt.Fprintf(&b, "Confidence %s %.0f/100 (agreement %.2f quality %.2f health %.2f longShare %.2f)\n",
+			sum.Confidence.Direction, sum.Confidence.Score, sum.Confidence.Agreement, sum.Confidence.Quality, sum.Confidence.Health, sum.Confidence.LongShare)
+		fmt.Fprintf(&b, "Rank %.0f dir=%s strength=%.0f independence=%.2f crowding=%.2f liquidity=%.2f entry=%.2f\n",
+			sum.Rank.Score, sum.Rank.Direction, sum.Rank.Strength, sum.Rank.Independence, sum.Rank.Crowding, sum.Rank.Liquidity, sum.Rank.Entry)
+		fmt.Fprintf(&b, "Fresh-call dir=%s score=%.0f longCalls=%d shortCalls=%d burst=%d entryGapPct=%.2f\n",
+			sum.Shadow.Direction, sum.Shadow.Score, sum.Shadow.LongCalls, sum.Shadow.ShortCalls, sum.Shadow.Burst, sum.Shadow.EntryGapPct)
+		if sum.Long.Trapped+sum.Short.Trapped > 0 {
+			fmt.Fprintf(&b, "Trapped holders: long %d, short %d (deep-in-loss, often reversal candidates)\n", sum.Long.Trapped, sum.Short.Trapped)
+		}
+		if sum.HighFreq > 0 {
+			fmt.Fprintf(&b, "Note: %d high-frequency holders (weighted down).\n", sum.HighFreq)
+		}
+		fmt.Fprintf(&b, "24h quote volume: %s USDT\n", fmtNum(sum.Volume24h))
+	}
+	if len(holders) > 0 {
+		b.WriteString("Top holders:\n")
+		n := len(holders)
+		if n > 5 {
+			n = 5
+		}
+		for _, h := range holders[:n] {
+			fmt.Fprintf(&b, "- %s %s %s USDT entry=%s return=%.1f%% style=%s score=%.0f\n",
+				h.Nickname, h.Side, fmtNum(h.EntryValue), fmtNum(h.EntryPrice), h.ReturnPct, h.Style, h.Score)
+		}
+	}
+	if prev != nil {
+		fmt.Fprintf(&b, "\nPREVIOUS READING (%s, price %s): bias=%s bull=%.0f bear=%.0f conviction=%.0f invalidation=%q\n",
+			time.UnixMilli(prev.LastAt).UTC().Format("01-02 15:04"), fmtNum(prev.LastPrice), prev.Bias, prev.Bull, prev.Bear, prev.Conviction, prev.Invalidation)
+	}
+	return system, b.String()
 }

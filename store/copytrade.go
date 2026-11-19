@@ -87,7 +87,7 @@ func (s *CopyTradeStore) initTables() error {
 	if err := s.db.AutoMigrate(&CopyTradeFollow{}, &CopyTradeFill{}, &CopyTradeSignal{},
 		&CopyTradeExclusion{}, &CopyTradeAutoLog{},
 		&CopyTradeBoardMember{}, &CopyTradePaperRoster{}, &CopyTradePaperFill{},
-		&CopyTradeCoinScore{}); err != nil {
+		&CopyTradeCoinScore{}, &CopyTradeScoreMemory{}); err != nil {
 		return err
 	}
 	if old {
@@ -580,4 +580,35 @@ func (s *CopyTradeStore) ListCoinScores(userID string) ([]CopyTradeCoinScore, er
 	var out []CopyTradeCoinScore
 	err := s.db.Where("user_id = ?", userID).Order("analyzed_at DESC").Find(&out).Error
 	return out, err
+}
+
+// CopyTradeScoreMemory is the last reading of one coin, fed back into the next
+// run so the model re-evaluates instead of starting from scratch.
+type CopyTradeScoreMemory struct {
+	UserID       string  `gorm:"column:user_id;primaryKey;uniqueIndex:idx_score_mem,priority:1" json:"-"`
+	Symbol       string  `gorm:"column:symbol;primaryKey;uniqueIndex:idx_score_mem,priority:2" json:"symbol"`
+	Bias         string  `gorm:"column:bias" json:"bias"`
+	Bull         float64 `gorm:"column:bull" json:"bull"`
+	Bear         float64 `gorm:"column:bear" json:"bear"`
+	Conviction   float64 `gorm:"column:conviction" json:"conviction"`
+	Invalidation string  `gorm:"column:invalidation" json:"invalidation"`
+	Thesis       string  `gorm:"column:thesis" json:"thesis"`
+	LastAt       int64   `gorm:"column:last_at" json:"last_at"`
+	LastPrice    float64 `gorm:"column:last_price" json:"last_price"`
+}
+
+func (CopyTradeScoreMemory) TableName() string { return "copytrade_score_memory" }
+
+func (s *CopyTradeStore) SaveScoreMemory(m *CopyTradeScoreMemory) error { return s.db.Save(m).Error }
+
+func (s *CopyTradeStore) GetScoreMemory(userID, symbol string) (*CopyTradeScoreMemory, error) {
+	var m CopyTradeScoreMemory
+	err := s.db.Where("user_id = ? AND symbol = ?", userID, symbol).First(&m).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
 }
