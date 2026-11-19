@@ -151,6 +151,7 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 
 	if decision != nil {
 		blockUnsafeOpenings(decision.Decisions, ctx, engine.Exchange(), time.Now())
+		blockAgainstPoolDirection(decision.Decisions, ctx)
 	}
 	if decision != nil {
 		decision.Timestamp = time.Now()
@@ -363,6 +364,41 @@ func blockUnsafeOpenings(decisions []Decision, ctx *Context, exchange string, no
 			logger.Infof("🚫 Opening %s blocked: stale/unavailable quote or indicator timestamps", d.Symbol)
 			d.Action = "wait"
 			d.Reasoning = "Opening blocked: stale/unavailable quote or indicator timestamps. " + d.Reasoning
+		}
+	}
+}
+
+// RespectPoolDirection, when true, blocks opening against a coin pool's
+// indicated side (long-only pool coin cannot be shorted, and vice versa).
+// Default false: this only takes effect when explicitly enabled.
+var RespectPoolDirection = false
+
+func blockAgainstPoolDirection(decisions []Decision, ctx *Context) {
+	if !RespectPoolDirection || ctx == nil {
+		return
+	}
+	want := map[string]string{}
+	for _, c := range ctx.CandidateCoins {
+		if c.Direction == "long" || c.Direction == "short" {
+			want[market.Normalize(c.Symbol)] = c.Direction
+		}
+	}
+	if len(want) == 0 {
+		return
+	}
+	for i := range decisions {
+		d := &decisions[i]
+		if d.Action != "open_long" && d.Action != "open_short" {
+			continue
+		}
+		w := want[market.Normalize(d.Symbol)]
+		if w == "" {
+			continue
+		}
+		if (w == "long" && d.Action == "open_short") || (w == "short" && d.Action == "open_long") {
+			logger.Infof("🚫 Opening %s blocked: coin-pool side is %s only", d.Symbol, w)
+			d.Action = "wait"
+			d.Reasoning = "Blocked: the AI coin pool designates this coin as " + w + " only. " + d.Reasoning
 		}
 	}
 }

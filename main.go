@@ -104,6 +104,10 @@ func main() {
 	// "bollinger_horn" re-screens Binance each cycle.
 	kernel.CoinPoolResolver = st.CoinPool().Symbols
 	kernel.CoinPoolDetailResolver = st.CoinPool().CoinsByID
+	// Optional: enforce coin-pool direction as a hard block (off by default).
+	if os.Getenv("NOFX_RESPECT_POOL_DIRECTION") == "1" {
+		kernel.RespectPoolDirection = true
+	}
 	kernel.HornResolver = coinpool.Shared.HornSymbols
 	// The 爆发榜 board feeds the "explosive" and "hybrid" coin sources.
 	kernel.ExplosiveResolver = func(ctx context.Context, limit int) ([]string, error) {
