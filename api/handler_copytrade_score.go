@@ -77,6 +77,8 @@ func (s *Server) registerCopyTradeScoreRoutes(protected *gin.RouterGroup) {
 	s.route(protected, "PUT", "/copytrade/coin-score/model", "Set the coin-score model (body: model_id)", s.handleCoinScoreModelPut)
 	s.route(protected, "GET", "/copytrade/coin-scores", "Saved AI readings for every coin (list column)", s.handleCoinScoresList)
 	s.route(protected, "GET", "/copytrade/coin-score/outcomes", "Forward-return hit rate of past scores (by side, band, horizon)", s.handleCoinScoreOutcomes)
+	s.route(protected, "GET", "/copytrade/coin-pool", "Current AI coin pool for this user", s.handleCoinPoolGet)
+	s.route(protected, "POST", "/copytrade/coin-pool/generate", "Rebuild the AI coin pool (<=10, long/short) from current scores", s.handleCoinPoolGenerate)
 	s.route(protected, "GET", "/copytrade/coin-score/settings", "Scheduled analyze-all settings and latest run status", s.handleCoinScoreSettingsGet)
 	s.route(protected, "PUT", "/copytrade/coin-score/settings", "Save scheduled analyze-all settings (body: enabled, interval_minutes)", s.handleCoinScoreSettingsPut)
 	s.route(protected, "POST", "/copytrade/coin-score/run-all", "Analyze every coin on the by-coin page now (async; poll settings for progress)", s.handleCoinScoreRunAll)
