@@ -445,7 +445,8 @@ func (a *paperAcc) row(table, label string) PaperRow {
 		if x.benched {
 			benched++
 			r.AvgExcess += x.excess
-			if x.ret > x.excess {
+			// excess = return - benchmark, so beating the benchmark is excess > 0.
+			if x.excess > 0 {
 				beat++
 			}
 		}

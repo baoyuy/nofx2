@@ -81,6 +81,10 @@ func TestPaperReportMirrorsBacktest(t *testing.T) {
 	if all.AvgDelayMin != 1 {
 		t.Fatalf("avg delay = %v min, want 1", all.AvgDelayMin)
 	}
+	// A +9.9% position against a flat BTC benchmark beats it (excess > 0).
+	if all.Beat != 1 {
+		t.Fatalf("beat BTC = %v, want 1 (excess must use ret-bench>0)", all.Beat)
+	}
 }
 
 func TestPaperReportShortWinsWhenPriceFalls(t *testing.T) {
