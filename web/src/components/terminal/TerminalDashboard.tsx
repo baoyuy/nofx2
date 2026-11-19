@@ -17,13 +17,15 @@ import { LiquidationMap } from './LiquidationMap'
 import { KlineChart } from './KlineChart'
 import { ExecutionLog } from './ExecutionLog'
 import { formatRequestError } from '../../lib/requestErrors'
-import { SignalMatrix } from './SignalMatrix'
+import { SignalMatrix, type MatrixSource } from './SignalMatrix'
+import type { CoinPoolInfo } from '../../lib/api/copyTrade'
 import { RiskRadar } from './RiskRadar'
 import { EdgeProfile } from './EdgeProfile'
 import { useDemoEngine } from '../../lib/demo/useDemoEngine'
 import { useLanguage } from '../../contexts/LanguageContext'
 import { TerminalTime } from './TerminalTime'
 import { MirrorPanel } from '../trader/MirrorPanel'
+import { getEventCards } from '../../lib/api/events'
 
 // Public market snapshots are shared across traders; focus must not trigger
 // expensive scans. Keep the existing refresh budgets and hidden-page pause.
@@ -197,6 +199,14 @@ export function TerminalDashboard({
     // Public snapshot: start alongside trader discovery, not after account data.
     { ...SNAPSHOT_READ_OPTIONS, refreshInterval: 120000 }
   )
+  // The meta-AI coin pool (<=10, long/short) — can drive the signal matrix so the
+  // dashboard follows the same coins the strategy would trade.
+  const { data: coinPool } = useSWR<CoinPoolInfo>(
+    'copytrade/coin-pool',
+    () => api.getCoinPool(),
+    { ...SNAPSHOT_READ_OPTIONS, refreshInterval: 30000 }
+  )
+  const [matrixSource, setMatrixSource] = useState<MatrixSource>('pool')
   // The signal matrix (and through it the cost/liquidation map and the
   // topology's signal column) follows the AI: it scores only this cycle's
   // candidates plus whatever the trader still holds. Hyperliquid synthetic
@@ -210,9 +220,31 @@ export function TerminalDashboard({
       .filter((s) => s && !seen.has(s) && (seen.add(s), true))
       .sort()
   }, [propPositions, propDecisions])
+  const poolCoins = coinPool?.coins ?? []
+  const poolSymbols = useMemo(
+    () => poolCoins.map((c) => baseLabel(c.symbol).toUpperCase()).filter(Boolean),
+    [poolCoins]
+  )
+  const aiScoreMap = useMemo(() => {
+    const m: Record<string, { dir: 'long' | 'short' | 'neutral'; score: number }> = {}
+    for (const c of poolCoins) {
+      const k = baseLabel(c.symbol).toUpperCase()
+      if (k) m[k] = { dir: c.direction, score: c.score ?? 0 }
+    }
+    return m
+  }, [poolCoins])
+  // Effective source: default to the pool, but fall back to the trader's coins
+  // when the pool is empty so the matrix is never blank by accident.
+  const effSource: MatrixSource =
+    matrixSource === 'pool' && poolSymbols.length === 0 ? 'trader' : matrixSource
+  const matrixSymbols = useMemo(() => {
+    if (effSource === 'pool') return poolSymbols
+    if (effSource === 'both') return [...new Set([...poolSymbols, ...aiSymbols])].sort()
+    return aiSymbols
+  }, [effSource, poolSymbols, aiSymbols])
   const { data: realSignalRank } = useSWR(
-    traderId && aiSymbols.length ? ['signal-rank', aiSymbols.join(',')] : null,
-    () => api.getDirectionChangeLeaderboard(30, true, aiSymbols),
+    matrixSymbols.length ? ['signal-rank', matrixSymbols.join(',')] : null,
+    () => api.getDirectionChangeLeaderboard(30, true, matrixSymbols),
     { ...SNAPSHOT_READ_OPTIONS, refreshInterval: 120000 }
   )
 
@@ -234,6 +266,12 @@ export function TerminalDashboard({
   }, [])
   const sim = useDemoEngine(demo)
   const on = demo && !!sim
+  const { data: dashboardCardData } = useSWR(
+    traderId && !on ? ['dashboard-event-cards', traderId] : null,
+    () => getEventCards(traderId),
+    { refreshInterval: 60000, shouldRetryOnError: false }
+  )
+  const dashboardCards = dashboardCardData?.cards ?? []
 
   const status = on ? sim!.status : propStatus
   const account = on ? sim!.account : propAccount
@@ -323,6 +361,11 @@ export function TerminalDashboard({
 
   const sc: CSSProperties = { padding: '10px 14px' }
   const cellBorder = '1px solid var(--tm-hair)'
+  const cardTypeCn: Record<string, string> = {
+    earnings: '财报', listing: '上市', funding: '融资', blackswan: '黑天鹅', regulation: '监管',
+    macro: '宏观', mna: '并购', etf: 'ETF', protocol: '协议', security: '安全', adoption: '采用',
+    announcement: '公告', other: '其他', sentiment: '情绪',
+  }
 
   // Portal the trader selector + run status into the global nav so the app has
   // a single top bar (no separate dashboard titlebar).
@@ -512,7 +555,7 @@ export function TerminalDashboard({
             <OrderBook symbol={activeRequestSymbol} demo={on} markPrice={positions?.find((p) => baseLabel(p.symbol) === activeSym)?.entry_price} />
           </div>
           <div style={{ ...sc, height: ROW1_H, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            <SignalMatrix items={signalRank?.items} max={18} active={activeSym} onSelect={setSelectedSym} />
+            <SignalMatrix items={signalRank?.items} max={18} active={activeSym} onSelect={setSelectedSym} aiScore={aiScoreMap} source={effSource} onSourceChange={setMatrixSource} poolUpdatedAt={coinPool?.updated_at} />
             {/* the live K-line always sits under the selector and flexes to fill */}
             <div className="tm-rule" style={{ margin: '10px 0 8px' }} />
             <div style={{ flex: 1, minHeight: 0 }}>
@@ -581,6 +624,44 @@ export function TerminalDashboard({
               },
             ]}
           />
+        </div>
+        <div className="tm-rule" />
+
+        {/* event cards: the tagged catalysts the AI actually sees this cycle */}
+        <div style={sc}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 6 }}>
+            <span className="tm-px" style={{ fontSize: 12 }}>{isZh ? '事件卡 · AI 执行依据' : 'Event cards · AI inputs'}</span>
+            <span className="tm-sc">{isZh ? '信息打标提炼的催化剂，每轮更新，未核实、非交易指令' : 'Tagged catalysts refreshed each cycle; unverified, not instructions'}</span>
+            <span className="tm-sc" style={{ marginLeft: 'auto' }}>{dashboardCards.length} {isZh ? '张' : 'cards'}</span>
+          </div>
+          {dashboardCards.length === 0 ? (
+            <div className="tm-sc" style={{ padding: '6px 0' }}>{isZh ? '暂无事件卡（等待下一轮打标）' : 'No event cards yet'}</div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 10 }}>
+              {dashboardCards.slice(0, 12).map((card) => {
+                const dirColor = card.direction === 'bullish' ? 'var(--tm-up)' : card.direction === 'bearish' ? 'var(--tm-dn)' : 'var(--tm-ink-2)'
+                const dirLabel = card.direction === 'bullish' ? (isZh ? '利好' : 'Bull') : card.direction === 'bearish' ? (isZh ? '利空' : 'Bear') : (isZh ? '中性' : 'Neutral')
+                const typeLabel = isZh ? (cardTypeCn[card.type] || card.type) : card.type
+                const sup = card.surprise === 'above' ? (isZh ? '超预期' : 'Above') : card.surprise === 'below' ? (isZh ? '不及预期' : 'Below') : card.surprise === 'inline' ? (isZh ? '符合预期' : 'Inline') : (isZh ? '未知' : 'Unknown')
+                return (
+                  <div key={`${card.trader_id}:${card.coin}:${card.card_id}`} style={{ border: cellBorder, borderRadius: 8, padding: '8px 10px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                      <b style={{ color: 'var(--tm-ink)' }}>{card.coin}</b>
+                      <span className="tm-sc">{typeLabel}</span>
+                      <span style={{ color: dirColor }}>{dirLabel}</span>
+                      <span className="tm-sc">{sup}</span>
+                      <span className="tm-sc" style={{ marginLeft: 'auto' }}>{isZh ? '重要度' : 'imp'} {card.importance}</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--tm-ink)', marginTop: 4 }}>{card.title}</div>
+                    {card.reason && <div className="tm-sc" style={{ marginTop: 2, fontSize: 11 }}>{card.reason.slice(0, 120)}</div>}
+                    {card.is_node && card.node_at && (
+                      <div className="tm-sc" style={{ fontSize: 11, color: 'var(--tm-dn)' }}>{isZh ? '节点 ' : 'node '}{new Date(card.node_at).toLocaleString()}</div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
         <div className="tm-rule" />
 

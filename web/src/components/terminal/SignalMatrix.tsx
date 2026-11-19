@@ -50,6 +50,13 @@ interface Cell {
   intensity: number
 }
 
+export type MatrixSource = 'trader' | 'pool' | 'both'
+
+interface AiScore {
+  dir: 'long' | 'short' | 'neutral'
+  score: number
+}
+
 interface SignalMatrixProps {
   items?: SignalRankItem[]
   max?: number
@@ -57,6 +64,13 @@ interface SignalMatrixProps {
   active?: string
   /** click a cell to switch the active instrument */
   onSelect?: (symbol: string) => void
+  /** per-symbol AI score/direction overlay, keyed by base symbol (upper, no USDT) */
+  aiScore?: Record<string, AiScore>
+  /** when set, shows the data-source switch (trader / pool / both) */
+  source?: MatrixSource
+  onSourceChange?: (s: MatrixSource) => void
+  /** coin-pool last-updated timestamp (ms) */
+  poolUpdatedAt?: number
 }
 
 export function SignalMatrix({
@@ -64,6 +78,10 @@ export function SignalMatrix({
   max = 36,
   active,
   onSelect,
+  aiScore,
+  source,
+  onSourceChange,
+  poolUpdatedAt,
 }: SignalMatrixProps) {
   const { language } = useLanguage()
   const isZh = language === 'zh'
@@ -127,6 +145,31 @@ export function SignalMatrix({
         {onSelect && (
           <span style={{ color: 'var(--tm-red)' }}>{isZh ? '点击切换 ▸' : 'click to switch ▸'}</span>
         )}
+        {onSourceChange && (
+          <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+            {(['trader', 'pool', 'both'] as MatrixSource[]).map((k) => (
+              <button
+                key={k}
+                onClick={() => onSourceChange(k)}
+                style={{
+                  fontSize: 9,
+                  padding: '0 4px',
+                  border: '1px solid var(--tm-hair)',
+                  background: source === k ? 'var(--tm-ink)' : 'transparent',
+                  color: source === k ? 'var(--tm-bg, #fff)' : 'inherit',
+                  cursor: 'pointer',
+                }}
+              >
+                {k === 'trader' ? (isZh ? '交易员' : 'trader') : k === 'pool' ? (isZh ? 'AI币池' : 'pool') : isZh ? '合并' : 'both'}
+              </button>
+            ))}
+            {poolUpdatedAt ? (
+              <span style={{ opacity: 0.7 }}>
+                {isZh ? `池更新 ${Math.max(0, Math.round((Date.now() - poolUpdatedAt) / 60000))}m前` : `pool ${Math.max(0, Math.round((Date.now() - poolUpdatedAt) / 60000))}m ago`}
+              </span>
+            ) : null}
+          </span>
+        )}
         <span style={{ marginLeft: 'auto' }}>{isZh ? `${view.cells.length} 个信号` : `${view.cells.length} signals`}</span>
       </div>
 
@@ -140,10 +183,21 @@ export function SignalMatrix({
         {view.cells.map((c) => {
           const base = baseSymbol(c.symbol)
           const isActive = !!active && base === active.toUpperCase()
+          const ai = aiScore?.[base.toUpperCase()]
+          // factor bias (bullish/bearish) vs AI side (long/short)
+          const aiDir = ai && ai.dir !== 'neutral' ? (ai.dir === 'long' ? 'bullish' : 'bearish') : null
+          const conflict = !!aiDir && c.bias !== 'neutral' && aiDir !== c.bias
           return (
             <div
               key={`${c.rank}-${c.symbol}`}
-              title={isZh ? `${base} · #${c.rank} · ${biasLabel(c.bias)} · ${c.score} — 点击切换` : `${base} · #${c.rank} · ${c.bias} · ${c.score} — click to switch`}
+              title={
+                (isZh ? `${base} · #${c.rank} · 因子${biasLabel(c.bias)} · ${c.score}` : `${base} · #${c.rank} · ${c.bias} · ${c.score}`) +
+                (ai
+                  ? ` | AI ${ai.dir === 'short' ? (isZh ? '空' : 'S') : ai.dir === 'long' ? (isZh ? '多' : 'L') : isZh ? '中' : 'N'} ${Math.round(ai.score)}` +
+                    (conflict ? (isZh ? ' · ⚠冲突' : ' · conflict') : '')
+                  : '') +
+                (isZh ? ' — 点击切换' : ' — click to switch')
+              }
               onClick={onSelect ? () => onSelect(base) : undefined}
               style={{
                 padding: '4px 5px',
@@ -178,6 +232,24 @@ export function SignalMatrix({
               >
                 #{c.rank} · {fmtScore(c.score)}
               </div>
+              {ai ? (
+                <div
+                  style={{
+                    fontSize: 8,
+                    marginTop: 1,
+                    whiteSpace: 'nowrap',
+                    color:
+                      ai.dir === 'short'
+                        ? 'var(--tm-dn)'
+                        : ai.dir === 'long'
+                          ? 'var(--tm-up)'
+                          : 'var(--tm-muted)',
+                  }}
+                >
+                  AI {ai.dir === 'short' ? (isZh ? '空' : 'S') : ai.dir === 'long' ? (isZh ? '多' : 'L') : isZh ? '中' : 'N'} {Math.round(ai.score)}
+                  {conflict ? <span style={{ color: 'var(--tm-dn)' }}> ⚠</span> : <span style={{ color: 'var(--tm-up)' }}> ✓</span>}
+                </div>
+              ) : null}
             </div>
           )
         })}
