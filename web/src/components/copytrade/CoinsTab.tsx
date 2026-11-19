@@ -871,9 +871,20 @@ export function CoinsTab({
     <div className="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)]">
       <div>
         <aside className={`${ui.panel} max-h-[760px] overflow-y-auto`}>
-          <h2 className={ui.title}>
-            {tr(language, '关注的人在做的币', 'Coins followed traders hold')}
-          </h2>
+          <div className="mb-2 flex items-baseline justify-between gap-2">
+            <h2 className={ui.title}>
+              {tr(language, '关注的人在做的币', 'Coins followed traders hold')}
+            </h2>
+            <span className={`${ui.muted} whitespace-nowrap text-xs tabular-nums`}>
+              {bias === 'all'
+                ? tr(language, `共 ${symbols.length} 个币`, `${symbols.length} coins`)
+                : tr(
+                    language,
+                    `${shown.length}/${symbols.length} 个币`,
+                    `${shown.length}/${symbols.length} coins`
+                  )}
+            </span>
+          </div>
           <div className="mb-2 grid grid-cols-2 gap-2">
             <select
               className={ui.input}
