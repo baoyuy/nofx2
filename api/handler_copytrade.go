@@ -71,6 +71,7 @@ func (s *Server) StartCopyTrade(ctx context.Context) {
 	go m.Run(ctx)
 	// Scheduled per-coin AI readings (off unless enabled in settings).
 	s.StartCoinScoreAuto(ctx)
+	s.StartScoreOutcomeLoop(ctx)
 }
 
 // copyTradeFreshness drops traders not refreshed for this long from the AI's

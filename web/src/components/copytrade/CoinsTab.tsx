@@ -869,6 +869,7 @@ export function CoinsTab({
       const b = scoreMap.get(symbol)
       if (!b) return -1
       // Rank by conviction (|edge|) so strong shorts surface too, not just longs.
+      if (typeof b.smoothed_edge === 'number') return Math.abs(b.smoothed_edge)
       return b.conviction ?? Math.abs((b.bull_score || 0) - (b.bear_score || 0))
     },
     [scoreMap]

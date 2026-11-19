@@ -87,7 +87,7 @@ func (s *CopyTradeStore) initTables() error {
 	if err := s.db.AutoMigrate(&CopyTradeFollow{}, &CopyTradeFill{}, &CopyTradeSignal{},
 		&CopyTradeExclusion{}, &CopyTradeAutoLog{},
 		&CopyTradeBoardMember{}, &CopyTradePaperRoster{}, &CopyTradePaperFill{},
-		&CopyTradeCoinScore{}, &CopyTradeScoreMemory{}); err != nil {
+		&CopyTradeCoinScore{}, &CopyTradeScoreMemory{}, &CopyTradeScoreOutcome{}); err != nil {
 		return err
 	}
 	if old {
@@ -591,6 +591,7 @@ type CopyTradeScoreMemory struct {
 	Bull         float64 `gorm:"column:bull" json:"bull"`
 	Bear         float64 `gorm:"column:bear" json:"bear"`
 	Conviction   float64 `gorm:"column:conviction" json:"conviction"`
+	SmoothedEdge float64 `gorm:"column:smoothed_edge" json:"smoothed_edge"`
 	Invalidation string  `gorm:"column:invalidation" json:"invalidation"`
 	Thesis       string  `gorm:"column:thesis" json:"thesis"`
 	LastAt       int64   `gorm:"column:last_at" json:"last_at"`
@@ -611,4 +612,58 @@ func (s *CopyTradeStore) GetScoreMemory(userID, symbol string) (*CopyTradeScoreM
 		return nil, err
 	}
 	return &m, nil
+}
+
+// CopyTradeScoreOutcome is one score's realized forward result, evaluated at
+// 4h/24h/72h against the coin and BTC, so we can measure whether high scores
+// and shorts actually work. One row per (user, symbol, analyzed_at).
+type CopyTradeScoreOutcome struct {
+	ID         int64    `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
+	UserID     string   `gorm:"column:user_id;uniqueIndex:idx_score_outcome,priority:1" json:"-"`
+	Symbol     string   `gorm:"column:symbol;uniqueIndex:idx_score_outcome,priority:2" json:"symbol"`
+	AnalyzedAt int64    `gorm:"column:analyzed_at;uniqueIndex:idx_score_outcome,priority:3" json:"analyzed_at"`
+	Bias       string   `gorm:"column:bias" json:"bias"`
+	Bull       float64  `gorm:"column:bull" json:"bull"`
+	Bear       float64  `gorm:"column:bear" json:"bear"`
+	EntryPrice float64  `gorm:"column:entry_price" json:"entry_price"`
+	Ret4h      *float64 `gorm:"column:ret_4h" json:"ret_4h"`
+	Ret24h     *float64 `gorm:"column:ret_24h" json:"ret_24h"`
+	Ret72h     *float64 `gorm:"column:ret_72h" json:"ret_72h"`
+	Bench4h    *float64 `gorm:"column:bench_4h" json:"bench_4h"`
+	Bench24h   *float64 `gorm:"column:bench_24h" json:"bench_24h"`
+	Bench72h   *float64 `gorm:"column:bench_72h" json:"bench_72h"`
+	Done4h     bool     `gorm:"column:done_4h;index" json:"done_4h"`
+	Done24h    bool     `gorm:"column:done_24h;index" json:"done_24h"`
+	Done72h    bool     `gorm:"column:done_72h;index" json:"done_72h"`
+}
+
+func (CopyTradeScoreOutcome) TableName() string { return "copytrade_score_outcomes" }
+
+// SaveScoreOutcome inserts a pending outcome, ignoring a duplicate.
+func (s *CopyTradeStore) SaveScoreOutcome(o *CopyTradeScoreOutcome) error {
+	return s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(o).Error
+}
+
+// PendingScoreOutcomes returns rows with a horizon that is now due but not done.
+func (s *CopyTradeStore) PendingScoreOutcomes(nowMs int64) ([]CopyTradeScoreOutcome, error) {
+	var out []CopyTradeScoreOutcome
+	err := s.db.Where("(done_4h = ? AND analyzed_at <= ?) OR (done_24h = ? AND analyzed_at <= ?) OR (done_72h = ? AND analyzed_at <= ?)",
+		false, nowMs-4*3600*1000, false, nowMs-24*3600*1000, false, nowMs-72*3600*1000).
+		Order("analyzed_at").Limit(2000).Find(&out).Error
+	return out, err
+}
+
+func (s *CopyTradeStore) UpdateScoreOutcome(o *CopyTradeScoreOutcome) error {
+	return s.db.Model(&CopyTradeScoreOutcome{}).Where("id = ?", o.ID).Updates(map[string]any{
+		"ret_4h": o.Ret4h, "ret_24h": o.Ret24h, "ret_72h": o.Ret72h,
+		"bench_4h": o.Bench4h, "bench_24h": o.Bench24h, "bench_72h": o.Bench72h,
+		"done_4h": o.Done4h, "done_24h": o.Done24h, "done_72h": o.Done72h,
+	}).Error
+}
+
+// ListScoreOutcomes returns a user's evaluated outcomes, newest first.
+func (s *CopyTradeStore) ListScoreOutcomes(userID string) ([]CopyTradeScoreOutcome, error) {
+	var out []CopyTradeScoreOutcome
+	err := s.db.Where("user_id = ?", userID).Order("analyzed_at DESC").Limit(20000).Find(&out).Error
+	return out, err
 }

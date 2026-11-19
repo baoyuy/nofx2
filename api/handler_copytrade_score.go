@@ -38,7 +38,8 @@ type coinScoreAnalysis struct {
 	Bias        string  `json:"bias"` // long | short | neutral
 	BullScore   float64 `json:"bull_score"`
 	BearScore   float64 `json:"bear_score"`
-	Edge        float64 `json:"edge"`       // bull - bear
+	Edge        float64 `json:"edge"`        // bull - bear
+	SmoothedEdge float64 `json:"smoothed_edge"` // EMA-smoothed edge
 	Conviction  float64 `json:"conviction"` // |edge|
 	Horizon     string  `json:"horizon"`    // short | swing
 	TFAlignment map[string]int `json:"tf_alignment,omitempty"`
@@ -75,6 +76,7 @@ func (s *Server) registerCopyTradeScoreRoutes(protected *gin.RouterGroup) {
 	s.route(protected, "GET", "/copytrade/coin-score/models", "Enabled models and the saved coin-score model", s.handleCoinScoreModels)
 	s.route(protected, "PUT", "/copytrade/coin-score/model", "Set the coin-score model (body: model_id)", s.handleCoinScoreModelPut)
 	s.route(protected, "GET", "/copytrade/coin-scores", "Saved AI readings for every coin (list column)", s.handleCoinScoresList)
+	s.route(protected, "GET", "/copytrade/coin-score/outcomes", "Forward-return hit rate of past scores (by side, band, horizon)", s.handleCoinScoreOutcomes)
 	s.route(protected, "GET", "/copytrade/coin-score/settings", "Scheduled analyze-all settings and latest run status", s.handleCoinScoreSettingsGet)
 	s.route(protected, "PUT", "/copytrade/coin-score/settings", "Save scheduled analyze-all settings (body: enabled, interval_minutes)", s.handleCoinScoreSettingsPut)
 	s.route(protected, "POST", "/copytrade/coin-score/run-all", "Analyze every coin on the by-coin page now (async; poll settings for progress)", s.handleCoinScoreRunAll)
@@ -279,6 +281,13 @@ func (s *Server) analyzeCoinCore(ctx context.Context, userID string, model *stor
 	if a, perr := parseCoinScore(raw); perr != nil {
 		res.ParseError = "The AI reply was not valid JSON; showing the raw text."
 	} else {
+		// EMA smoothing: rank on a smoothed edge so a coin does not jump on a
+		// single noisy reading; still grounded in the newest data.
+		sm := a.Edge
+		if prev != nil {
+			sm = 0.3*a.Edge + 0.7*prev.SmoothedEdge
+		}
+		a.SmoothedEdge = sm
 		res.Analysis = a
 	}
 	_ = primary
@@ -290,6 +299,13 @@ func (s *Server) analyzeCoinCore(ctx context.Context, userID string, model *stor
 			res.ParseError = strings.TrimSpace(res.ParseError + " (result not saved)")
 		}
 		s.saveScoreMemory(userID, symbol, res)
+	}
+	if res.Analysis != nil {
+		o := &store.CopyTradeScoreOutcome{UserID: userID, Symbol: symbol, AnalyzedAt: res.AnalyzedAt,
+			Bias: res.Analysis.Bias, Bull: res.Analysis.BullScore, Bear: res.Analysis.BearScore, EntryPrice: res.Price}
+		if err := s.store.CopyTrade().SaveScoreOutcome(o); err != nil {
+			logger.Warnf("copy-trade outcomes: enqueue %s: %v", symbol, err)
+		}
 	}
 	return res, nil
 }
@@ -515,7 +531,7 @@ func (s *Server) saveScoreMemory(userID, symbol string, res coinScoreResult) {
 		thesis = a.Reasons[0]
 	}
 	m := &store.CopyTradeScoreMemory{UserID: userID, Symbol: symbol, Bias: a.Bias,
-		Bull: a.BullScore, Bear: a.BearScore, Conviction: a.Conviction,
+		Bull: a.BullScore, Bear: a.BearScore, Conviction: a.Conviction, SmoothedEdge: a.SmoothedEdge,
 		Invalidation: a.Invalidates, Thesis: thesis, LastAt: res.AnalyzedAt, LastPrice: res.Price}
 	if err := s.store.CopyTrade().SaveScoreMemory(m); err != nil {
 		logger.Warnf("copy-trade score memory: save %s: %v", symbol, err)
@@ -626,6 +642,7 @@ type coinScoreBrief struct {
 	BullScore  float64 `json:"bull_score"`
 	BearScore  float64 `json:"bear_score"`
 	Edge       float64 `json:"edge"`
+	SmoothedEdge float64 `json:"smoothed_edge"`
 	Conviction float64 `json:"conviction"`
 	Score      float64 `json:"score"`
 	Confidence float64 `json:"confidence"`
@@ -647,7 +664,7 @@ func (s *Server) handleCoinScoresList(c *gin.Context) {
 		}
 		out = append(out, coinScoreBrief{Symbol: r.Symbol, Bias: res.Analysis.Bias, Horizon: res.Analysis.Horizon,
 			BullScore: res.Analysis.BullScore, BearScore: res.Analysis.BearScore, Edge: res.Analysis.Edge,
-			Conviction: res.Analysis.Conviction, Score: res.Analysis.Score, Confidence: res.Analysis.Confidence,
+			SmoothedEdge: res.Analysis.SmoothedEdge, Conviction: res.Analysis.Conviction, Score: res.Analysis.Score, Confidence: res.Analysis.Confidence,
 			AnalyzedAt: r.AnalyzedAt, ModelID: r.ModelID})
 	}
 	c.JSON(http.StatusOK, gin.H{"items": out})

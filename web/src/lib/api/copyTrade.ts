@@ -298,6 +298,7 @@ export interface CoinScore {
   bull_score?: number
   bear_score?: number
   edge?: number
+  smoothed_edge?: number
   conviction?: number
   horizon: 'short' | 'swing' | ''
   tf_alignment?: Record<string, number>
@@ -334,6 +335,7 @@ export interface CoinScoreBrief {
   bull_score: number
   bear_score: number
   edge: number
+  smoothed_edge: number
   conviction: number
   score: number
   confidence: number
