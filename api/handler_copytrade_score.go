@@ -245,6 +245,8 @@ func (s *Server) analyzeCoinCore(ctx context.Context, userID string, model *stor
 		return coinScoreResult{}, fmt.Errorf("not enough candles for %s", symbol)
 	}
 	ticker, _ := binance.GetPublicTicker(ctx, symbol)
+	deriv := binance.GetDerivatives(ctx, symbol)
+	regime := binance.GetBTCRegime(ctx)
 	snaps := s.copyTrade.Snapshots()
 	var sum *copytrade.SymbolSummary
 	for _, x := range copytrade.Symbols(snaps) {
@@ -256,7 +258,7 @@ func (s *Server) analyzeCoinCore(ctx context.Context, userID string, model *stor
 	}
 	holders := copytrade.Holders(snaps, symbol)
 	prev := s.loadScoreMemory(userID, symbol)
-	system, user := buildCoinScorePrompt(lang, symbol, tfs, ticker, sum, holders, prev)
+	system, user := buildCoinScorePrompt(lang, symbol, tfs, ticker, deriv, regime, sum, holders, prev)
 
 	primary := "1h"
 	if interval != "" {
@@ -651,7 +653,7 @@ func (s *Server) handleCoinScoresList(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": out})
 }
 
-func buildCoinScorePrompt(lang, symbol string, tfs []scoreTF, t *binance.MarketTicker, sum *copytrade.SymbolSummary, holders []copytrade.Holder, prev *store.CopyTradeScoreMemory) (string, string) {
+func buildCoinScorePrompt(lang, symbol string, tfs []scoreTF, t *binance.MarketTicker, deriv binance.DerivativeInfo, regime string, sum *copytrade.SymbolSummary, holders []copytrade.Holder, prev *store.CopyTradeScoreMemory) (string, string) {
 	language := "English"
 	if lang == "zh" {
 		language = "Simplified Chinese"
@@ -674,6 +676,12 @@ Rules:
 	if t != nil {
 		fmt.Fprintf(&b, "Last %s  mark %s  24h %.2f%%  24h high/low %s/%s  24h vol %s USDT  funding %.4f%%\n",
 			fmtNum(t.LastPrice), fmtNum(t.MarkPrice), t.PriceChangePct, fmtNum(t.High24h), fmtNum(t.Low24h), fmtNum(t.QuoteVolume24h), t.FundingRate*100)
+	}
+	if deriv.OpenInterest > 0 || deriv.LongShortRatio > 0 || deriv.TakerBuySellRatio > 0 {
+		fmt.Fprintf(&b, "Derivatives: OI %s (1h %+.2f%%), long/short ratio %.2f (long %.0f%%/short %.0f%%), taker buy/sell %.2f\n", fmtNum(deriv.OpenInterest), deriv.OIChangePct1h, deriv.LongShortRatio, deriv.LongAccountPct, deriv.ShortAccountPct, deriv.TakerBuySellRatio)
+	}
+	if regime != "" {
+		fmt.Fprintf(&b, "Market regime: %s\n", regime)
 	}
 	for _, tf := range tfs {
 		fmt.Fprintf(&b, "\n[%s] MA7 %s MA25 %s MA99 %s EMA12 %s EMA26 %s MACD %s/%s/%s RSI6 %.1f RSI14 %.1f KDJ %.1f/%.1f/%.1f BOLL %s/%s/%s ATR %s\n",
