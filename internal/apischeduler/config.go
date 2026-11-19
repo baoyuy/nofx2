@@ -44,7 +44,7 @@ func DefaultConfig() Config {
 		// "default" applies to unknown hosts (self-hosted/custom AI model & RPC
 		// endpoints). It must not cap batch AI analysis at 4 concurrent / 60 per
 		// minute; the analyzer's own concurrency setting is the real limiter.
-		"default":           {3000, 60, 64, 1},
+		"default":           {12000, 200, 256, 1},
 		"binance-futures":   {1200, 15, 8, 40},
 		"binance-spot":      {2400, 10, 8, 100},
 		"binance-copytrade": {30, 1, 1, 1},
