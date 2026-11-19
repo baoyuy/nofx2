@@ -86,7 +86,8 @@ func (s *CopyTradeStore) initTables() error {
 	old := s.db.Migrator().HasTable(&CopyTradeSignal{}) && !s.db.Migrator().HasColumn(&CopyTradeSignal{}, "ranked")
 	if err := s.db.AutoMigrate(&CopyTradeFollow{}, &CopyTradeFill{}, &CopyTradeSignal{},
 		&CopyTradeExclusion{}, &CopyTradeAutoLog{},
-		&CopyTradeBoardMember{}, &CopyTradePaperRoster{}, &CopyTradePaperFill{}); err != nil {
+		&CopyTradeBoardMember{}, &CopyTradePaperRoster{}, &CopyTradePaperFill{},
+		&CopyTradeCoinScore{}); err != nil {
 		return err
 	}
 	if old {
@@ -542,4 +543,41 @@ func (s *CopyTradeStore) CountPaperFills(rosterID string) (int64, error) {
 	var n int64
 	err := s.db.Model(&CopyTradePaperFill{}).Where("roster_id = ?", rosterID).Count(&n).Error
 	return n, err
+}
+
+// CopyTradeCoinScore is the latest AI reading of one coin on the copy-trade
+// "by coin" page: direction, a 0-100 score, reasons and risks. Read-only
+// guidance; it never feeds an order. Payload is the JSON the API returns.
+type CopyTradeCoinScore struct {
+	UserID     string `gorm:"column:user_id;primaryKey;uniqueIndex:idx_coin_score,priority:1" json:"-"`
+	Symbol     string `gorm:"column:symbol;primaryKey;uniqueIndex:idx_coin_score,priority:2" json:"symbol"`
+	ModelID    string `gorm:"column:model_id" json:"model_id"`
+	Interval   string `gorm:"column:interval" json:"interval"`
+	Payload    string `gorm:"column:payload" json:"payload"`
+	AnalyzedAt int64  `gorm:"column:analyzed_at" json:"analyzed_at"`
+}
+
+func (CopyTradeCoinScore) TableName() string { return "copytrade_coin_scores" }
+
+// SaveCoinScore inserts or replaces the reading for one user and coin.
+func (s *CopyTradeStore) SaveCoinScore(x *CopyTradeCoinScore) error { return s.db.Save(x).Error }
+
+// GetCoinScore returns the saved reading for one user and coin.
+func (s *CopyTradeStore) GetCoinScore(userID, symbol string) (*CopyTradeCoinScore, error) {
+	var x CopyTradeCoinScore
+	err := s.db.Where("user_id = ? AND symbol = ?", userID, symbol).First(&x).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &x, nil
+}
+
+// ListCoinScores returns every saved reading for a user, newest first.
+func (s *CopyTradeStore) ListCoinScores(userID string) ([]CopyTradeCoinScore, error) {
+	var out []CopyTradeCoinScore
+	err := s.db.Where("user_id = ?", userID).Order("analyzed_at DESC").Find(&out).Error
+	return out, err
 }

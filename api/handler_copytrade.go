@@ -250,6 +250,7 @@ func (s *Server) registerCopyTradeRoutes(protected *gin.RouterGroup) {
 	protected.POST("/copytrade/proxy/test", s.handleCopyTradeProxyTest)
 	s.registerCopyTradeAutoRoutes(protected)
 	s.registerCopyTradeBoardRoutes(protected)
+	s.registerCopyTradeScoreRoutes(protected)
 }
 
 func (s *Server) copyTradeReady(c *gin.Context) bool {

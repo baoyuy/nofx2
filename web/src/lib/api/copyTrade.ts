@@ -293,6 +293,35 @@ export interface PaperInfo {
   members?: number
 }
 
+export interface CoinScore {
+  bias: 'long' | 'short' | 'neutral'
+  score: number
+  horizon: 'short' | 'swing' | ''
+  confidence: number
+  reasons: string[]
+  risks: string[]
+  invalidates: string
+  sources?: string[]
+}
+
+export interface CoinScoreResult {
+  symbol: string
+  interval: string
+  model_id: string
+  model_name?: string
+  analyzed_at: number
+  price: number
+  analysis?: CoinScore
+  raw?: string
+  parse_error?: string
+}
+
+export interface CoinScoreModelInfo {
+  models: { id: string; name: string; provider: string }[]
+  selected: string
+  default: string
+}
+
 export interface FeedItem extends TradeEvent {
   portfolio_id: string
   nickname: string
@@ -582,6 +611,35 @@ export const copyTradeApi = {
       { method: 'POST', silent: true }
     )
     unwrap(r, 'Run failed')
+  },
+
+  getCoinScore: (symbol: string) =>
+    get<CoinScoreResult | { symbol: string; analysis: null }>(
+      '/copytrade/coin-score',
+      { symbol }
+    ),
+
+  async analyzeCoinScore(
+    symbol: string,
+    modelId?: string,
+    lang?: string
+  ): Promise<CoinScoreResult> {
+    const r = await httpClient.request<CoinScoreResult>(
+      `${API_BASE}/copytrade/coin-score`,
+      { method: 'POST', data: { symbol, model_id: modelId, lang }, silent: true, timeout: 45000 }
+    )
+    return unwrap(r, 'Analysis failed')
+  },
+
+  getCoinScoreModels: () =>
+    get<CoinScoreModelInfo>('/copytrade/coin-score/models'),
+
+  async setCoinScoreModel(modelId: string): Promise<string> {
+    const r = await httpClient.request<{ selected: string }>(
+      `${API_BASE}/copytrade/coin-score/model`,
+      { method: 'PUT', data: { model_id: modelId }, silent: true }
+    )
+    return unwrap(r, 'Save failed').selected
   },
 
   getPaper: () => get<PaperInfo>('/copytrade/paper'),

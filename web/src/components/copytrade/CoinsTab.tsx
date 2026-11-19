@@ -3,7 +3,12 @@ import { useEffect, useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { LOCAL_SNAPSHOT_OPTIONS } from '../../lib/liveSnapshot'
 import { api } from '../../lib/api'
-import type { HitRate, SideSummary, SymbolSummary } from '../../lib/api/copyTrade'
+import type {
+  CoinScoreResult,
+  HitRate,
+  SideSummary,
+  SymbolSummary,
+} from '../../lib/api/copyTrade'
 import type { MarketKline } from '../../lib/api/market'
 import { BinanceChart, BN, type PriceMarker } from '../market/BinanceChart'
 import { tr, ui } from '../market/marketUi'
@@ -101,6 +106,202 @@ function Bar({ s }: { s: SymbolSummary }) {
         className="bg-nofx-danger"
         style={{ width: `${(s.short.value / total) * 100}%` }}
       />
+    </div>
+  )
+}
+
+
+/** AI reading for one coin: direction + 0-100 score + reasons/risks. Read-only. */
+function CoinAiScore({
+  language,
+  symbol,
+}: {
+  language: string
+  symbol: string
+}) {
+  const { data: saved, mutate } = useSWR(
+    ['copytrade/coin-score', symbol],
+    () => api.getCoinScore(symbol),
+    { revalidateOnFocus: false }
+  )
+  const { data: modelInfo } = useSWR(
+    'copytrade/coin-score/models',
+    () => api.getCoinScoreModels(),
+    { revalidateOnFocus: false }
+  )
+  const [result, setResult] = useState<CoinScoreResult | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [modelID, setModelID] = useState('')
+  useEffect(() => {
+    if (modelInfo && !modelID)
+      setModelID(modelInfo.selected || modelInfo.default || '')
+  }, [modelInfo, modelID])
+  useEffect(() => {
+    setResult(null)
+    setErr('')
+  }, [symbol])
+
+  const savedResult =
+    saved && 'analyzed_at' in (saved as object)
+      ? (saved as CoinScoreResult)
+      : null
+  const shown = result || savedResult
+  const a = shown?.analysis
+  const biasColor =
+    a?.bias === 'long'
+      ? 'text-nofx-success'
+      : a?.bias === 'short'
+        ? 'text-nofx-danger'
+        : 'text-nofx-text-muted'
+  const biasLabel = (b?: string) =>
+    b === 'long'
+      ? tr(language, '看多', 'Long')
+      : b === 'short'
+        ? tr(language, '看空', 'Short')
+        : tr(language, '中性/观望', 'Neutral')
+  const hasModels = Boolean(modelInfo?.models?.length)
+
+  const run = async () => {
+    setBusy(true)
+    setErr('')
+    try {
+      const r = await api.analyzeCoinScore(symbol, modelID || undefined, language)
+      setResult(r)
+      void mutate()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mb-2 rounded bg-nofx-bg-deeper px-2 py-1.5 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium text-nofx-text">
+          {tr(language, 'AI 研判', 'AI read')}
+        </span>
+        {a ? (
+          <>
+            <span className={`font-semibold ${biasColor}`}>
+              {biasLabel(a.bias)}
+            </span>
+            <span className="tabular-nums text-nofx-text">
+              {Math.round(a.score)}/100
+            </span>
+            {a.horizon ? (
+              <span className={ui.muted}>
+                {a.horizon === 'short'
+                  ? tr(language, '短线', 'Short')
+                  : tr(language, '波段', 'Swing')}
+              </span>
+            ) : null}
+            <span className={ui.muted}>
+              {tr(
+                language,
+                `置信 ${Math.round(a.confidence)}`,
+                `conf ${Math.round(a.confidence)}`
+              )}
+            </span>
+          </>
+        ) : (
+          <span className={ui.muted}>
+            {tr(language, '尚未分析', 'not analyzed yet')}
+          </span>
+        )}
+        {shown?.analyzed_at ? (
+          <span className={ui.muted}>· {ago(language, shown.analyzed_at)}</span>
+        ) : null}
+        {hasModels ? (
+          <select
+            value={modelID}
+            onChange={(e) => setModelID(e.target.value)}
+            className={ui.inputInline}
+            aria-label={tr(language, '评分模型', 'Scoring model')}
+          >
+            {modelInfo!.models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+          </select>
+        ) : null}
+        <button
+          type="button"
+          className={`${ui.btnGhost} ml-auto`}
+          disabled={busy || !hasModels}
+          onClick={() => void run()}
+        >
+          {busy
+            ? tr(language, '分析中…', 'Analyzing…')
+            : tr(language, 'AI 分析', 'Analyze')}
+        </button>
+      </div>
+      {shown?.parse_error ? (
+        <p role="alert" className="mt-1 text-nofx-gold">
+          <NoticeText text={shown.parse_error} />
+        </p>
+      ) : null}
+      {err ? (
+        <p role="alert" className="mt-1 text-nofx-danger">
+          <NoticeText text={err} />
+        </p>
+      ) : null}
+      {a ? (
+        <div className="mt-1 grid gap-1 md:grid-cols-2">
+          <div>
+            {a.reasons?.length ? (
+              <>
+                <div className="font-medium text-nofx-text">
+                  {tr(language, '依据', 'Reasons')}
+                </div>
+                <ul className="list-disc pl-4 text-nofx-text">
+                  {a.reasons.map((x, i) => (
+                    <li key={i}>{x}</li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
+          </div>
+          <div>
+            {a.risks?.length ? (
+              <>
+                <div className="font-medium text-nofx-text">
+                  {tr(language, '风险', 'Risks')}
+                </div>
+                <ul className="list-disc pl-4 text-nofx-danger">
+                  {a.risks.map((x, i) => (
+                    <li key={i}>{x}</li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
+            {a.invalidates ? (
+              <div className="mt-1 text-nofx-text-muted">
+                {tr(language, '失效条件：', 'Invalidates: ')}
+                {a.invalidates}
+              </div>
+            ) : null}
+            <div className="mt-1 text-nofx-text-muted">
+              {tr(
+                language,
+                '仅供参考，不构成下单指令。',
+                'Reference only, not an order instruction.'
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {!hasModels ? (
+        <p className="mt-1 text-nofx-gold">
+          {tr(
+            language,
+            '还没有可用的模型，请先在设置里启用一个模型。',
+            'No enabled AI model; enable one in settings first.'
+          )}
+        </p>
+      ) : null}
     </div>
   )
 }
@@ -341,6 +542,7 @@ function CoinDetail({
             />
           </div>
         ) : null}
+        <CoinAiScore language={language} symbol={symbol} />
         <p className={`${ui.muted} mb-2`}>
           {tr(
             language,
