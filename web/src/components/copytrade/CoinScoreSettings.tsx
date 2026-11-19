@@ -40,6 +40,8 @@ export function CoinScoreSettings({ language }: { language: string }) {
   const [topN, setTopN] = useState('0')
   const [conc, setConc] = useState('4')
   const [minVol, setMinVol] = useState('0')
+  const [poolRefresh, setPoolRefresh] = useState('5')
+  const [poolTTL, setPoolTTL] = useState('12')
   const [interval, setIntervalMin] = useState('60')
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
@@ -66,6 +68,8 @@ export function CoinScoreSettings({ language }: { language: string }) {
       setTopN(String(data.top_n ?? 0))
       setConc(String(data.concurrency ?? 4))
       setMinVol(String(data.min_quote_volume ?? 0))
+      setPoolRefresh(String(data.pool_refresh_minutes ?? 5))
+      setPoolTTL(String(data.pool_ttl_minutes ?? 12))
       setIntervalMin(String(data.interval_minutes))
     }
   }, [data, dirty])
@@ -81,7 +85,7 @@ export function CoinScoreSettings({ language }: { language: string }) {
     if (!valid) return
     setSaving(true)
     try {
-      await api.setCoinScoreSettings({ enabled: nextEnabled, interval_minutes: n, pool_auto: poolAuto, top_n: Number(topN) || 0, concurrency: Number(conc) || 1, min_quote_volume: Number(minVol) || 0 })
+      await api.setCoinScoreSettings({ enabled: nextEnabled, interval_minutes: n, pool_auto: poolAuto, top_n: Number(topN) || 0, concurrency: Number(conc) || 1, min_quote_volume: Number(minVol) || 0, pool_refresh_minutes: Number(poolRefresh) || 5, pool_ttl_minutes: Number(poolTTL) || 12 })
       setDirty(false)
       await mutate()
     } catch (e) {
@@ -212,6 +216,34 @@ export function CoinScoreSettings({ language }: { language: string }) {
             title={tr(language, '24h 成交额低于此值的币不做 AI 分析（防插针），0=不过滤', 'Coins with 24h quote volume below this are skipped by AI scoring (avoid wicks); 0 = no filter')}
           />
         </label>
+        <label className={`${ui.muted} flex items-center gap-1`}>
+          {tr(language, '币池刷新(分钟)', 'Pool refresh (min)')}
+          <input
+            type="number"
+            min={1}
+            value={poolRefresh}
+            onChange={(e) => {
+              setPoolRefresh(e.target.value)
+              setDirty(true)
+            }}
+            className={`${ui.inputInline} w-16`}
+            title={tr(language, '每多少分钟自动重建一次币池，默认5', 'Rebuild the coin pool every N minutes, default 5')}
+          />
+        </label>
+        <label className={`${ui.muted} flex items-center gap-1`}>
+          {tr(language, '币池有效期(分钟)', 'Pool TTL (min)')}
+          <input
+            type="number"
+            min={1}
+            value={poolTTL}
+            onChange={(e) => {
+              setPoolTTL(e.target.value)
+              setDirty(true)
+            }}
+            className={`${ui.inputInline} w-16`}
+            title={tr(language, '币池里的币超过这个时间未刷新即失效(不交易)，默认12', 'Picks older than this are treated as expired (never traded), default 12')}
+          />
+        </label>
         <button
           type="button"
           className={ui.btnGhost}
@@ -309,6 +341,8 @@ export function CoinScoreSettings({ language }: { language: string }) {
                   top_n: Number(topN) || 0,
                   concurrency: Number(conc) || 1,
                   min_quote_volume: Number(minVol) || 0,
+                  pool_refresh_minutes: Number(poolRefresh) || 5,
+                  pool_ttl_minutes: Number(poolTTL) || 12,
                 })
                 await mutate()
               } catch (err) {

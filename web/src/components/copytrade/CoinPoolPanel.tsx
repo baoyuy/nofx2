@@ -4,7 +4,7 @@ import { RefreshCw } from 'lucide-react'
 import { api } from '../../lib/api'
 import type { CoinPoolInfo } from '../../lib/api/copyTrade'
 import { tr, ui } from '../market/marketUi'
-import { base } from './format'
+import { ago, base } from './format'
 
 // The meta-AI coin pool: a small list of coins (each with a side) that the
 // strategy layer can trade. Visible on the by-coin page.
@@ -51,6 +51,18 @@ export function CoinPoolPanel({ language }: { language: string }) {
         <span className={`${ui.muted} text-xs tabular-nums`}>
           {tr(language, `${coins.length} 个`, `${coins.length} coins`)}
         </span>
+        {data?.updated_at ? (
+          <span className={`${ui.muted} text-xs`}>
+            · {tr(language, '更新于', 'updated')} {ago(language, data.updated_at)}
+          </span>
+        ) : null}
+        {data?.history && data.history.length > 0 ? (
+          <span className={`${ui.muted} text-xs tabular-nums`}>
+            · {tr(language, '本次', 'this round')}{' '}
+            <span className="text-nofx-success">+{data.history[0].added}</span>{' '}
+            <span className="text-nofx-danger">-{data.history[0].removed}</span>
+          </span>
+        ) : null}
         <button
           type="button"
           className={`${ui.btnGhost} ml-auto`}
@@ -95,11 +107,26 @@ export function CoinPoolPanel({ language }: { language: string }) {
         <p className={`${ui.muted} text-xs`}>
           {tr(
             language,
-            '还没有生成。到「设置 → 带单 AI」点「立即生成币池」，或开启「分析后自动生成币池」。',
-            'None yet. Go to Settings → Copy-trade AI and click "Build pool now", or enable auto-build.'
+            '还没有生成。后台会按设置的间隔自动刷新；也可到「设置 → 带单 AI」点「立即生成币池」，或开启「分析后自动生成币池」。',
+            'None yet. It auto-refreshes on the configured interval; or go to Settings → Copy-trade AI and click "Build pool now".'
           )}
         </p>
       )}
+      {data?.history && data.history.length > 0 ? (
+        <details className="mt-2">
+          <summary className={`${ui.muted} cursor-pointer text-xs`}>
+            {tr(language, '变化历史', 'Change history')}
+          </summary>
+          <ul className="mt-1 space-y-0.5 text-xs tabular-nums">
+            {data.history.slice(0, 10).map((h) => (
+              <li key={h.id} className={ui.muted}>
+                {ago(language, h.at)} · <span className="text-nofx-success">+{h.added}</span>{' '}
+                <span className="text-nofx-danger">-{h.removed}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
       {msg ? <p className="mt-1 text-xs text-nofx-gold">{msg}</p> : null}
     </section>
   )

@@ -349,6 +349,8 @@ export interface CoinScoreSettings {
   top_n: number
   concurrency: number
   min_quote_volume: number
+  pool_refresh_minutes: number
+  pool_ttl_minutes: number
   interval_minutes: number
   min_interval: number
   running: boolean
@@ -379,11 +381,19 @@ export interface CoinPoolCoinBrief {
   note?: string
   expiry_at?: number
 }
+export interface CoinPoolLog {
+  id: string
+  at: number
+  added: number
+  removed: number
+}
 export interface CoinPoolInfo {
   id: string
   name?: string
   coins: CoinPoolCoinBrief[]
   count: number
+  updated_at?: number
+  history?: CoinPoolLog[]
 }
 
 export interface CoinScoreModelInfo {
@@ -726,6 +736,8 @@ export const copyTradeApi = {
     top_n?: number
     concurrency?: number
     min_quote_volume?: number
+    pool_refresh_minutes?: number
+    pool_ttl_minutes?: number
   }): Promise<void> {
     const r = await httpClient.request<{ enabled: boolean; interval_minutes: number }>(
       `${API_BASE}/copytrade/coin-score/settings`,
