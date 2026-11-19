@@ -50,7 +50,7 @@ func priceAtKh(k []binance.MarketKline, ms int64) (float64, bool) {
 func (s *Server) evaluateScoreOutcomes(ctx context.Context) {
 	now := time.Now().UnixMilli()
 	// Keep ~90 days of evaluated history; prune older completed rows.
-	if err := s.store.CopyTrade().PruneScoreOutcomes(now - 90*24*3600*1000); err != nil {
+	if err := s.store.CopyTrade().PruneScoreOutcomes(now - 7*24*3600*1000); err != nil {
 		logger.Warnf("copy-trade outcomes: prune: %v", err)
 	}
 	pend, err := s.store.CopyTrade().PendingScoreOutcomes(now)

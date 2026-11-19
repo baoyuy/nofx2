@@ -98,8 +98,11 @@ func (s *Server) buildCoinPool(userID string) (*store.CoinPool, error) {
 	}
 
 	if len(picks) == 0 {
-		// No usable candidates: return an empty pool instead of erroring, so the
-		// UI can show a friendly "run an analysis first" message.
+		// No usable candidates: drop the previous auto pool so the page reflects
+		// reality (nothing to trade) instead of showing stale coins.
+		if poolID != "" {
+			_ = s.store.CoinPool().Delete(userID, poolID)
+		}
 		return &store.CoinPool{Name: poolName, Screener: poolScreener, Coins: []store.CoinPoolCoin{}}, nil
 	}
 	p := &store.CoinPool{Name: poolName, Screener: poolScreener, Coins: picks}

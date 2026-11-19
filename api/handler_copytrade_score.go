@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,8 +30,10 @@ type coinScoreAuto struct {
 	lastRun   int64
 	lastCount int
 	lastErr   string
-	done      int
-	total     int
+	done          int
+	total         int
+	inflight      map[string]bool
+	manualRunning bool
 }
 
 
@@ -368,6 +371,7 @@ func (s *Server) coinScoreBegin() bool {
 		return false
 	}
 	s.coinScore.running = true
+	s.coinScore.manualRunning = true
 	s.coinScore.done, s.coinScore.total = 0, 0
 	s.coinScore.lastErr = ""
 	return true
@@ -385,6 +389,7 @@ func (s *Server) coinScoreSetErr(msg string) {
 func (s *Server) coinScoreFinish(ok int, lastErr string) {
 	s.coinScore.mu.Lock()
 	s.coinScore.running = false
+	s.coinScore.manualRunning = false
 	s.coinScore.lastRun = time.Now().UnixMilli()
 	s.coinScore.lastCount = ok
 	if lastErr != "" {
@@ -476,31 +481,129 @@ func (s *Server) StartCoinScoreAuto(ctx context.Context) {
 	go s.coinScoreAutoLoop(ctx)
 }
 
+// coinScoreAutoLoop runs a rolling scheduler: it wakes often and refreshes the
+// coins that are due (last analyzed >= interval ago), oldest first, up to the
+// configured concurrency. Each coin is refreshed on its own clock, so a coin is
+// not stuck behind a long full-batch pass.
 func (s *Server) coinScoreAutoLoop(ctx context.Context) {
-	t := time.NewTicker(time.Minute)
+	t := time.NewTicker(15 * time.Second)
 	defer t.Stop()
-	var next time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
-		cfg := s.loadCoinScoreAuto()
-		if !cfg.Enabled {
-			next = time.Time{}
-			continue
-		}
-		now := time.Now()
-		if next.IsZero() {
-			next = now // run soon after enabling, then every interval
-		}
-		if now.Before(next) {
-			continue
-		}
-		next = now.Add(time.Duration(cfg.IntervalMinutes) * time.Minute)
-		go s.runCoinScoreAll(ctx, "", cfg.TopN, cfg.IntervalMinutes)
+		s.tickCoinScoreAuto(ctx)
 	}
+}
+
+func (s *Server) tickCoinScoreAuto(ctx context.Context) {
+	cfg := s.loadCoinScoreAuto()
+	if !cfg.Enabled {
+		return
+	}
+	s.coinScore.mu.Lock()
+	if s.coinScore.manualRunning {
+		s.coinScore.mu.Unlock()
+		return // a manual full run is in progress; don't compete
+	}
+	s.coinScore.mu.Unlock()
+
+	interval := cfg.IntervalMinutes
+	if interval < 1 {
+		interval = 60
+	}
+	conc := cfg.Concurrency
+	if conc < 1 {
+		conc = 4
+	}
+	model, uid, err := s.resolveScoreModelAny("")
+	if err != nil {
+		return
+	}
+
+	var universe []string
+	minVol := cfg.MinQuoteVolume
+	for _, x := range copytrade.Symbols(s.copyTrade.Snapshots()) {
+		if minVol > 0 && x.Volume24h < minVol {
+			continue
+		}
+		universe = append(universe, x.Symbol)
+	}
+	if cfg.TopN > 0 && cfg.TopN < len(universe) {
+		universe = universe[:cfg.TopN]
+	}
+
+	now := time.Now().UnixMilli()
+	intervalMs := int64(interval) * 60 * 1000
+
+	s.coinScore.mu.Lock()
+	if s.coinScore.inflight == nil {
+		s.coinScore.inflight = map[string]bool{}
+	}
+	inflightN := len(s.coinScore.inflight)
+	s.coinScore.mu.Unlock()
+
+	type dueCoin struct {
+		sym  string
+		last int64
+	}
+	fresh := 0
+	var due []dueCoin
+	for _, sym := range universe {
+		var last int64
+		if m := s.loadScoreMemory(uid, sym); m != nil {
+			last = m.LastAt
+		}
+		if now-last < intervalMs {
+			fresh++
+			continue
+		}
+		s.coinScore.mu.Lock()
+		busy := s.coinScore.inflight[sym]
+		s.coinScore.mu.Unlock()
+		if busy {
+			continue
+		}
+		due = append(due, dueCoin{sym, last})
+	}
+	sort.Slice(due, func(i, j int) bool { return due[i].last < due[j].last })
+
+	slots := conc - inflightN
+	if slots < 0 {
+		slots = 0
+	}
+	launched := 0
+	for _, d := range due {
+		if launched >= slots {
+			break
+		}
+		s.coinScore.mu.Lock()
+		s.coinScore.inflight[d.sym] = true
+		s.coinScore.mu.Unlock()
+		launched++
+		go func(sym string) {
+			cctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			defer cancel()
+			if _, e := s.analyzeCoinCore(cctx, uid, model, sym, "1h", ""); e != nil {
+				s.coinScoreSetErr(sym + ": " + e.Error())
+			}
+			s.coinScore.mu.Lock()
+			delete(s.coinScore.inflight, sym)
+			s.coinScore.mu.Unlock()
+		}(d.sym)
+	}
+
+	s.coinScore.mu.Lock()
+	s.coinScore.total = len(universe)
+	s.coinScore.done = fresh
+	s.coinScore.lastRun = now
+	if launched > 0 {
+		s.coinScore.lastCount = launched
+	}
+	s.coinScore.running = len(s.coinScore.inflight) > 0
+	s.coinScore.mu.Unlock()
 }
 
 func (s *Server) handleCoinScoreSettingsGet(c *gin.Context) {
@@ -525,29 +628,58 @@ func (s *Server) handleCoinScoreSettingsGet(c *gin.Context) {
 }
 
 func (s *Server) handleCoinScoreSettingsPut(c *gin.Context) {
-	var req coinScoreAutoConfig
+	// Merge-style: only fields present in the body are changed, so a partial
+	// update never wipes the others (e.g. min volume when toggling pool_auto).
+	var req struct {
+		Enabled         *bool    `json:"enabled"`
+		IntervalMinutes *int     `json:"interval_minutes"`
+		PoolAuto        *bool    `json:"pool_auto"`
+		TopN            *int     `json:"top_n"`
+		Concurrency     *int     `json:"concurrency"`
+		MinQuoteVolume  *float64 `json:"min_quote_volume"`
+	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		SafeBadRequest(c, "enabled and interval_minutes are required")
+		SafeBadRequest(c, "invalid settings body")
 		return
 	}
-	if req.IntervalMinutes < coinScoreMinInterval {
-		req.IntervalMinutes = coinScoreMinInterval
+	cfg := s.loadCoinScoreAuto()
+	if req.Enabled != nil {
+		cfg.Enabled = *req.Enabled
 	}
-	if req.IntervalMinutes > 1440 {
-		req.IntervalMinutes = 1440
+	if req.IntervalMinutes != nil {
+		cfg.IntervalMinutes = *req.IntervalMinutes
 	}
-	if req.Concurrency < 1 {
-		req.Concurrency = 1
+	if req.PoolAuto != nil {
+		cfg.PoolAuto = *req.PoolAuto
 	}
-	if req.MinQuoteVolume < 0 {
-		req.MinQuoteVolume = 0
+	if req.TopN != nil {
+		cfg.TopN = *req.TopN
 	}
-	raw, _ := json.Marshal(req)
+	if req.Concurrency != nil {
+		cfg.Concurrency = *req.Concurrency
+	}
+	if req.MinQuoteVolume != nil {
+		cfg.MinQuoteVolume = *req.MinQuoteVolume
+	}
+	if cfg.IntervalMinutes < coinScoreMinInterval {
+		cfg.IntervalMinutes = coinScoreMinInterval
+	}
+	if cfg.IntervalMinutes > 1440 {
+		cfg.IntervalMinutes = 1440
+	}
+	if cfg.Concurrency < 1 {
+		cfg.Concurrency = 1
+	}
+	if cfg.MinQuoteVolume < 0 {
+		cfg.MinQuoteVolume = 0
+	}
+	raw, _ := json.Marshal(cfg)
 	if err := s.store.SetSystemConfig(coinScoreAutoKey, string(raw)); err != nil {
 		SafeInternalError(c, "Save coin-score settings", err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"enabled": req.Enabled, "interval_minutes": req.IntervalMinutes, "pool_auto": req.PoolAuto, "top_n": req.TopN, "concurrency": req.Concurrency, "min_quote_volume": req.MinQuoteVolume})
+	c.JSON(http.StatusOK, gin.H{"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes,
+		"pool_auto": cfg.PoolAuto, "top_n": cfg.TopN, "concurrency": cfg.Concurrency, "min_quote_volume": cfg.MinQuoteVolume})
 }
 
 func (s *Server) handleCoinScoreRunAll(c *gin.Context) {

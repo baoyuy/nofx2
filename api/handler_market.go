@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"nofx/logger"
 	"nofx/trader"
@@ -36,7 +37,7 @@ func (s *Server) registerMarketRoutes(api, protected *gin.RouterGroup) {
 
 func marketSymbol(c *gin.Context, raw string) (string, bool) {
 	symbol := binance.NormalizeUSDTSymbol(raw)
-	if symbol == "" || len(symbol) > 20 {
+	if symbol == "" || utf8.RuneCountInString(symbol) > 20 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid symbol"})
 		return "", false
 	}

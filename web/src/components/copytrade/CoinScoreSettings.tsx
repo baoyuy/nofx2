@@ -109,6 +109,13 @@ export function CoinScoreSettings({ language }: { language: string }) {
           'Runs the AI reading for every coin on the copy-trade by-coin page: direction + 0–100 score + reasons/risks. Read-only; it does not pick or place orders.'
         )}
       </p>
+      <p className={`${ui.muted} text-xs`}>
+        {tr(
+          language,
+          '定时按「每个币距上次分析的间隔」轮询刷新（最旧的优先），不是整批跑完再等；若币多/间隔短排不下，请加大并发或间隔。',
+          'Refreshes each coin when it is at least the interval old (oldest first), not one big batch then wait; if too many coins or the interval is too short, raise concurrency or the interval.'
+        )}
+      </p>
 
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium text-nofx-text">
@@ -246,7 +253,7 @@ export function CoinScoreSettings({ language }: { language: string }) {
             <Play className="mr-1 inline h-3 w-3" />
           )}
           {running
-            ? tr(language, `分析中 ${data.done}/${data.total}`, `Analyzing ${data.done}/${data.total}`)
+            ? tr(language, `刷新中 ${data.done}/${data.total}`, `Refreshing ${data.done}/${data.total}`)
             : tr(language, '立即全部分析一次', 'Analyze all now')}
         </button>
         <span className={`${ui.muted} tabular-nums`}>
@@ -271,8 +278,8 @@ export function CoinScoreSettings({ language }: { language: string }) {
         <p className={`${ui.muted} text-xs`}>
           {tr(
             language,
-            `上次 ${ago(language, data.last_run)} 完成，成功 ${data.last_count} 个币`,
-            `Last run ${ago(language, data.last_run)}, ${data.last_count} coins succeeded`
+            `上次扫描 ${ago(language, data.last_run)}，本轮派发 ${data.last_count} 个币（按各自到期时间轮询）`,
+            `Last scan ${ago(language, data.last_run)}, dispatched ${data.last_count} coins (rolling per-coin)`
           )}
         </p>
       ) : (

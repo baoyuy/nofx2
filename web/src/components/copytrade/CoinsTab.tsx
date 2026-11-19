@@ -439,11 +439,18 @@ function CoinDetail({
             setChartError(e instanceof Error ? e.message : String(e))
         )
     void load()
-    // Keep the chart live: refresh candles every 12s so new bars/closes show.
-    const timer = setInterval(() => void load(), 12000)
+    // Keep the chart live, but do not poll while the tab is hidden.
+    const timer = setInterval(() => {
+      if (!document.hidden) void load()
+    }, 12000)
+    const onVis = () => {
+      if (!document.hidden) void load()
+    }
+    document.addEventListener('visibilitychange', onVis)
     return () => {
       cancelled = true
       clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVis)
     }
   }, [symbol, interval])
 
@@ -923,6 +930,13 @@ export function CoinsTab({
                   )}
             </span>
           </div>
+          <p className={`${ui.muted} mb-2 text-[11px]`}>
+            {tr(
+              language,
+              '「偏多/偏空」= 带单员的人气方向；「AI 多/空」= 模型研判（仅供参考）。',
+              '"偏多/偏空" = copy-trader crowd; "AI 多/空" = model read (reference only).'
+            )}
+          </p>
           <div className="mb-2 grid grid-cols-2 gap-2">
             <select
               className={ui.input}
