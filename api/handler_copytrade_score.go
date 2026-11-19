@@ -324,6 +324,7 @@ type coinScoreAutoConfig struct {
 	Enabled         bool `json:"enabled"`
 	IntervalMinutes int  `json:"interval_minutes"`
 	PoolAuto        bool `json:"pool_auto"`
+	TopN            int  `json:"top_n"`
 }
 
 func (s *Server) loadCoinScoreAuto() coinScoreAutoConfig {
@@ -389,7 +390,7 @@ func (s *Server) coinScoreFinish(ok int, lastErr string) {
 
 // runCoinScoreAll analyzes every coin currently on the by-coin page. Runs at
 // most one at a time; the scheduler and the manual button share this.
-func (s *Server) runCoinScoreAll(ctx context.Context, userID string) {
+func (s *Server) runCoinScoreAll(ctx context.Context, userID string, topN int) {
 	if !s.coinScoreBegin() {
 		return
 	}
@@ -401,6 +402,9 @@ func (s *Server) runCoinScoreAll(ctx context.Context, userID string) {
 	var symbols []string
 	for _, x := range copytrade.Symbols(s.copyTrade.Snapshots()) {
 		symbols = append(symbols, x.Symbol)
+	}
+	if topN > 0 && topN < len(symbols) {
+		symbols = symbols[:topN]
 	}
 	s.coinScoreSetTotal(len(symbols))
 	sem := make(chan struct{}, 4)
@@ -468,7 +472,7 @@ func (s *Server) coinScoreAutoLoop(ctx context.Context) {
 			continue
 		}
 		next = now.Add(time.Duration(cfg.IntervalMinutes) * time.Minute)
-		go s.runCoinScoreAll(ctx, "")
+		go s.runCoinScoreAll(ctx, "", cfg.TopN)
 	}
 }
 
@@ -487,7 +491,7 @@ func (s *Server) handleCoinScoreSettingsGet(c *gin.Context) {
 		coins = len(copytrade.Symbols(s.copyTrade.Snapshots()))
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes, "pool_auto": cfg.PoolAuto, "min_interval": coinScoreMinInterval,
+		"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes, "pool_auto": cfg.PoolAuto, "top_n": cfg.TopN, "min_interval": coinScoreMinInterval,
 		"running": running, "done": done, "total": total, "last_run": lastRun, "last_count": lastCount,
 		"last_error": lastErr, "model": modelName, "coin_count": coins,
 	})
@@ -510,14 +514,14 @@ func (s *Server) handleCoinScoreSettingsPut(c *gin.Context) {
 		SafeInternalError(c, "Save coin-score settings", err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"enabled": req.Enabled, "interval_minutes": req.IntervalMinutes, "pool_auto": req.PoolAuto})
+	c.JSON(http.StatusOK, gin.H{"enabled": req.Enabled, "interval_minutes": req.IntervalMinutes, "pool_auto": req.PoolAuto, "top_n": req.TopN})
 }
 
 func (s *Server) handleCoinScoreRunAll(c *gin.Context) {
 	if !s.copyTradeReady(c) {
 		return
 	}
-	go s.runCoinScoreAll(context.Background(), c.GetString("user_id"))
+	go s.runCoinScoreAll(context.Background(), c.GetString("user_id"), 0)
 	c.JSON(http.StatusOK, gin.H{"started": true})
 }
 

@@ -881,7 +881,13 @@ export function CoinsTab({
     () => sortCoins(symbols, sort, bias, aiScore),
     [symbols, sort, bias, aiScore]
   )
-  const current = selected || shown[0]?.symbol || ''
+  // Freeze the default detail coin once, so a ranking reshuffle does not swap
+  // the chart under the user; an explicit selection still wins.
+  const [pinned, setPinned] = useState('')
+  useEffect(() => {
+    if (!selected && !pinned && shown.length) setPinned(shown[0].symbol)
+  }, [selected, pinned, shown])
+  const current = selected || pinned || shown[0]?.symbol || ''
 
   return (
     <div className="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)]">

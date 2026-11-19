@@ -37,6 +37,7 @@ export function CoinScoreSettings({ language }: { language: string }) {
   )
   const [enabled, setEnabled] = useState(false)
   const [poolAuto, setPoolAuto] = useState(false)
+  const [topN, setTopN] = useState('0')
   const [interval, setIntervalMin] = useState('60')
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
@@ -60,6 +61,7 @@ export function CoinScoreSettings({ language }: { language: string }) {
     if (data && !dirty) {
       setEnabled(data.enabled)
       setPoolAuto(Boolean(data.pool_auto))
+      setTopN(String(data.top_n ?? 0))
       setIntervalMin(String(data.interval_minutes))
     }
   }, [data, dirty])
@@ -75,7 +77,7 @@ export function CoinScoreSettings({ language }: { language: string }) {
     if (!valid) return
     setSaving(true)
     try {
-      await api.setCoinScoreSettings({ enabled: nextEnabled, interval_minutes: n, pool_auto: poolAuto })
+      await api.setCoinScoreSettings({ enabled: nextEnabled, interval_minutes: n, pool_auto: poolAuto, top_n: Number(topN) || 0 })
       setDirty(false)
       await mutate()
     } catch (e) {
@@ -155,6 +157,20 @@ export function CoinScoreSettings({ language }: { language: string }) {
             }}
             className={`${ui.inputInline} w-20`}
             aria-label={tr(language, '定时间隔（分钟）', 'Interval minutes')}
+          />
+        </label>
+        <label className={`${ui.muted} flex items-center gap-1`}>
+          {tr(language, '每轮最多币', 'Max coins/run')}
+          <input
+            type="number"
+            min={0}
+            value={topN}
+            onChange={(e) => {
+              setTopN(e.target.value)
+              setDirty(true)
+            }}
+            className={`${ui.inputInline} w-16`}
+            title={tr(language, '0 表示全部；定时分析可用它控制花费', '0 = all; caps cost for scheduled runs')}
           />
         </label>
         <button
