@@ -11,6 +11,7 @@ import {
   Plus,
   Pencil,
   Globe,
+  Sparkles,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
@@ -18,9 +19,10 @@ import { api } from '../lib/api'
 import { ExchangeConfigModal } from '../components/trader/ExchangeConfigModal'
 import { ModelConfigModal } from '../components/trader/ModelConfigModal'
 import { ProxySettings } from '../components/copytrade/ProxySettings'
+import { CoinScoreSettings } from '../components/copytrade/CoinScoreSettings'
 import type { Exchange, AIModel, ExchangeAccountState } from '../types'
 
-type Tab = 'account' | 'models' | 'exchanges' | 'data'
+type Tab = 'account' | 'models' | 'exchanges' | 'data' | 'copytrade'
 
 function configBadge(label: string, active: boolean) {
   return (
@@ -45,7 +47,10 @@ export function SettingsPage() {
   const [searchParams] = useSearchParams()
   const [activeTab, setActiveTab] = useState<Tab>(() => {
     const tab = searchParams.get('tab')
-    return tab === 'models' || tab === 'exchanges' || tab === 'data'
+    return tab === 'models' ||
+      tab === 'exchanges' ||
+      tab === 'data' ||
+      tab === 'copytrade'
       ? tab
       : 'account'
   })
@@ -350,6 +355,11 @@ export function SettingsPage() {
       key: 'data',
       label: tt('Data proxy', '数据代理'),
       icon: <Globe size={16} />,
+    },
+    {
+      key: 'copytrade',
+      label: tt('Copy-trade AI', '带单 AI'),
+      icon: <Sparkles size={16} />,
     },
   ]
 
@@ -657,6 +667,9 @@ export function SettingsPage() {
 
           {/* Data source Tab */}
           {activeTab === 'data' && <ProxySettings tt={tt} />}
+          {activeTab === 'copytrade' && (
+            <CoinScoreSettings language={language} />
+          )}
         </div>
       </div>
 

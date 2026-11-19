@@ -39,6 +39,7 @@ type Server struct {
 	telegramReloadCh          chan<- struct{} // signal Telegram bot to reload
 	authLimiter               *ipRateLimiter  // per-IP throttle for login/register
 	copyTrade                 *copytrade.Monitor
+	coinScore                 coinScoreAuto
 	explosiveRec              *explosive.Recorder
 	explosivePaper            *explosive.PaperTrader
 	mirror                    *mirror.Engine
@@ -220,6 +221,9 @@ func (s *Server) setupRoutes() {
 		s.registerCoinPoolRoutes(protected)
 		s.registerExplosiveRoutes(protected)
 		s.registerMarketBoardRoutes(protected)
+		s.registerEventRoutes(protected)
+		s.route(protected, "GET", "/events/settings", "Get event labeling settings", s.handleEventLabelSettings)
+		s.routeWithSchema(protected, "PUT", "/events/settings", "Set event labeling settings", `Body: {"model_id":"<owned enabled model id, or empty>","auto_label":<bool>}`, s.handleEventLabelSettings)
 		s.registerCopyTradeRoutes(protected)
 		s.registerMirrorRoutes(protected)
 		protected.GET("/api-scheduler/status", s.handleAPISchedulerStatus)

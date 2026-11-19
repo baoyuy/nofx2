@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -20,6 +21,18 @@ import (
 // direction + 0-100 score + reasons/risks, no entry/stop, never feeds an order.
 
 const copytradeScoreModelKey = "copytrade_score_model"
+
+// coinScoreAuto is the in-memory status of the analyze-all run.
+type coinScoreAuto struct {
+	mu        sync.Mutex
+	running   bool
+	lastRun   int64
+	lastCount int
+	lastErr   string
+	done      int
+	total     int
+}
+
 
 type coinScoreAnalysis struct {
 	Bias        string   `json:"bias"` // long | short | neutral
@@ -49,6 +62,9 @@ func (s *Server) registerCopyTradeScoreRoutes(protected *gin.RouterGroup) {
 	s.route(protected, "POST", "/copytrade/coin-score", "Run the AI reading for one coin now (body: symbol, interval?, model_id?, lang?)", s.handleCoinScoreAnalyze)
 	s.route(protected, "GET", "/copytrade/coin-score/models", "Enabled models and the saved coin-score model", s.handleCoinScoreModels)
 	s.route(protected, "PUT", "/copytrade/coin-score/model", "Set the coin-score model (body: model_id)", s.handleCoinScoreModelPut)
+	s.route(protected, "GET", "/copytrade/coin-score/settings", "Scheduled analyze-all settings and latest run status", s.handleCoinScoreSettingsGet)
+	s.route(protected, "PUT", "/copytrade/coin-score/settings", "Save scheduled analyze-all settings (body: enabled, interval_minutes)", s.handleCoinScoreSettingsPut)
+	s.route(protected, "POST", "/copytrade/coin-score/run-all", "Analyze every coin on the by-coin page now (async; poll settings for progress)", s.handleCoinScoreRunAll)
 }
 
 // scoreModel resolves which model to use: the request's, else the saved
@@ -187,17 +203,26 @@ func (s *Server) handleCoinScoreAnalyze(c *gin.Context) {
 		SafeBadRequest(c, "No AI model for scoring: "+err.Error())
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 40*time.Second)
 	defer cancel()
+	res, err := s.analyzeCoinCore(ctx, userID, model, symbol, interval, req.Lang)
+	if err != nil {
+		SafeError(c, http.StatusBadGateway, "AI call failed: "+SanitizeError(err, "check the AI connection settings"), err)
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
+// analyzeCoinCore builds the copy-trade-aware prompt, calls the model, parses
+// the strict JSON and saves the reading. A parse failure is kept in the result
+// (with the raw text); only a transport/AI error is returned as err.
+func (s *Server) analyzeCoinCore(ctx context.Context, userID string, model *store.AIModel, symbol, interval, lang string) (coinScoreResult, error) {
 	klines, err := binance.GetPublicKlines(ctx, symbol, interval, 200)
 	if err != nil || len(klines) < 30 {
-		SafeError(c, http.StatusBadGateway, "Could not load enough Binance candles for analysis.", err)
-		return
+		return coinScoreResult{}, fmt.Errorf("not enough candles for %s: %v", symbol, err)
 	}
 	ticker, _ := binance.GetPublicTicker(ctx, symbol)
 	ind := computeIndicators(klines)
-
 	snaps := s.copyTrade.Snapshots()
 	var sum *copytrade.SymbolSummary
 	for _, x := range copytrade.Symbols(snaps) {
@@ -208,31 +233,230 @@ func (s *Server) handleCoinScoreAnalyze(c *gin.Context) {
 		}
 	}
 	holders := copytrade.Holders(snaps, symbol)
-
-	system, user := buildCoinScorePrompt(req.Lang, symbol, interval, ticker, klines, ind, sum, holders)
+	system, user := buildCoinScorePrompt(lang, symbol, interval, ticker, klines, ind, sum, holders)
 	raw, err := s.runRealAITest(userID, model.ID, system, user)
-	analyzedAt := time.Now().UnixMilli()
-	res := coinScoreResult{Symbol: symbol, Interval: interval, ModelID: model.ID, ModelName: model.Name,
-		AnalyzedAt: analyzedAt, Price: klines[len(klines)-1].Close}
 	if err != nil {
-		SafeError(c, http.StatusBadGateway, "AI call failed: "+SanitizeError(err, "check the AI connection settings"), err)
-		return
+		return coinScoreResult{}, err
 	}
-	res.Raw = raw
+	res := coinScoreResult{Symbol: symbol, Interval: interval, ModelID: model.ID, ModelName: model.Name,
+		AnalyzedAt: time.Now().UnixMilli(), Price: klines[len(klines)-1].Close, Raw: raw}
 	if a, perr := parseCoinScore(raw); perr != nil {
 		res.ParseError = "The AI reply was not valid JSON; showing the raw text."
 	} else {
 		res.Analysis = a
 	}
-	if data, err := json.Marshal(res); err == nil {
+	if data, merr := json.Marshal(res); merr == nil {
 		row := store.CopyTradeCoinScore{UserID: userID, Symbol: symbol, ModelID: model.ID, Interval: interval,
-			Payload: string(data), AnalyzedAt: analyzedAt}
-		if err := s.store.CopyTrade().SaveCoinScore(&row); err != nil {
-			logger.Warnf("copy-trade coin score: save %s: %v", symbol, err)
+			Payload: string(data), AnalyzedAt: res.AnalyzedAt}
+		if serr := s.store.CopyTrade().SaveCoinScore(&row); serr != nil {
+			logger.Warnf("copy-trade coin score: save %s: %v", symbol, serr)
 			res.ParseError = strings.TrimSpace(res.ParseError + " (result not saved)")
 		}
 	}
-	c.JSON(http.StatusOK, res)
+	return res, nil
+}
+
+// ---- scheduled / manual analyze-all ----
+
+const (
+	coinScoreAutoKey       = "copytrade_coin_score_auto"
+	coinScoreMinInterval   = 5
+	coinScoreDefaultMins   = 60
+)
+
+type coinScoreAutoConfig struct {
+	Enabled         bool `json:"enabled"`
+	IntervalMinutes int  `json:"interval_minutes"`
+}
+
+func (s *Server) loadCoinScoreAuto() coinScoreAutoConfig {
+	cfg := coinScoreAutoConfig{IntervalMinutes: coinScoreDefaultMins}
+	if raw, err := s.store.GetSystemConfig(coinScoreAutoKey); err == nil && raw != "" {
+		_ = json.Unmarshal([]byte(raw), &cfg)
+	}
+	if cfg.IntervalMinutes < coinScoreMinInterval {
+		cfg.IntervalMinutes = coinScoreDefaultMins
+	}
+	return cfg
+}
+
+// resolveScoreModelAny picks the model and owning user for a batch run. A
+// request-scoped run passes the user; the scheduler (no request) uses any
+// enabled model and its owner.
+func (s *Server) resolveScoreModelAny(userID string) (*store.AIModel, string, error) {
+	if userID != "" {
+		m, err := s.scoreModel(userID, "")
+		if err != nil {
+			return nil, "", err
+		}
+		return m, userID, nil
+	}
+	m, err := s.store.AIModel().GetAnyEnabled()
+	if err != nil {
+		return nil, "", err
+	}
+	return m, m.UserID, nil
+}
+
+func (s *Server) coinScoreBegin() bool {
+	s.coinScore.mu.Lock()
+	defer s.coinScore.mu.Unlock()
+	if s.coinScore.running {
+		return false
+	}
+	s.coinScore.running = true
+	s.coinScore.done, s.coinScore.total = 0, 0
+	s.coinScore.lastErr = ""
+	return true
+}
+func (s *Server) coinScoreSetTotal(n int) { s.coinScore.mu.Lock(); s.coinScore.total = n; s.coinScore.mu.Unlock() }
+func (s *Server) coinScoreInc()         { s.coinScore.mu.Lock(); s.coinScore.done++; s.coinScore.mu.Unlock() }
+func (s *Server) coinScoreSetErr(msg string) {
+	if msg == "" {
+		return
+	}
+	s.coinScore.mu.Lock()
+	s.coinScore.lastErr = msg
+	s.coinScore.mu.Unlock()
+}
+func (s *Server) coinScoreFinish(ok int, lastErr string) {
+	s.coinScore.mu.Lock()
+	s.coinScore.running = false
+	s.coinScore.lastRun = time.Now().UnixMilli()
+	s.coinScore.lastCount = ok
+	if lastErr != "" {
+		s.coinScore.lastErr = lastErr
+	}
+	s.coinScore.mu.Unlock()
+}
+
+// runCoinScoreAll analyzes every coin currently on the by-coin page. Runs at
+// most one at a time; the scheduler and the manual button share this.
+func (s *Server) runCoinScoreAll(ctx context.Context, userID string) {
+	if !s.coinScoreBegin() {
+		return
+	}
+	model, uid, err := s.resolveScoreModelAny(userID)
+	if err != nil {
+		s.coinScoreFinish(0, "no AI model: "+err.Error())
+		return
+	}
+	var symbols []string
+	for _, x := range copytrade.Symbols(s.copyTrade.Snapshots()) {
+		symbols = append(symbols, x.Symbol)
+	}
+	s.coinScoreSetTotal(len(symbols))
+	sem := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	ok := 0
+	lastErr := ""
+	for _, sym := range symbols {
+		select {
+		case <-ctx.Done():
+		case sem <- struct{}{}:
+			wg.Add(1)
+			go func(sym string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				cctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+				defer cancel()
+				if _, e := s.analyzeCoinCore(cctx, uid, model, sym, "1h", ""); e != nil {
+					mu.Lock()
+					lastErr = sym + ": " + e.Error()
+					mu.Unlock()
+				} else {
+					mu.Lock()
+					ok++
+					mu.Unlock()
+				}
+				s.coinScoreInc()
+			}(sym)
+		}
+	}
+	wg.Wait()
+	s.coinScoreFinish(ok, lastErr)
+}
+
+// StartCoinScoreAuto starts the scheduled analyze-all loop. Runs on app start.
+func (s *Server) StartCoinScoreAuto(ctx context.Context) {
+	go s.coinScoreAutoLoop(ctx)
+}
+
+func (s *Server) coinScoreAutoLoop(ctx context.Context) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	var next time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		cfg := s.loadCoinScoreAuto()
+		if !cfg.Enabled {
+			next = time.Time{}
+			continue
+		}
+		now := time.Now()
+		if next.IsZero() {
+			next = now // run soon after enabling, then every interval
+		}
+		if now.Before(next) {
+			continue
+		}
+		next = now.Add(time.Duration(cfg.IntervalMinutes) * time.Minute)
+		go s.runCoinScoreAll(ctx, "")
+	}
+}
+
+func (s *Server) handleCoinScoreSettingsGet(c *gin.Context) {
+	cfg := s.loadCoinScoreAuto()
+	s.coinScore.mu.Lock()
+	running, done, total, lastRun, lastCount, lastErr := s.coinScore.running, s.coinScore.done, s.coinScore.total,
+		s.coinScore.lastRun, s.coinScore.lastCount, s.coinScore.lastErr
+	s.coinScore.mu.Unlock()
+	modelName := ""
+	if m, _, err := s.resolveScoreModelAny(c.GetString("user_id")); err == nil {
+		modelName = m.Name
+	}
+	coins := 0
+	if s.copyTrade != nil {
+		coins = len(copytrade.Symbols(s.copyTrade.Snapshots()))
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes, "min_interval": coinScoreMinInterval,
+		"running": running, "done": done, "total": total, "last_run": lastRun, "last_count": lastCount,
+		"last_error": lastErr, "model": modelName, "coin_count": coins,
+	})
+}
+
+func (s *Server) handleCoinScoreSettingsPut(c *gin.Context) {
+	var req coinScoreAutoConfig
+	if err := c.ShouldBindJSON(&req); err != nil {
+		SafeBadRequest(c, "enabled and interval_minutes are required")
+		return
+	}
+	if req.IntervalMinutes < coinScoreMinInterval {
+		req.IntervalMinutes = coinScoreMinInterval
+	}
+	if req.IntervalMinutes > 1440 {
+		req.IntervalMinutes = 1440
+	}
+	raw, _ := json.Marshal(req)
+	if err := s.store.SetSystemConfig(coinScoreAutoKey, string(raw)); err != nil {
+		SafeInternalError(c, "Save coin-score settings", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"enabled": req.Enabled, "interval_minutes": req.IntervalMinutes})
+}
+
+func (s *Server) handleCoinScoreRunAll(c *gin.Context) {
+	if !s.copyTradeReady(c) {
+		return
+	}
+	go s.runCoinScoreAll(context.Background(), c.GetString("user_id"))
+	c.JSON(http.StatusOK, gin.H{"started": true})
 }
 
 func parseCoinScore(raw string) (*coinScoreAnalysis, error) {

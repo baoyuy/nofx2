@@ -316,6 +316,20 @@ export interface CoinScoreResult {
   parse_error?: string
 }
 
+export interface CoinScoreSettings {
+  enabled: boolean
+  interval_minutes: number
+  min_interval: number
+  running: boolean
+  done: number
+  total: number
+  last_run: number
+  last_count: number
+  last_error?: string
+  model: string
+  coin_count: number
+}
+
 export interface CoinScoreModelInfo {
   models: { id: string; name: string; provider: string }[]
   selected: string
@@ -629,6 +643,28 @@ export const copyTradeApi = {
       { method: 'POST', data: { symbol, model_id: modelId, lang }, silent: true, timeout: 45000 }
     )
     return unwrap(r, 'Analysis failed')
+  },
+
+  getCoinScoreSettings: () =>
+    get<CoinScoreSettings>('/copytrade/coin-score/settings'),
+
+  async setCoinScoreSettings(cfg: {
+    enabled: boolean
+    interval_minutes: number
+  }): Promise<void> {
+    const r = await httpClient.request<{ enabled: boolean; interval_minutes: number }>(
+      `${API_BASE}/copytrade/coin-score/settings`,
+      { method: 'PUT', data: cfg, silent: true }
+    )
+    unwrap(r, 'Save failed')
+  },
+
+  async runCoinScoreAll(): Promise<void> {
+    const r = await httpClient.request<{ started: boolean }>(
+      `${API_BASE}/copytrade/coin-score/run-all`,
+      { method: 'POST', silent: true }
+    )
+    unwrap(r, 'Start failed')
   },
 
   getCoinScoreModels: () =>

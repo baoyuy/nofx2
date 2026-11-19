@@ -69,6 +69,8 @@ func (s *Server) StartCopyTrade(ctx context.Context) {
 	m.Load()
 	kernel.CopyTradeResolver = func() kernel.CopyTradeView { return copyTradeView(m, time.Now()) }
 	go m.Run(ctx)
+	// Scheduled per-coin AI readings (off unless enabled in settings).
+	s.StartCoinScoreAuto(ctx)
 }
 
 // copyTradeFreshness drops traders not refreshed for this long from the AI's
