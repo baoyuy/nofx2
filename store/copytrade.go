@@ -667,3 +667,10 @@ func (s *CopyTradeStore) ListScoreOutcomes(userID string) ([]CopyTradeScoreOutco
 	err := s.db.Where("user_id = ?", userID).Order("analyzed_at DESC").Limit(20000).Find(&out).Error
 	return out, err
 }
+
+// PruneScoreOutcomes drops fully-evaluated outcomes older than beforeMs so the
+// table does not grow without bound.
+func (s *CopyTradeStore) PruneScoreOutcomes(beforeMs int64) error {
+	return s.db.Where("analyzed_at < ? AND done_4h = ? AND done_24h = ? AND done_72h = ?",
+		beforeMs, true, true, true).Delete(&CopyTradeScoreOutcome{}).Error
+}

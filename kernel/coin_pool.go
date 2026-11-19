@@ -38,6 +38,11 @@ func coinPoolCandidates(source store.CoinSourceConfig) []CandidateCoin {
 					if len(fresh) > 0 {
 						return toCandidatesDir(fresh, "coin_pool", dirs)
 					}
+					// Detail resolver worked but every pick is expired: treat the
+					// pool as empty rather than trading stale coins.
+					if len(coins) > 0 {
+						return nil
+					}
 				}
 			}
 			return toCandidatesDir(live, "coin_pool", dirs)
