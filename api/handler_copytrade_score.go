@@ -324,8 +324,9 @@ type coinScoreAutoConfig struct {
 	Enabled         bool `json:"enabled"`
 	IntervalMinutes int  `json:"interval_minutes"`
 	PoolAuto        bool `json:"pool_auto"`
-	TopN            int  `json:"top_n"`
-	Concurrency     int  `json:"concurrency"`
+	TopN            int     `json:"top_n"`
+	Concurrency     int     `json:"concurrency"`
+	MinQuoteVolume  float64 `json:"min_quote_volume"`
 }
 
 func (s *Server) loadCoinScoreAuto() coinScoreAutoConfig {
@@ -338,9 +339,6 @@ func (s *Server) loadCoinScoreAuto() coinScoreAutoConfig {
 	}
 	if cfg.Concurrency < 1 {
 		cfg.Concurrency = 4
-	}
-	if cfg.Concurrency > 8 {
-		cfg.Concurrency = 8
 	}
 	return cfg
 }
@@ -407,7 +405,13 @@ func (s *Server) runCoinScoreAll(ctx context.Context, userID string, topN, skipF
 		return
 	}
 	var symbols []string
+	minVol := s.loadCoinScoreAuto().MinQuoteVolume
 	for _, x := range copytrade.Symbols(s.copyTrade.Snapshots()) {
+		// Skip thin coins (low 24h quote volume) so AI scoring ignores coins that
+		// are easy to wick / manipulate.
+		if minVol > 0 && x.Volume24h < minVol {
+			continue
+		}
 		symbols = append(symbols, x.Symbol)
 	}
 	if topN > 0 && topN < len(symbols) {
@@ -429,9 +433,6 @@ func (s *Server) runCoinScoreAll(ctx context.Context, userID string, topN, skipF
 	conc := s.loadCoinScoreAuto().Concurrency
 	if conc < 1 {
 		conc = 4
-	}
-	if conc > 8 {
-		conc = 8
 	}
 	sem := make(chan struct{}, conc)
 	var wg sync.WaitGroup
@@ -517,7 +518,7 @@ func (s *Server) handleCoinScoreSettingsGet(c *gin.Context) {
 		coins = len(copytrade.Symbols(s.copyTrade.Snapshots()))
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes, "pool_auto": cfg.PoolAuto, "top_n": cfg.TopN, "concurrency": cfg.Concurrency, "min_interval": coinScoreMinInterval,
+		"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes, "pool_auto": cfg.PoolAuto, "top_n": cfg.TopN, "concurrency": cfg.Concurrency, "min_quote_volume": cfg.MinQuoteVolume, "min_interval": coinScoreMinInterval,
 		"running": running, "done": done, "total": total, "last_run": lastRun, "last_count": lastCount,
 		"last_error": lastErr, "model": modelName, "coin_count": coins,
 	})
@@ -536,17 +537,17 @@ func (s *Server) handleCoinScoreSettingsPut(c *gin.Context) {
 		req.IntervalMinutes = 1440
 	}
 	if req.Concurrency < 1 {
-		req.Concurrency = 4
+		req.Concurrency = 1
 	}
-	if req.Concurrency > 8 {
-		req.Concurrency = 8
+	if req.MinQuoteVolume < 0 {
+		req.MinQuoteVolume = 0
 	}
 	raw, _ := json.Marshal(req)
 	if err := s.store.SetSystemConfig(coinScoreAutoKey, string(raw)); err != nil {
 		SafeInternalError(c, "Save coin-score settings", err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"enabled": req.Enabled, "interval_minutes": req.IntervalMinutes, "pool_auto": req.PoolAuto, "top_n": req.TopN, "concurrency": req.Concurrency})
+	c.JSON(http.StatusOK, gin.H{"enabled": req.Enabled, "interval_minutes": req.IntervalMinutes, "pool_auto": req.PoolAuto, "top_n": req.TopN, "concurrency": req.Concurrency, "min_quote_volume": req.MinQuoteVolume})
 }
 
 func (s *Server) handleCoinScoreRunAll(c *gin.Context) {

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"nofx/logger"
 	"nofx/trader"
@@ -40,7 +41,9 @@ func marketSymbol(c *gin.Context, raw string) (string, bool) {
 		return "", false
 	}
 	for _, r := range symbol {
-		if (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+		// Allow Unicode letters so Binance symbols with CJK names (e.g. 牛来USDT)
+		// are valid, plus digits. Reject anything else.
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid symbol"})
 			return "", false
 		}

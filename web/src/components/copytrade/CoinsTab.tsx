@@ -424,21 +424,26 @@ function CoinDetail({
   useEffect(() => {
     let cancelled = false
     setCandles([])
-    api
-      .getMarketKlines(symbol, interval, 300)
-      .then((k) => {
-        if (!cancelled) {
-          setCandles(k)
-          setChartError('')
-        }
-      })
-      .catch(
-        (e) =>
-          !cancelled &&
-          setChartError(e instanceof Error ? e.message : String(e))
-      )
+    const load = () =>
+      api
+        .getMarketKlines(symbol, interval, 300)
+        .then((k) => {
+          if (!cancelled) {
+            setCandles(k)
+            setChartError('')
+          }
+        })
+        .catch(
+          (e) =>
+            !cancelled &&
+            setChartError(e instanceof Error ? e.message : String(e))
+        )
+    void load()
+    // Keep the chart live: refresh candles every 12s so new bars/closes show.
+    const timer = setInterval(() => void load(), 12000)
     return () => {
       cancelled = true
+      clearInterval(timer)
     }
   }, [symbol, interval])
 

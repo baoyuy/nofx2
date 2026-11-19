@@ -39,6 +39,7 @@ export function CoinScoreSettings({ language }: { language: string }) {
   const [poolAuto, setPoolAuto] = useState(false)
   const [topN, setTopN] = useState('0')
   const [conc, setConc] = useState('4')
+  const [minVol, setMinVol] = useState('0')
   const [interval, setIntervalMin] = useState('60')
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
@@ -64,6 +65,7 @@ export function CoinScoreSettings({ language }: { language: string }) {
       setPoolAuto(Boolean(data.pool_auto))
       setTopN(String(data.top_n ?? 0))
       setConc(String(data.concurrency ?? 4))
+      setMinVol(String(data.min_quote_volume ?? 0))
       setIntervalMin(String(data.interval_minutes))
     }
   }, [data, dirty])
@@ -79,7 +81,7 @@ export function CoinScoreSettings({ language }: { language: string }) {
     if (!valid) return
     setSaving(true)
     try {
-      await api.setCoinScoreSettings({ enabled: nextEnabled, interval_minutes: n, pool_auto: poolAuto, top_n: Number(topN) || 0, concurrency: Number(conc) || 4 })
+      await api.setCoinScoreSettings({ enabled: nextEnabled, interval_minutes: n, pool_auto: poolAuto, top_n: Number(topN) || 0, concurrency: Number(conc) || 1, min_quote_volume: Number(minVol) || 0 })
       setDirty(false)
       await mutate()
     } catch (e) {
@@ -180,14 +182,27 @@ export function CoinScoreSettings({ language }: { language: string }) {
           <input
             type="number"
             min={1}
-            max={8}
             value={conc}
             onChange={(e) => {
               setConc(e.target.value)
               setDirty(true)
             }}
             className={`${ui.inputInline} w-16`}
-            title={tr(language, '同时调用模型的币数量，1–8；越大越快但越容易被限流/花更多钱', 'How many coins are analyzed at once, 1–8; higher is faster but may hit rate limits / cost more')}
+            title={tr(language, '同时调用模型的币数量，越大越快但越容易被限流/花更多钱', 'How many coins are analyzed at once; higher is faster but may hit rate limits / cost more')}
+          />
+        </label>
+        <label className={`${ui.muted} flex items-center gap-1`}>
+          {tr(language, '成交额下限(USDT)', 'Min 24h vol (USDT)')}
+          <input
+            type="number"
+            min={0}
+            value={minVol}
+            onChange={(e) => {
+              setMinVol(e.target.value)
+              setDirty(true)
+            }}
+            className={`${ui.inputInline} w-28`}
+            title={tr(language, '24h 成交额低于此值的币不做 AI 分析（防插针），0=不过滤', 'Coins with 24h quote volume below this are skipped by AI scoring (avoid wicks); 0 = no filter')}
           />
         </label>
         <button
@@ -276,9 +291,23 @@ export function CoinScoreSettings({ language }: { language: string }) {
           <input
             type="checkbox"
             checked={poolAuto}
-            onChange={(e) => {
-              setPoolAuto(e.target.checked)
-              setDirty(true)
+            onChange={async (e) => {
+              const next = e.target.checked
+              setPoolAuto(next)
+              try {
+                await api.setCoinScoreSettings({
+                  enabled,
+                  interval_minutes: valid ? n : data.interval_minutes,
+                  pool_auto: next,
+                  top_n: Number(topN) || 0,
+                  concurrency: Number(conc) || 1,
+                  min_quote_volume: Number(minVol) || 0,
+                })
+                await mutate()
+              } catch (err) {
+                setPoolAuto(!next)
+                notify.error(err instanceof Error ? err.message : String(err))
+              }
             }}
           />
           {tr(language, '分析后自动生成币池', 'Auto-build coin pool after analysis')}

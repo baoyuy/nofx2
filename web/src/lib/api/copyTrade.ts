@@ -348,6 +348,7 @@ export interface CoinScoreSettings {
   pool_auto: boolean
   top_n: number
   concurrency: number
+  min_quote_volume: number
   interval_minutes: number
   min_interval: number
   running: boolean
@@ -724,6 +725,7 @@ export const copyTradeApi = {
     pool_auto?: boolean
     top_n?: number
     concurrency?: number
+    min_quote_volume?: number
   }): Promise<void> {
     const r = await httpClient.request<{ enabled: boolean; interval_minutes: number }>(
       `${API_BASE}/copytrade/coin-score/settings`,

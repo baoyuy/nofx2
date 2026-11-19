@@ -3,6 +3,7 @@ package binance
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 )
 
@@ -30,7 +31,7 @@ func GetDerivatives(ctx context.Context, symbol string) DerivativeInfo {
 		SumOpenInterest string `json:"sumOpenInterest"`
 		Timestamp       int64  `json:"timestamp"`
 	}
-	if err := publicGet(ctx, "/futures/data/openInterestHist?period=1h&limit=2&symbol="+symbol, &hist); err == nil && len(hist) >= 2 {
+	if err := publicGet(ctx, "/futures/data/openInterestHist?period=1h&limit=2&symbol="+url.QueryEscape(symbol), &hist); err == nil && len(hist) >= 2 {
 		prev, last := parseF(hist[0].SumOpenInterest), parseF(hist[len(hist)-1].SumOpenInterest)
 		d.OpenInterest = last
 		if prev > 0 {
@@ -40,7 +41,7 @@ func GetDerivatives(ctx context.Context, symbol string) DerivativeInfo {
 		var oi struct {
 			OpenInterest string `json:"openInterest"`
 		}
-		if err := publicGet(ctx, "/fapi/v1/openInterest?symbol="+symbol, &oi); err == nil {
+		if err := publicGet(ctx, "/fapi/v1/openInterest?symbol="+url.QueryEscape(symbol), &oi); err == nil {
 			d.OpenInterest = parseF(oi.OpenInterest)
 		}
 	}
@@ -50,7 +51,7 @@ func GetDerivatives(ctx context.Context, symbol string) DerivativeInfo {
 		LongAccount    string `json:"longAccount"`
 		ShortAccount   string `json:"shortAccount"`
 	}
-	if err := publicGet(ctx, "/futures/data/globalLongShortAccountRatio?period=1h&limit=1&symbol="+symbol, &lsr); err == nil && len(lsr) > 0 {
+	if err := publicGet(ctx, "/futures/data/globalLongShortAccountRatio?period=1h&limit=1&symbol="+url.QueryEscape(symbol), &lsr); err == nil && len(lsr) > 0 {
 		d.LongShortRatio = parseF(lsr[0].LongShortRatio)
 		d.LongAccountPct = parseF(lsr[0].LongAccount) * 100
 		d.ShortAccountPct = parseF(lsr[0].ShortAccount) * 100
@@ -59,7 +60,7 @@ func GetDerivatives(ctx context.Context, symbol string) DerivativeInfo {
 	var tk []struct {
 		BuySellRatio string `json:"buySellRatio"`
 	}
-	if err := publicGet(ctx, "/futures/data/takerlongshortRatio?period=1h&limit=1&symbol="+symbol, &tk); err == nil && len(tk) > 0 {
+	if err := publicGet(ctx, "/futures/data/takerlongshortRatio?period=1h&limit=1&symbol="+url.QueryEscape(symbol), &tk); err == nil && len(tk) > 0 {
 		d.TakerBuySellRatio = parseF(tk[0].BuySellRatio)
 	}
 
@@ -67,7 +68,7 @@ func GetDerivatives(ctx context.Context, symbol string) DerivativeInfo {
 		MarkPrice  string `json:"markPrice"`
 		IndexPrice string `json:"indexPrice"`
 	}
-	if err := publicGet(ctx, "/fapi/v1/premiumIndex?symbol="+symbol, &prem); err == nil {
+	if err := publicGet(ctx, "/fapi/v1/premiumIndex?symbol="+url.QueryEscape(symbol), &prem); err == nil {
 		m, ix := parseF(prem.MarkPrice), parseF(prem.IndexPrice)
 		if ix > 0 {
 			d.BasisPct = (m - ix) / ix * 100

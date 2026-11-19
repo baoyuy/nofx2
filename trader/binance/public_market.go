@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"nofx/internal/apischeduler"
 	"sort"
 	"strconv"
@@ -97,7 +98,7 @@ func GetPublicKlines(ctx context.Context, symbol, interval string, limit int) ([
 	if limit <= 0 || limit > 1500 {
 		limit = 500
 	}
-	path := fmt.Sprintf("/fapi/v1/klines?symbol=%s&interval=%s&limit=%d", symbol, interval, limit)
+	path := fmt.Sprintf("/fapi/v1/klines?symbol=%s&interval=%s&limit=%d", url.QueryEscape(symbol), interval, limit)
 	var rows [][]json.RawMessage
 	if err := publicGet(ctx, path, &rows); err != nil {
 		return nil, fmt.Errorf("binance klines: %w", err)
@@ -149,7 +150,7 @@ type futuresTicker24h struct {
 // GetPublicTicker combines 24h stats with mark price and funding rate.
 func GetPublicTicker(ctx context.Context, symbol string) (*MarketTicker, error) {
 	var s futuresTicker24h
-	if err := publicGet(ctx, "/fapi/v1/ticker/24hr?symbol="+symbol, &s); err != nil {
+	if err := publicGet(ctx, "/fapi/v1/ticker/24hr?symbol="+url.QueryEscape(symbol), &s); err != nil {
 		return nil, fmt.Errorf("binance 24h ticker: %w", err)
 	}
 	if s.Symbol == "" {
@@ -168,7 +169,7 @@ func GetPublicTicker(ctx context.Context, symbol string) (*MarketTicker, error) 
 		LastFundingRate string `json:"lastFundingRate"`
 		NextFundingTime int64  `json:"nextFundingTime"`
 	}
-	if err := publicGet(ctx, "/fapi/v1/premiumIndex?symbol="+symbol, &prem); err == nil {
+	if err := publicGet(ctx, "/fapi/v1/premiumIndex?symbol="+url.QueryEscape(symbol), &prem); err == nil {
 		if mark := parseF(prem.MarkPrice); mark > 0 {
 			t.MarkPrice = mark
 		}
