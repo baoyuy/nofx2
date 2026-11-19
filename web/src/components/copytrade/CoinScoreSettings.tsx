@@ -4,6 +4,7 @@ import { Play, Save, Loader2 } from 'lucide-react'
 import { api } from '../../lib/api'
 import type {
   CoinPoolInfo,
+  OutcomeStat,
   CoinScoreModelInfo,
   CoinScoreSettings as Settings,
 } from '../../lib/api/copyTrade'
@@ -28,6 +29,11 @@ export function CoinScoreSettings({ language }: { language: string }) {
     'copytrade/coin-pool',
     () => api.getCoinPool(),
     { refreshInterval: 15000 }
+  )
+  const { data: outcomes } = useSWR<{ rows: OutcomeStat[] }>(
+    'copytrade/coin-score/outcomes',
+    () => api.getCoinScoreOutcomes(),
+    { refreshInterval: 120000 }
   )
   const [enabled, setEnabled] = useState(false)
   const [poolAuto, setPoolAuto] = useState(false)
@@ -261,6 +267,48 @@ export function CoinScoreSettings({ language }: { language: string }) {
         <span className={`${ui.muted} text-xs tabular-nums`}>
           {tr(language, `当前币池 ${pool?.count ?? 0} 个`, `pool: ${pool?.count ?? 0} coins`)}
         </span>
+      </div>
+
+      <div className="border-t border-[rgba(25,36,52,0.08)] pt-3">
+        <div className="mb-1 text-sm font-medium text-nofx-text">
+          {tr(language, '前向验证（高分是否真的更准 / 空头是否赚钱）', 'Forward check (do high scores and shorts really work)')}
+        </div>
+        {outcomes && outcomes.rows.some((r) => r.samples > 0) ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs tabular-nums">
+              <thead>
+                <tr className={ui.muted}>
+                  <th className="py-1 pr-2 text-left">{tr(language, '周期', 'H')}</th>
+                  <th className="py-1 pr-2 text-left">{tr(language, '方向', 'Side')}</th>
+                  <th className="py-1 pr-2 text-left">{tr(language, '分数档', 'Band')}</th>
+                  <th className="py-1 pr-2 text-right">{tr(language, '样本', 'N')}</th>
+                  <th className="py-1 pr-2 text-right">{tr(language, '胜率', 'Hit')}</th>
+                  <th className="py-1 pr-2 text-right">{tr(language, '跑赢BTC', 'Beat')}</th>
+                  <th className="py-1 text-right">{tr(language, '平均超额', 'Excess')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {outcomes.rows
+                  .filter((r) => r.samples > 0)
+                  .map((r, i) => (
+                    <tr key={i} className="border-t border-[rgba(25,36,52,0.06)]">
+                      <td className="py-1 pr-2">{r.horizon}</td>
+                      <td className="py-1 pr-2">{r.side}</td>
+                      <td className="py-1 pr-2">{r.band}</td>
+                      <td className="py-1 pr-2 text-right">{r.samples}</td>
+                      <td className="py-1 pr-2 text-right">{r.hit_rate.toFixed(1)}%</td>
+                      <td className="py-1 pr-2 text-right">{r.beat_btc.toFixed(1)}%</td>
+                      <td className="py-1 text-right">{r.avg_excess >= 0 ? '+' : ''}{r.avg_excess.toFixed(2)}%</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className={`${ui.muted} text-xs`}>
+            {tr(language, '还没有到期样本（分析后 4/24/72 小时才会回填）', 'No matured samples yet (filled at 4/24/72h after analysis)')}
+          </p>
+        )}
       </div>
 
       <p className="text-xs text-nofx-gold">

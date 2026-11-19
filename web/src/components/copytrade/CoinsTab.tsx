@@ -378,7 +378,8 @@ function CoinDetail({
   const { data: hitRate } = useSWR(
     'copytrade/hit-rate:30',
     () => api.getHitRate(30),
-    LOCAL_SNAPSHOT_OPTIONS
+    // The 30-day hit rate reads the signal table; it does not need 4s polling.
+    { refreshInterval: 60000, revalidateOnFocus: false }
   )
   const expected = useMemo(() => {
     const r = summary?.rank

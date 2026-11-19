@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import useSWR from 'swr'
 import { LOCAL_SNAPSHOT_OPTIONS } from '../lib/liveSnapshot'
 import { useNavigate } from 'react-router-dom'
@@ -175,9 +176,15 @@ function StatusBar({
   )
 }
 
+const TABS: Tab[] = ['discover', 'following', 'feed', 'coins', 'paper']
+
 export function CopyTradePage() {
   const { language } = useLanguage()
-  const [tab, setTab] = useState<Tab>('following')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [tab, setTab] = useState<Tab>(() => {
+    const t = searchParams.get('tab') as Tab | null
+    return t && TABS.includes(t) ? t : 'following'
+  })
   // These endpoints read local monitor snapshots. Do not tie their completion
   // together: a slow/failing status request must not hold positions or feed up.
   const { data: status } = useSWR(
@@ -192,7 +199,26 @@ export function CopyTradePage() {
     error: followsError,
   } = useSWR('copytrade/follows', api.getFollows, LOCAL_SNAPSHOT_OPTIONS)
   const snaps = follows?.follows || EMPTY_SNAPS
-  const [coin, setCoin] = useState('')
+  const [coin, setCoin] = useState(() => searchParams.get('symbol') || '')
+  // Keep the tab and selected coin in the URL so a reload keeps place.
+  const changeTab = (t: Tab) => {
+    setTab(t)
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.set('tab', t)
+      if (coin) next.set('symbol', coin)
+      return next
+    })
+  }
+  const changeCoin = (symbol: string) => {
+    setCoin(symbol)
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.set('tab', 'coins')
+      if (symbol) next.set('symbol', symbol)
+      return next
+    })
+  }
   // The long caveat about polling used to sit under the title on every visit.
   const [help, setHelp] = useState(false)
 
@@ -200,10 +226,7 @@ export function CopyTradePage() {
     () => new Set(snaps.map((s) => s.trader.portfolio_id)),
     [snaps]
   )
-  const openCoin = (symbol: string) => {
-    setCoin(symbol)
-    setTab('coins')
-  }
+  const openCoin = (symbol: string) => changeCoin(symbol)
   const tabs: { id: Tab; zh: string; en: string }[] = [
     { id: 'discover', zh: '发现交易员', en: 'Discover' },
     {
@@ -259,7 +282,7 @@ export function CopyTradePage() {
             key={t.id}
             type="button"
             aria-pressed={t.id === tab}
-            onClick={() => setTab(t.id)}
+            onClick={() => changeTab(t.id)}
             className={`rounded-lg border px-3 py-2 text-sm font-semibold ${t.id === tab ? 'border-nofx-gold bg-nofx-gold/10 text-nofx-text' : `${ui.border} bg-nofx-bg-lighter text-nofx-text hover:border-nofx-gold`}`}
           >
             {tr(language, t.zh, t.en)}
@@ -287,7 +310,7 @@ export function CopyTradePage() {
         <FeedTab language={language} snaps={snaps} onSymbol={openCoin} />
       ) : null}
       {tab === 'coins' ? (
-        <CoinsTab language={language} selected={coin} onSelect={setCoin} />
+        <CoinsTab language={language} selected={coin} onSelect={changeCoin} />
       ) : null}
       {tab === 'paper' ? <PaperTab language={language} /> : null}
     </div>

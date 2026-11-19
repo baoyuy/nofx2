@@ -358,6 +358,17 @@ export interface CoinScoreSettings {
   coin_count: number
 }
 
+export interface OutcomeStat {
+  horizon: string
+  side: string
+  band: string
+  samples: number
+  hit_rate: number
+  beat_btc: number
+  avg_ret: number
+  avg_excess: number
+}
+
 export interface CoinPoolCoinBrief {
   symbol: string
   direction: 'long' | 'short' | 'neutral'
@@ -688,6 +699,8 @@ export const copyTradeApi = {
 
   getCoinScores: () =>
     get<{ items: CoinScoreBrief[] }>('/copytrade/coin-scores'),
+
+  getCoinScoreOutcomes: () => get<{ rows: OutcomeStat[] }>('/copytrade/coin-score/outcomes'),
 
   getCoinPool: () => get<CoinPoolInfo>('/copytrade/coin-pool'),
 
