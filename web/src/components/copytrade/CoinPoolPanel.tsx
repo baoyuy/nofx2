@@ -1,8 +1,8 @@
+import { useState } from 'react'
 import useSWR from 'swr'
 import { RefreshCw } from 'lucide-react'
 import { api } from '../../lib/api'
 import type { CoinPoolInfo } from '../../lib/api/copyTrade'
-import { notify } from '../../lib/notify'
 import { tr, ui } from '../market/marketUi'
 import { base } from './format'
 
@@ -16,12 +16,30 @@ export function CoinPoolPanel({ language }: { language: string }) {
   )
   const coins = data?.coins || []
   const now = Date.now()
+  const [msg, setMsg] = useState('')
   const build = async () => {
+    setMsg('')
     try {
-      await api.generateCoinPool()
+      const p = await api.generateCoinPool()
       await mutate()
+      if (!p || !p.count) {
+        setMsg(
+          tr(
+            language,
+            '暂无可用候选：请先跑一次 AI 分析（有评分）后再生成。',
+            'No candidates yet: run an AI analysis first, then build.'
+          )
+        )
+      }
     } catch (e) {
-      notify.error(e instanceof Error ? e.message : String(e))
+      setMsg(
+        tr(
+          language,
+          '生成失败或暂无可用评分，请先分析后再试。',
+          'Build failed or no scores yet; run an analysis first.'
+        )
+      )
+      void e
     }
   }
   return (
@@ -82,6 +100,7 @@ export function CoinPoolPanel({ language }: { language: string }) {
           )}
         </p>
       )}
+      {msg ? <p className="mt-1 text-xs text-nofx-gold">{msg}</p> : null}
     </section>
   )
 }

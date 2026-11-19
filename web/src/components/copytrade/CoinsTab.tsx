@@ -128,6 +128,7 @@ function AiTag({ b, language }: { b?: CoinScoreBrief; language: string }) {
   return (
     <span
       className={`text-[11px] tabular-nums ${color}`}
+      aria-label={`${biasText} bull ${Math.round(b.bull_score)} bear ${Math.round(b.bear_score)}`}
       title={`${biasText} · bull ${Math.round(b.bull_score)} / bear ${Math.round(b.bear_score)} · ${tr(language, '置信', 'conf')} ${Math.round(b.conviction)}${
         b.horizon ? ' · ' + b.horizon : ''
       } · ${ago(language, b.analyzed_at)}`}
@@ -338,6 +339,13 @@ function CoinAiScore({
                 language,
                 '仅供参考，不构成下单指令。',
                 'Reference only, not an order instruction.'
+              )}
+            </div>
+            <div className="mt-0.5 text-nofx-text-muted">
+              {tr(
+                language,
+                '使用 15m/1h/4h 多周期研判，与上方周期切换无关。',
+                'Uses 15m/1h/4h multi-timeframe; independent of the interval buttons above.'
               )}
             </div>
           </div>
@@ -870,7 +878,10 @@ export function CoinsTab({
       const b = scoreMap.get(symbol)
       if (!b) return -1
       // Rank by conviction (|edge|) so strong shorts surface too, not just longs.
-      if (typeof b.smoothed_edge === 'number') return Math.abs(b.smoothed_edge)
+      // Old rows may lack smoothed_edge (0): fall back to raw conviction.
+      if (typeof b.smoothed_edge === 'number' && b.smoothed_edge !== 0) {
+        return Math.abs(b.smoothed_edge)
+      }
       return b.conviction ?? Math.abs((b.bull_score || 0) - (b.bear_score || 0))
     },
     [scoreMap]

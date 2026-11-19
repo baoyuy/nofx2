@@ -17,6 +17,7 @@ type DerivativeInfo struct {
 	LongAccountPct   float64 // 0-100
 	ShortAccountPct  float64 // 0-100
 	TakerBuySellRatio float64 // >1 = taker buying
+	BasisPct          float64 // (mark - index)/index * 100
 }
 
 // GetDerivatives reads OI, OI change, long/short ratio and taker ratio.
@@ -60,6 +61,17 @@ func GetDerivatives(ctx context.Context, symbol string) DerivativeInfo {
 	}
 	if err := publicGet(ctx, "/futures/data/takerlongshortRatio?period=1h&limit=1&symbol="+symbol, &tk); err == nil && len(tk) > 0 {
 		d.TakerBuySellRatio = parseF(tk[0].BuySellRatio)
+	}
+
+	var prem struct {
+		MarkPrice  string `json:"markPrice"`
+		IndexPrice string `json:"indexPrice"`
+	}
+	if err := publicGet(ctx, "/fapi/v1/premiumIndex?symbol="+symbol, &prem); err == nil {
+		m, ix := parseF(prem.MarkPrice), parseF(prem.IndexPrice)
+		if ix > 0 {
+			d.BasisPct = (m - ix) / ix * 100
+		}
 	}
 	return d
 }

@@ -97,6 +97,11 @@ func (s *Server) buildCoinPool(userID string) (*store.CoinPool, error) {
 			Note: fmt.Sprintf("edge %+.0f conv %.0f", c.smoothed, c.conv), ExpiryAt: expiry})
 	}
 
+	if len(picks) == 0 {
+		// No usable candidates: return an empty pool instead of erroring, so the
+		// UI can show a friendly "run an analysis first" message.
+		return &store.CoinPool{Name: poolName, Screener: poolScreener, Coins: []store.CoinPoolCoin{}}, nil
+	}
 	p := &store.CoinPool{Name: poolName, Screener: poolScreener, Coins: picks}
 	if poolID != "" {
 		p.ID = poolID
