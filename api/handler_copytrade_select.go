@@ -52,9 +52,16 @@ func (s *Server) buildCoinPool(userID string) (*store.CoinPool, error) {
 		ttlMin = refreshMin * 2
 	}
 
+	// Freshness window for keeping a SCORE in the pool must be at least the
+	// analysis interval + one refresh margin, otherwise scores near the end of
+	// each analysis cycle would be dropped and the pool would flap/empty.
+	freshMin := cfg.IntervalMinutes + refreshMin
+	if freshMin < ttlMin {
+		freshMin = ttlMin
+	}
 	now := time.Now()
 	nowMs := now.UnixMilli()
-	ttlMs := int64(ttlMin) * 60 * 1000
+	freshMs := int64(freshMin) * 60 * 1000
 
 	rows, err := s.store.CopyTrade().ListCoinScores(userID)
 	if err != nil {
@@ -62,8 +69,8 @@ func (s *Server) buildCoinPool(userID string) (*store.CoinPool, error) {
 	}
 	var cands []poolCandidate
 	for _, r := range rows {
-		// Only fresh scores (within TTL) may enter the pool.
-		if r.AnalyzedAt > 0 && nowMs-r.AnalyzedAt > ttlMs {
+		// Only fresh scores (within the freshness window) may enter the pool.
+		if r.AnalyzedAt > 0 && nowMs-r.AnalyzedAt > freshMs {
 			continue
 		}
 		var res coinScoreResult
