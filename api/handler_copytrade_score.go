@@ -902,6 +902,8 @@ type coinScoreBrief struct {
 	Score      float64 `json:"score"`
 	Confidence float64 `json:"confidence"`
 	AnalyzedAt int64   `json:"analyzed_at"`
+	AgeMs      int64   `json:"age_ms"`
+	Stale      bool    `json:"stale"`
 	ModelID    string  `json:"model_id"`
 }
 
@@ -911,16 +913,24 @@ func (s *Server) handleCoinScoresList(c *gin.Context) {
 		SafeInternalError(c, "Read coin scores", err)
 		return
 	}
+	cfg := s.loadCoinScoreAuto()
+	ttlMin := cfg.PoolTTLMinutes
+	if ttlMin < 1 {
+		ttlMin = 12
+	}
+	ttlMs := int64(ttlMin) * 60 * 1000
+	now := time.Now().UnixMilli()
 	out := make([]coinScoreBrief, 0, len(rows))
 	for _, r := range rows {
 		var res coinScoreResult
 		if json.Unmarshal([]byte(r.Payload), &res) != nil || res.Analysis == nil {
 			continue
 		}
+		age := now - r.AnalyzedAt
 		out = append(out, coinScoreBrief{Symbol: r.Symbol, Bias: res.Analysis.Bias, Horizon: res.Analysis.Horizon,
 			BullScore: res.Analysis.BullScore, BearScore: res.Analysis.BearScore, Edge: res.Analysis.Edge,
 			SmoothedEdge: res.Analysis.SmoothedEdge, Conviction: res.Analysis.Conviction, Score: res.Analysis.Score, Confidence: res.Analysis.Confidence,
-			AnalyzedAt: r.AnalyzedAt, ModelID: r.ModelID})
+			AnalyzedAt: r.AnalyzedAt, AgeMs: age, Stale: r.AnalyzedAt > 0 && age > ttlMs, ModelID: r.ModelID})
 	}
 	c.JSON(http.StatusOK, gin.H{"items": out})
 }

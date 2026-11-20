@@ -106,8 +106,10 @@ function AiTag({ b, language }: { b?: CoinScoreBrief; language: string }) {
       </span>
     )
   }
-  const color =
-    b.bias === 'long'
+  const stale = Boolean(b.stale)
+  const color = stale
+    ? 'text-nofx-text-muted'
+    : b.bias === 'long'
       ? 'text-nofx-success'
       : b.bias === 'short'
         ? 'text-nofx-danger'
@@ -127,13 +129,18 @@ function AiTag({ b, language }: { b?: CoinScoreBrief; language: string }) {
         : tr(language, '中', 'N')
   return (
     <span
-      className={`text-[11px] tabular-nums ${color}`}
+      className={`text-[11px] tabular-nums ${color}${stale ? ' opacity-70' : ''}`}
       aria-label={`${biasText} bull ${Math.round(b.bull_score)} bear ${Math.round(b.bear_score)}`}
       title={`${biasText} · bull ${Math.round(b.bull_score)} / bear ${Math.round(b.bear_score)} · ${tr(language, '置信', 'conf')} ${Math.round(b.conviction)}${
         b.horizon ? ' · ' + b.horizon : ''
       } · ${ago(language, b.analyzed_at)}`}
     >
       AI {sideTag} {Math.round(b.score)} {arrow}
+      {stale ? (
+        <span className="ml-1 text-nofx-gold">
+          {tr(language, '过期', 'stale')}
+        </span>
+      ) : null}
     </span>
   )
 }
@@ -889,6 +896,9 @@ export function CoinsTab({
     (symbol: string) => {
       const b = scoreMap.get(symbol)
       if (!b) return -1
+      // A stale reading (older than the coin-pool TTL) must NOT keep ranking on
+      // an old high score: sink it below every fresh coin.
+      if (b.stale) return -1
       // Rank by conviction (|edge|) so strong shorts surface too, not just longs.
       // Old rows may lack smoothed_edge (0): fall back to raw conviction.
       if (typeof b.smoothed_edge === 'number' && b.smoothed_edge !== 0) {

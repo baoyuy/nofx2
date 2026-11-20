@@ -340,6 +340,8 @@ export interface CoinScoreBrief {
   score: number
   confidence: number
   analyzed_at: number
+  age_ms?: number
+  stale?: boolean
   model_id: string
 }
 
