@@ -386,7 +386,7 @@ export function CoinScoreSettings({ language }: { language: string }) {
                   <th className="py-1 pr-2 text-left">{tr(language, '分数档', 'Band')}</th>
                   <th className="py-1 pr-2 text-right">{tr(language, '样本', 'N')}</th>
                   <th className="py-1 pr-2 text-right">{tr(language, '胜率', 'Hit')}</th>
-                  <th className="py-1 pr-2 text-right">{tr(language, '跑赢BTC', 'Beat')}</th>
+                  <th className="py-1 pr-2 text-right">{tr(language, '跑赢均值', 'Beat mkt')}</th>
                   <th className="py-1 text-right">{tr(language, '平均超额', 'Excess')}</th>
                 </tr>
               </thead>
@@ -400,7 +400,7 @@ export function CoinScoreSettings({ language }: { language: string }) {
                       <td className="py-1 pr-2">{r.band}</td>
                       <td className="py-1 pr-2 text-right">{r.samples}</td>
                       <td className="py-1 pr-2 text-right">{r.hit_rate.toFixed(1)}%</td>
-                      <td className="py-1 pr-2 text-right">{r.beat_btc.toFixed(1)}%</td>
+                      <td className="py-1 pr-2 text-right">{r.beat_market.toFixed(1)}%</td>
                       <td className="py-1 text-right">{r.avg_excess >= 0 ? '+' : ''}{r.avg_excess.toFixed(2)}%</td>
                     </tr>
                   ))}

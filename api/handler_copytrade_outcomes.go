@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -12,9 +14,15 @@ import (
 	"nofx/trader/binance"
 )
 
-// Forward-return evaluation of every score: was the coin (and the side) right at
-// 4h/24h/72h, versus the same side of BTC? This is what decides whether the
-// scoring and the shorts are worth anything.
+// Forward-return evaluation of every score: measured at 4h/24h/72h, both in
+// absolute terms and vs a MARKET benchmark = the average return of all coins
+// scored in the same time window (not BTC). Also de-duplicated so the same
+// coin+direction counts at most once per 4h.
+
+const (
+	outcomeBucketMs = int64(30 * 60 * 1000)  // cohort window for the benchmark
+	outcomeDedupMs  = int64(4 * 60 * 60 * 1000) // same coin+side counts once per 4h
+)
 
 func (s *Server) StartScoreOutcomeLoop(ctx context.Context) {
 	go s.scoreOutcomeLoop(ctx)
@@ -49,7 +57,6 @@ func priceAtKh(k []binance.MarketKline, ms int64) (float64, bool) {
 
 func (s *Server) evaluateScoreOutcomes(ctx context.Context) {
 	now := time.Now().UnixMilli()
-	// Keep ~90 days of evaluated history; prune older completed rows.
 	if err := s.store.CopyTrade().PruneScoreOutcomes(now - 7*24*3600*1000); err != nil {
 		logger.Warnf("copy-trade outcomes: prune: %v", err)
 	}
@@ -61,7 +68,6 @@ func (s *Server) evaluateScoreOutcomes(ctx context.Context) {
 	if len(pend) == 0 {
 		return
 	}
-	btc, _ := binance.GetPublicKlines(ctx, "BTCUSDT", "1h", 400)
 	cache := map[string][]binance.MarketKline{}
 	for i := range pend {
 		o := &pend[i]
@@ -83,7 +89,7 @@ func (s *Server) evaluateScoreOutcomes(ctx context.Context) {
 			continue
 		}
 		changed := false
-		set := func(hours int, retP, benchP **float64, done *bool) {
+		set := func(hours int, retP **float64, done *bool) {
 			if *done {
 				return
 			}
@@ -100,23 +106,13 @@ func (s *Server) evaluateScoreOutcomes(ctx context.Context) {
 				r = -r
 			}
 			*retP = &r
-			if len(btc) > 0 {
-				if be, ok := priceAtKh(btc, o.AnalyzedAt); ok {
-					if bx, ok2 := priceAtKh(btc, due); ok2 && be > 0 {
-						b := bx/be - 1
-						if o.Bias == "short" {
-							b = -b
-						}
-						*benchP = &b
-					}
-				}
-			}
 			*done = true
 			changed = true
 		}
-		set(4, &o.Ret4h, &o.Bench4h, &o.Done4h)
-		set(24, &o.Ret24h, &o.Bench24h, &o.Done24h)
-		set(72, &o.Ret72h, &o.Bench72h, &o.Done72h)
+		// Benchmark is computed from the cohort at read time, not stored here.
+		set(4, &o.Ret4h, &o.Done4h)
+		set(24, &o.Ret24h, &o.Done24h)
+		set(72, &o.Ret72h, &o.Done72h)
 		if changed {
 			if err := s.store.CopyTrade().UpdateScoreOutcome(o); err != nil {
 				logger.Warnf("copy-trade outcomes: update %s: %v", o.Symbol, err)
@@ -131,9 +127,9 @@ type outcomeStat struct {
 	Band      string  `json:"band"`
 	Samples   int     `json:"samples"`
 	HitRate   float64 `json:"hit_rate"`
-	BeatRate  float64 `json:"beat_btc"`
+	BeatRate  float64 `json:"beat_market"` // % beating the market-average benchmark
 	AvgRet    float64 `json:"avg_ret"`
-	AvgExcess float64 `json:"avg_excess"`
+	AvgExcess float64 `json:"avg_excess"` // vs market-average benchmark
 }
 
 func bandOf(bull, bear float64) string {
@@ -151,54 +147,114 @@ func bandOf(bull, bear float64) string {
 	}
 }
 
-func moveOutcome(h string, rows []store.CopyTradeScoreOutcome) (ret, bench []float64) {
-	for _, o := range rows {
-		var rp, bp *float64
-		switch h {
-		case "4h":
-			rp, bp = o.Ret4h, o.Bench4h
-		case "24h":
-			rp, bp = o.Ret24h, o.Bench24h
-		case "72h":
-			rp, bp = o.Ret72h, o.Bench72h
-		}
-		if rp == nil {
-			continue
-		}
-		ret = append(ret, *rp)
-		if bp != nil {
-			bench = append(bench, *bp)
-		}
+func retOf(o store.CopyTradeScoreOutcome, h string) (*float64, bool) {
+	switch h {
+	case "4h":
+		return o.Ret4h, o.Ret4h != nil
+	case "24h":
+		return o.Ret24h, o.Ret24h != nil
+	case "72h":
+		return o.Ret72h, o.Ret72h != nil
 	}
-	return
+	return nil, false
 }
 
-func statFor(h, side, band string, rows []store.CopyTradeScoreOutcome) outcomeStat {
-	ret, bench := moveOutcome(h, rows)
-	st := outcomeStat{Horizon: h, Side: side, Band: band, Samples: len(ret)}
-	if len(ret) == 0 {
-		return st
+// rawLong is the coin's LONG-side return (undo the short inversion) so the
+// market benchmark is side-agnostic (average long return of the cohort).
+func rawLong(o store.CopyTradeScoreOutcome, h string) (float64, bool) {
+	rp, ok := retOf(o, h)
+	if !ok {
+		return 0, false
 	}
-	hit, beat := 0, 0
+	if o.Bias == "short" {
+		return -*rp, true
+	}
+	return *rp, true
+}
+
+func cohortBucket(ms int64) int64 { return ms / outcomeBucketMs }
+
+// dedupOutcomes keeps the first occurrence of each (symbol, bias) within any 4h
+// window, so one coin+direction is only counted once per 4h.
+func dedupOutcomes(rows []store.CopyTradeScoreOutcome) []store.CopyTradeScoreOutcome {
+	sorted := append([]store.CopyTradeScoreOutcome(nil), rows...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].AnalyzedAt < sorted[j].AnalyzedAt })
+	seen := map[string]int64{}
+	out := make([]store.CopyTradeScoreOutcome, 0, len(sorted))
+	for _, o := range sorted {
+		k := o.Symbol + "|" + o.Bias
+		if last, ok := seen[k]; ok && o.AnalyzedAt-last < outcomeDedupMs {
+			continue
+		}
+		seen[k] = o.AnalyzedAt
+		out = append(out, o)
+	}
+	return out
+}
+
+// buildBench computes, per horizon, the average raw long return of each cohort
+// (30-min bucket) and an overall fallback ("h|all").
+func buildBench(rows []store.CopyTradeScoreOutcome) map[string]float64 {
+	sums := map[string]float64{}
+	cnts := map[string]int{}
+	for _, o := range rows {
+		for _, h := range []string{"4h", "24h", "72h"} {
+			r, ok := rawLong(o, h)
+			if !ok {
+				continue
+			}
+			k := fmt.Sprintf("%s|%d", h, cohortBucket(o.AnalyzedAt))
+			sums[k] += r
+			cnts[k]++
+			ka := h + "|all"
+			sums[ka] += r
+			cnts[ka]++
+		}
+	}
+	out := map[string]float64{}
+	for k, n := range cnts {
+		if n > 0 {
+			out[k] = sums[k] / float64(n)
+		}
+	}
+	return out
+}
+
+func benchAt(bench map[string]float64, h string, analyzedAt int64) float64 {
+	if v, ok := bench[fmt.Sprintf("%s|%d", h, cohortBucket(analyzedAt))]; ok {
+		return v
+	}
+	return bench[h+"|all"] // fallback
+}
+
+func statFor(h, side, band string, rows []store.CopyTradeScoreOutcome, bench map[string]float64) outcomeStat {
+	st := outcomeStat{Horizon: h, Side: side, Band: band}
 	var sum, exSum float64
-	for i, r := range ret {
-		sum += r
-		if r > 0 {
+	hit, beat, n := 0, 0, 0
+	for _, o := range rows {
+		r, ok := retOf(o, h)
+		if !ok {
+			continue
+		}
+		n++
+		sum += *r
+		if *r > 0 {
 			hit++
 		}
-		if i < len(bench) {
-			exSum += r - bench[i]
-			if r > bench[i] {
-				beat++
-			}
+		bm := benchAt(bench, h, o.AnalyzedAt)
+		exSum += *r - bm
+		if *r > bm {
+			beat++
 		}
 	}
-	st.HitRate = float64(hit) / float64(len(ret)) * 100
-	st.AvgRet = sum / float64(len(ret)) * 100
-	if len(bench) > 0 {
-		st.BeatRate = float64(beat) / float64(len(bench)) * 100
-		st.AvgExcess = exSum / float64(len(bench)) * 100
+	st.Samples = n
+	if n == 0 {
+		return st
 	}
+	st.HitRate = float64(hit) / float64(n) * 100
+	st.BeatRate = float64(beat) / float64(n) * 100
+	st.AvgRet = sum / float64(n) * 100
+	st.AvgExcess = exSum / float64(n) * 100
 	return st
 }
 
@@ -208,9 +264,11 @@ func (s *Server) handleCoinScoreOutcomes(c *gin.Context) {
 		SafeInternalError(c, "Read score outcomes", err)
 		return
 	}
+	rows = dedupOutcomes(rows)
+	bench := buildBench(rows)
 	var out []outcomeStat
 	for _, h := range []string{"4h", "24h", "72h"} {
-		out = append(out, statFor(h, "all", "all", rows))
+		out = append(out, statFor(h, "all", "all", rows, bench))
 		for _, side := range []string{"long", "short"} {
 			var sub []store.CopyTradeScoreOutcome
 			for _, o := range rows {
@@ -218,7 +276,7 @@ func (s *Server) handleCoinScoreOutcomes(c *gin.Context) {
 					sub = append(sub, o)
 				}
 			}
-			out = append(out, statFor(h, side, "all", sub))
+			out = append(out, statFor(h, side, "all", sub, bench))
 		}
 		for _, band := range []string{"high", "mid", "low"} {
 			var sub []store.CopyTradeScoreOutcome
@@ -227,7 +285,7 @@ func (s *Server) handleCoinScoreOutcomes(c *gin.Context) {
 					sub = append(sub, o)
 				}
 			}
-			out = append(out, statFor(h, "all", band, sub))
+			out = append(out, statFor(h, "all", band, sub, bench))
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"rows": out})

@@ -369,7 +369,7 @@ export interface OutcomeStat {
   band: string
   samples: number
   hit_rate: number
-  beat_btc: number
+  beat_market: number
   avg_ret: number
   avg_excess: number
 }

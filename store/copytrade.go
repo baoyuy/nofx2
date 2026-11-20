@@ -644,6 +644,16 @@ func (s *CopyTradeStore) SaveScoreOutcome(o *CopyTradeScoreOutcome) error {
 	return s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(o).Error
 }
 
+// HasRecentOutcome reports whether an outcome for the same coin+side exists at
+// or after sinceMs (used to count a coin+side only once per 4h).
+func (s *CopyTradeStore) HasRecentOutcome(userID, symbol, bias string, sinceMs int64) (bool, error) {
+	var n int64
+	err := s.db.Model(&CopyTradeScoreOutcome{}).
+		Where("user_id = ? AND symbol = ? AND bias = ? AND analyzed_at >= ?", userID, symbol, bias, sinceMs).
+		Count(&n).Error
+	return n > 0, err
+}
+
 // PendingScoreOutcomes returns rows with a horizon that is now due but not done.
 func (s *CopyTradeStore) PendingScoreOutcomes(nowMs int64) ([]CopyTradeScoreOutcome, error) {
 	var out []CopyTradeScoreOutcome

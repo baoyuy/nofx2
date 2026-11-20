@@ -23,6 +23,11 @@ import (
 
 const copytradeScoreModelKey = "copytrade_score_model"
 
+// copytradeScoreOwnerKey is the account that picked the scoring model. The
+// scheduler scores (and builds the AI coin pool) for this account, so the pool
+// shows up in that account's strategy editor.
+const copytradeScoreOwnerKey = "copytrade_score_owner"
+
 // coinScoreAuto is the in-memory status of the analyze-all run.
 type coinScoreAuto struct {
 	mu        sync.Mutex
@@ -163,6 +168,10 @@ func (s *Server) handleCoinScoreModelPut(c *gin.Context) {
 		SafeInternalError(c, "Save coin-score model", err)
 		return
 	}
+	if err := s.store.SetSystemConfig(copytradeScoreOwnerKey, userID); err != nil {
+		SafeInternalError(c, "Save coin-score owner", err)
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"selected": req.ModelID})
 }
 
@@ -255,6 +264,14 @@ func (s *Server) analyzeCoinCore(ctx context.Context, userID string, model *stor
 	ticker, _ := binance.GetPublicTicker(ctx, symbol)
 	deriv := binance.GetDerivatives(ctx, symbol)
 	regime := binance.GetBTCRegime(ctx)
+	btcTicker, _ := binance.GetPublicTicker(ctx, "BTCUSDT")
+	var coin24, btc24 float64
+	if ticker != nil {
+		coin24 = ticker.PriceChangePct
+	}
+	if btcTicker != nil {
+		btc24 = btcTicker.PriceChangePct
+	}
 	snaps := s.copyTrade.Snapshots()
 	var sum *copytrade.SymbolSummary
 	for _, x := range copytrade.Symbols(snaps) {
@@ -266,7 +283,7 @@ func (s *Server) analyzeCoinCore(ctx context.Context, userID string, model *stor
 	}
 	holders := copytrade.Holders(snaps, symbol)
 	prev := s.loadScoreMemory(userID, symbol)
-	system, user := buildCoinScorePrompt(lang, symbol, tfs, ticker, deriv, regime, sum, holders, prev)
+	system, user := buildCoinScorePrompt(lang, symbol, tfs, ticker, deriv, regime, sum, holders, prev, coin24, btc24)
 
 	primary := "1h"
 	if interval != "" {
@@ -307,10 +324,13 @@ func (s *Server) analyzeCoinCore(ctx context.Context, userID string, model *stor
 		s.saveScoreMemory(userID, symbol, res)
 	}
 	if res.Analysis != nil {
-		o := &store.CopyTradeScoreOutcome{UserID: userID, Symbol: symbol, AnalyzedAt: res.AnalyzedAt,
-			Bias: res.Analysis.Bias, Bull: res.Analysis.BullScore, Bear: res.Analysis.BearScore, EntryPrice: res.Price}
-		if err := s.store.CopyTrade().SaveScoreOutcome(o); err != nil {
-			logger.Warnf("copy-trade outcomes: enqueue %s: %v", symbol, err)
+		// Count this coin+direction at most once per 4h for the forward check.
+		if exists, _ := s.store.CopyTrade().HasRecentOutcome(userID, symbol, res.Analysis.Bias, res.AnalyzedAt-outcomeDedupMs); !exists {
+			o := &store.CopyTradeScoreOutcome{UserID: userID, Symbol: symbol, AnalyzedAt: res.AnalyzedAt,
+				Bias: res.Analysis.Bias, Bull: res.Analysis.BullScore, Bear: res.Analysis.BearScore, EntryPrice: res.Price}
+			if err := s.store.CopyTrade().SaveScoreOutcome(o); err != nil {
+				logger.Warnf("copy-trade outcomes: enqueue %s: %v", symbol, err)
+			}
 		}
 	}
 	return res, nil
@@ -359,8 +379,10 @@ func (s *Server) loadCoinScoreAuto() coinScoreAutoConfig {
 }
 
 // resolveScoreModelAny picks the model and owning user for a batch run. A
-// request-scoped run passes the user; the scheduler (no request) uses any
-// enabled model and its owner.
+// request-scoped run passes the user. The scheduler (no request) uses, in
+// order: the account that picked the scoring model, the owner of the saved
+// scoring model, then any enabled model and its owner. Scores and the AI coin
+// pool are stored under the returned user.
 func (s *Server) resolveScoreModelAny(userID string) (*store.AIModel, string, error) {
 	if userID != "" {
 		m, err := s.scoreModel(userID, "")
@@ -368,6 +390,16 @@ func (s *Server) resolveScoreModelAny(userID string) (*store.AIModel, string, er
 			return nil, "", err
 		}
 		return m, userID, nil
+	}
+	if owner, err := s.store.GetSystemConfig(copytradeScoreOwnerKey); err == nil && owner != "" {
+		if m, err := s.scoreModel(owner, ""); err == nil {
+			return m, owner, nil
+		}
+	}
+	if saved, err := s.store.GetSystemConfig(copytradeScoreModelKey); err == nil && saved != "" {
+		if m, err := s.store.AIModel().GetByID(saved); err == nil && m.Enabled && m.UserID != "" && m.UserID != "default" {
+			return m, m.UserID, nil
+		}
 	}
 	m, err := s.store.AIModel().GetAnyEnabled()
 	if err != nil {
@@ -893,21 +925,38 @@ func (s *Server) handleCoinScoresList(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": out})
 }
 
-func buildCoinScorePrompt(lang, symbol string, tfs []scoreTF, t *binance.MarketTicker, deriv binance.DerivativeInfo, regime string, sum *copytrade.SymbolSummary, holders []copytrade.Holder, prev *store.CopyTradeScoreMemory) (string, string) {
+func tfChg(tf scoreTF, lookback int) float64 {
+	k := tf.Klines
+	if len(k) < 2 {
+		return 0
+	}
+	i := len(k) - 1 - lookback
+	if i < 0 {
+		i = 0
+	}
+	if k[i].Close == 0 {
+		return 0
+	}
+	return (k[len(k)-1].Close/k[i].Close - 1) * 100
+}
+
+func buildCoinScorePrompt(lang, symbol string, tfs []scoreTF, t *binance.MarketTicker, deriv binance.DerivativeInfo, regime string, sum *copytrade.SymbolSummary, holders []copytrade.Holder, prev *store.CopyTradeScoreMemory, coin24, btc24 float64) (string, string) {
 	language := "English"
 	if lang == "zh" {
 		language = "Simplified Chinese"
 	}
-	system := `You are a disciplined crypto perpetual futures analyst. Judge ONE coin from BOTH sides using the copy-trade consensus, multi-timeframe technicals and derivatives data provided.
+	system := `You are a disciplined crypto perpetual futures analyst. Judge ONE coin from BOTH sides with EQUAL rigor, using copy-trade consensus, multi-timeframe technicals, derivatives, and RELATIVE STRENGTH vs BTC and the broad market.
 Reply with ONE strict JSON object and nothing else:
 {"bull_score":0-100,"bear_score":0-100,"bias":"long|short|neutral","conviction":0-100,"horizon":"short|swing","tf_alignment":{"15m":-1|0|1,"1h":-1|0|1,"4h":-1|0|1},"long_case":["..."],"short_case":["..."],"invalidates":"one sentence","market_context":"one sentence","changed":true|false,"change_reason":"..."}
-Rules:
-- Score bull and bear INDEPENDENTLY and symmetrically. Do NOT favor long; a coin trends down about half the time.
-- bias = the side with the clearly higher score. Use neutral ONLY when |bull_score-bear_score| <= 10, and say why.
+Scoring rules:
+- Score bull_score and bear_score INDEPENDENTLY and with EQUAL weight. NEITHER side is the default. Do not lean short; a coin trends up about half the time too.
+- LONG evidence to check explicitly (symmetric to the short list): price above MA/EMA and holding; higher lows; MACD>0 and rising; RSI>50 and rising; breakout or support reclaimed; funding negative/low or open interest shifting (shorts crowded -> squeeze fuel); OI rising while price rises; OUT-performance vs BTC and vs the broad market; copy-trade crowd short or trapped shorts (short squeeze fuel); bullish divergence; strong relative strength.
+- SHORT evidence to check explicitly: price below MA/EMA; lower highs; MACD<0; RSI<50; breakdown; funding positive/rising (longs crowded); OI up while price falls; UNDER-performance vs BTC and vs the broad market; copy-trade crowd long and trapped/underwater; rejection at resistance; bearish divergence; relative weakness.
+- Crowded-and-underwater longs are ONE input (unwind risk that can go either way), NOT an automatic short. Trapped shorts are likewise ONE input, NOT an automatic long. Do not let either decide the side by itself.
+- RELATIVE STRENGTH decides the side, NOT BTC's absolute direction: a coin can be LONG even if BTC is falling (it is stronger than BTC/market) and SHORT even if BTC is rising (it is weaker). Weigh the coin against BTC and against the broad market, and reward the side that is relatively strong.
+- bias = the side with the clearly higher score. Use neutral ONLY when |bull_score - bear_score| <= 10, and say why.
 - conviction = |bull_score - bear_score|. Low conviction is allowed and honest.
-- Check SHORT evidence explicitly: price below EMA/MA, lower highs, MACD<0, RSI<50, breakdown, positive/rising funding (longs crowded), OI up while price falls, underperformance vs BTC, copy-trade crowd long and trapped/underwater.
-- Check LONG evidence symmetrically.
-- If a PREVIOUS READING is given below, treat this as a re-evaluation: change only on new evidence or a triggered invalidation, and set changed=true with change_reason; otherwise keep it and set changed=false.
+- If a PREVIOUS READING is given below, treat this as a re-evaluation: change only on new evidence or a triggered invalidation, set changed=true with change_reason; otherwise keep it and set changed=false.
 - NEVER give entry/stop/take-profit and never instruct an order. Conditional wording only.
 - Write long_case, short_case, invalidates and market_context in ` + language + `.`
 
@@ -923,6 +972,9 @@ Rules:
 	if regime != "" {
 		fmt.Fprintf(&b, "Market regime: %s\n", regime)
 	}
+	fmt.Fprintf(&b, "Relative strength (objective; the side comes from this, NOT from BTC's raw direction):\n")
+	fmt.Fprintf(&b, "- Coin 24h change %+.2f%% vs BTC 24h %+.2f%% => coin-minus-BTC %+.2f pts (positive = stronger than BTC)\n", coin24, btc24, coin24-btc24)
+	fmt.Fprintf(&b, "- Stronger than BTC/market supports LONG even if BTC falls; weaker supports SHORT even if BTC rises.\n")
 	for _, tf := range tfs {
 		fmt.Fprintf(&b, "\n[%s] MA7 %s MA25 %s MA99 %s EMA12 %s EMA26 %s MACD %s/%s/%s RSI6 %.1f RSI14 %.1f KDJ %.1f/%.1f/%.1f BOLL %s/%s/%s ATR %s\n",
 			tf.Interval, fmtNum(tf.Ind.MA7), fmtNum(tf.Ind.MA25), fmtNum(tf.Ind.MA99), fmtNum(tf.Ind.EMA12), fmtNum(tf.Ind.EMA26),
@@ -939,7 +991,7 @@ Rules:
 		}
 	}
 
-	b.WriteString("\nFollowed copy-trade consensus (lead-trader crowd; treat crowded-and-underwater longs as a REVERSE/short signal):\n")
+	b.WriteString("\nFollowed copy-trade consensus (lead-trader crowd; crowded-and-underwater longs are unwind risk = ONE factor, NOT an automatic short; trapped shorts = ONE factor, NOT an automatic long):\n")
 	if sum == nil {
 		b.WriteString("no followed trader currently holds or traded this coin.\n")
 	} else {
