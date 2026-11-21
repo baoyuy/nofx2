@@ -605,97 +605,99 @@ function TraderCard({
                   </tr>
                 </thead>
                 <tbody className="text-nofx-text">
-                  {(expanded ? positions : positions.slice(0, 6)).map((p: TraderPosition) => (
-                    <tr
-                      key={p.symbol + p.side}
-                      className={p.liquidated ? 'text-nofx-text-muted' : ''}
-                    >
-                      <td className="whitespace-nowrap py-0.5 pr-2">
-                        <button
-                          type="button"
-                          className="font-medium hover:underline"
-                          onClick={() => onSymbol(p.symbol)}
+                  {(expanded ? positions : positions.slice(0, 6)).map(
+                    (p: TraderPosition) => (
+                      <tr
+                        key={p.symbol + p.side}
+                        className={p.liquidated ? 'text-nofx-text-muted' : ''}
+                      >
+                        <td className="whitespace-nowrap py-0.5 pr-2">
+                          <button
+                            type="button"
+                            className="font-medium hover:underline"
+                            onClick={() => onSymbol(p.symbol)}
+                          >
+                            {base(p.symbol)}
+                          </button>
+                          {p.tradfi ? (
+                            <span
+                              tabIndex={0}
+                              title={tr(
+                                language,
+                                '股票或商品合约：策略若设了只做加密货币，不会开这类币',
+                                'A stock or commodity contract: a crypto-only strategy skips it'
+                              )}
+                              className="ml-1 rounded bg-nofx-bg-deeper px-1 text-[11px] text-nofx-text-muted"
+                            >
+                              {tr(language, '股', 'Stk')}
+                            </span>
+                          ) : null}
+                        </td>
+                        <td
+                          className={`whitespace-nowrap pr-2 ${sideClass(p.side)}`}
+                          title={tr(
+                            language,
+                            p.leverage
+                              ? `${p.leverage} 倍杠杆`
+                              : '杠杆未知（推算持仓）',
+                            p.leverage
+                              ? `${p.leverage}x leverage`
+                              : 'Leverage unknown (inferred)'
+                          )}
                         >
-                          {base(p.symbol)}
-                        </button>
-                        {p.tradfi ? (
-                          <span
-                            tabIndex={0}
-                            title={tr(
-                              language,
-                              '股票或商品合约：策略若设了只做加密货币，不会开这类币',
-                              'A stock or commodity contract: a crypto-only strategy skips it'
-                            )}
-                            className="ml-1 rounded bg-nofx-bg-deeper px-1 text-[11px] text-nofx-text-muted"
-                          >
-                            {tr(language, '股', 'Stk')}
+                          {sideLabel(language, p.side)}
+                          {p.leverage ? (
+                            <span className="ml-0.5 text-[11px] text-nofx-text-muted">
+                              {p.leverage}x
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="whitespace-nowrap pr-2 text-right tabular-nums">
+                          {usd(p.entry_value)}
+                          <span className="ml-1 hidden text-[11px] text-nofx-text-muted sm:inline">
+                            @ {price(p.entry_price)}
                           </span>
-                        ) : null}
-                      </td>
-                      <td
-                        className={`whitespace-nowrap pr-2 ${sideClass(p.side)}`}
-                        title={tr(
-                          language,
-                          p.leverage
-                            ? `${p.leverage} 倍杠杆`
-                            : '杠杆未知（推算持仓）',
-                          p.leverage
-                            ? `${p.leverage}x leverage`
-                            : 'Leverage unknown (inferred)'
-                        )}
-                      >
-                        {sideLabel(language, p.side)}
-                        {p.leverage ? (
-                          <span className="ml-0.5 text-[11px] text-nofx-text-muted">
-                            {p.leverage}x
-                          </span>
-                        ) : null}
-                      </td>
-                      <td className="whitespace-nowrap pr-2 text-right tabular-nums">
-                        {usd(p.entry_value)}
-                        <span className="ml-1 hidden text-[11px] text-nofx-text-muted sm:inline">
-                          @ {price(p.entry_price)}
-                        </span>
-                      </td>
-                      <td
-                        className={`whitespace-nowrap pr-2 text-right tabular-nums ${
-                          p.unrealized_pnl
-                            ? p.unrealized_pnl >= 0
-                              ? 'text-nofx-success'
-                              : 'text-nofx-danger'
-                            : ''
-                        }`}
-                      >
-                        {p.priced && p.unrealized_pnl
-                          ? signedUsd(p.unrealized_pnl)
-                          : '--'}
-                        {p.priced ? (
-                          <span
-                            tabIndex={0}
-                            title={
-                              p.pct_of_margin
-                                ? tr(
-                                    language,
-                                    '按保证金计的浮动收益率',
-                                    'Open return on margin'
-                                  )
-                                : tr(
-                                    language,
-                                    '按开仓价计的浮动收益率',
-                                    'Open return on entry price'
-                                  )
-                            }
-                            className="ml-1 text-[11px] opacity-80"
-                          >
-                            {pct(p.return_pct)}
-                          </span>
-                        ) : null}
-                      </td>
-                      <td className="align-top">
-                        <HealthTag h={p} language={language} />
-                      </td>
-                    </tr>
-                  ))}
+                        </td>
+                        <td
+                          className={`whitespace-nowrap pr-2 text-right tabular-nums ${
+                            p.unrealized_pnl
+                              ? p.unrealized_pnl >= 0
+                                ? 'text-nofx-success'
+                                : 'text-nofx-danger'
+                              : ''
+                          }`}
+                        >
+                          {p.priced && p.unrealized_pnl
+                            ? signedUsd(p.unrealized_pnl)
+                            : '--'}
+                          {p.priced ? (
+                            <span
+                              tabIndex={0}
+                              title={
+                                p.pct_of_margin
+                                  ? tr(
+                                      language,
+                                      '按保证金计的浮动收益率',
+                                      'Open return on margin'
+                                    )
+                                  : tr(
+                                      language,
+                                      '按开仓价计的浮动收益率',
+                                      'Open return on entry price'
+                                    )
+                              }
+                              className="ml-1 text-[11px] opacity-80"
+                            >
+                              {pct(p.return_pct)}
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="align-top">
+                          <HealthTag h={p} language={language} />
+                        </td>
+                      </tr>
+                    )
+                  )}
                 </tbody>
               </table>
               {!expanded && positions.length > 6 ? (
@@ -882,6 +884,7 @@ export function FollowingTab({
   snaps,
   onChanged,
   onSymbol,
+  onDiscover,
   loading,
   error,
 }: {
@@ -889,6 +892,7 @@ export function FollowingTab({
   snaps: TraderSnapshot[]
   onChanged: () => void
   onSymbol: (symbol: string) => void
+  onDiscover: () => void
   loading?: boolean
   error?: boolean
 }) {
@@ -1015,21 +1019,38 @@ export function FollowingTab({
     return (
       <div>
         <BoardSyncPanel language={language} onChanged={onChanged} />
-        <p className={`${ui.panel} py-10 text-center ${ui.muted}`}>
-          {loading
-            ? tr(language, '正在加载关注列表…', 'Loading follows…')
-            : error
-              ? tr(
-                  language,
-                  '关注列表加载失败，请稍后重试；这不代表你没有关注任何人。',
-                  'Could not load the follow list; this does not mean you follow no one.'
-                )
-              : tr(
+        <div className={`${ui.panel} py-10 text-center ${ui.muted}`}>
+          {loading ? (
+            <p>{tr(language, '正在加载关注列表…', 'Loading follows…')}</p>
+          ) : error ? (
+            <p>
+              {tr(
+                language,
+                '关注列表加载失败，请稍后重试；这不代表你没有关注任何人。',
+                'Could not load the follow list; this does not mean you follow no one.'
+              )}
+            </p>
+          ) : (
+            <>
+              <p>
+                {tr(
                   language,
                   '还没有关注任何带单员。榜单同步会自动关注，或到「发现交易员」里挑选，或直接粘贴带单员主页链接。',
                   'Not following anyone yet. The board sync follows automatically, or pick traders under "Discover", or paste a lead trader page link.'
                 )}
-        </p>
+              </p>
+              <div className="mt-3 flex justify-center">
+                <button
+                  type="button"
+                  className={ui.btnGhost}
+                  onClick={onDiscover}
+                >
+                  {tr(language, '去发现交易员', 'Discover traders')}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
     )
   }

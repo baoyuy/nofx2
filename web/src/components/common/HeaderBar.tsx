@@ -65,6 +65,7 @@ export default function HeaderBar({
     setUserOpen(false)
   }, [location.pathname])
   const tabs: { page: Page; path: string; label: string; auth: boolean }[] = [
+    // 先浏览市场和外部信号，再进入选币、策略和账户管理。
     {
       page: 'market',
       path: ROUTES.market,
@@ -75,6 +76,12 @@ export default function HeaderBar({
       page: 'explosive',
       path: ROUTES.explosive,
       label: language === 'zh' ? '爆发榜' : 'Explosive',
+      auth: true,
+    },
+    {
+      page: 'events',
+      path: ROUTES.events,
+      label: language === 'zh' ? '事件' : 'Events',
       auth: true,
     },
     {
@@ -90,9 +97,9 @@ export default function HeaderBar({
       auth: true,
     },
     {
-      page: 'traders',
-      path: ROUTES.traders,
-      label: t('configNav', language),
+      page: 'strategy',
+      path: ROUTES.strategy,
+      label: t('strategyNav', language),
       auth: true,
     },
     {
@@ -108,21 +115,15 @@ export default function HeaderBar({
       auth: true,
     },
     {
-      page: 'events',
-      path: ROUTES.events,
-      label: language === 'zh' ? '事件' : 'Events',
-      auth: true,
-    },
-    {
-      page: 'strategy',
-      path: ROUTES.strategy,
-      label: t('strategyNav', language),
-      auth: true,
-    },
-    {
       page: 'competition',
       path: ROUTES.competition,
       label: t('realtimeNav', language),
+      auth: true,
+    },
+    {
+      page: 'traders',
+      path: ROUTES.traders,
+      label: t('configNav', language),
       auth: true,
     },
   ]

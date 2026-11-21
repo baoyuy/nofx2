@@ -67,11 +67,11 @@ describe('copy-trade snapshot responsiveness', () => {
   it('renders follows and starts the feed without waiting for a stalled status request', async () => {
     mount()
     expect(await screen.findByText('Loaded follows: 1')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Live feed' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Live feed' }))
     await waitFor(() => expect(mocks.feed).toHaveBeenCalledTimes(1))
     // Remounting the active tab reuses the same query, not a second fetch.
-    fireEvent.click(screen.getByRole('button', { name: 'Following (1)' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Live feed' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Following (1)' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Live feed' }))
     expect(mocks.feed).toHaveBeenCalledTimes(1)
     expect(mocks.status).toHaveBeenCalledTimes(1)
     expect(mocks.discover).not.toHaveBeenCalled()
@@ -115,7 +115,7 @@ describe('copy-trade snapshot responsiveness', () => {
     })
     mount()
     expect(await screen.findByText('Data sync incomplete')).toBeVisible()
-    const ready = screen.getByRole('button', { name: /Data ready/ })
+    const ready = screen.getByRole('button', { name: /Monitor data ready/ })
     expect(ready).toHaveTextContent('1/10')
     expect(ready).toHaveAttribute(
       'title',

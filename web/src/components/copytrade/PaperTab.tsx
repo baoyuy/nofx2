@@ -37,7 +37,9 @@ function label(language: string, table: string, raw: string): string {
     return tr(language, STYLE_LABEL[raw].zh, STYLE_LABEL[raw].en)
   }
   if (table === 'side') {
-    return raw === 'long' ? tr(language, '做多', 'Long') : tr(language, '做空', 'Short')
+    return raw === 'long'
+      ? tr(language, '做多', 'Long')
+      : tr(language, '做空', 'Short')
   }
   return raw
 }
@@ -62,7 +64,14 @@ function Rows({
           <thead>
             <tr className={ui.muted}>
               <th className="py-1 pr-2 text-left font-medium">#</th>
-              <th className="py-1 pr-2 text-right font-medium">
+              <th
+                className="py-1 pr-2 text-right font-medium"
+                title={tr(
+                  language,
+                  '动作次数，不是资金金额',
+                  'Number of actions, not money'
+                )}
+              >
                 {tr(language, '仓位', 'Trips')}
               </th>
               <th className="py-1 pr-2 text-right font-medium">
@@ -77,26 +86,57 @@ function Rows({
               <th className="py-1 pr-2 text-right font-medium">
                 {tr(language, '中位数', 'Med')}
               </th>
-              <th className="py-1 pr-2 text-right font-medium">
+              <th
+                className="py-1 pr-2 text-right font-medium"
+                title={tr(
+                  language,
+                  '按最大仓位折算的份数，不是实际资金金额',
+                  'Units based on maximum position size, not actual money'
+                )}
+              >
                 {tr(language, '合计(份)', 'Total')}
               </th>
-              <th className="py-1 pr-2 text-right font-medium">
+              <th
+                className="py-1 pr-2 text-right font-medium"
+                title={tr(
+                  language,
+                  '相对 BTC 基准收益更高的比例',
+                  'Share that outperformed the BTC benchmark'
+                )}
+              >
                 {tr(language, '跑赢BTC', 'Beat BTC')}
               </th>
               <th className="py-1 pr-2 text-right font-medium">
                 {tr(language, '平均超额', 'Excess')}
               </th>
-              <th className="py-1 pr-2 text-right font-medium">
+              <th
+                className="py-1 pr-2 text-right font-medium"
+                title={tr(
+                  language,
+                  '发现动作到记录动作的平均分钟数',
+                  'Average minutes from discovery to recorded action'
+                )}
+              >
                 {tr(language, '延迟(min)', 'Delay')}
               </th>
-              <th className="py-1 text-right font-medium">
+              <th
+                className="py-1 text-right font-medium"
+                title={tr(
+                  language,
+                  '同时持仓数量峰值',
+                  'Peak number of simultaneous open positions'
+                )}
+              >
                 {tr(language, '最多同时', 'Max open')}
               </th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.label} className="border-t border-[rgba(25,36,52,0.06)]">
+              <tr
+                key={r.label}
+                className="border-t border-[rgba(25,36,52,0.06)]"
+              >
                 <td className="py-1 pr-2 text-left text-nofx-text">
                   {label(language, table, r.label)}
                 </td>
@@ -165,15 +205,19 @@ export function PaperTab({ language }: { language: string }) {
     }
   }
 
-  const tables = ['all', 'style', 'side', 'agree', 'delay', 'price'].filter((k) =>
-    rows.some((r) => r.table === k)
+  const tables = ['all', 'style', 'side', 'agree', 'delay', 'price'].filter(
+    (k) => rows.some((r) => r.table === k)
   )
 
   return (
     <div className={`${ui.panel} mb-3`}>
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-semibold text-nofx-text">
-          {tr(language, '模拟跟单（只记账，不下单）', 'Simulated copy (record only)')}
+          {tr(
+            language,
+            '模拟跟单（只记账，不下单）',
+            'Simulated copy (record only)'
+          )}
         </span>
         {roster ? (
           <span className={`${ui.muted} tabular-nums`}>

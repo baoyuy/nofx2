@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { LOCAL_SNAPSHOT_OPTIONS } from '../lib/liveSnapshot'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { AlertTriangle, ChevronDown, Settings } from 'lucide-react'
 import { useLanguage } from '../contexts/LanguageContext'
 import { api } from '../lib/api'
@@ -35,11 +35,13 @@ function StatusBar({
   const formatErrors = c.format_errors || []
   const dataPending =
     status.ai_ready !== undefined && status.ai_ready < (status.ai_total ?? 0)
+  const noFollows = status.follows === 0
+  const noUsableData = !noFollows && status.ai_total === 0
   const failing = status.failing ?? 0
   const dot =
     paused || formatErrors.length
       ? 'bg-nofx-danger'
-      : c.last_error || dataPending || failing > 0
+      : c.last_error || dataPending || failing > 0 || noFollows || noUsableData
         ? 'bg-nofx-gold'
         : 'bg-nofx-success'
   // The one number that says "these figures may be old". It used to sit in the
@@ -77,9 +79,13 @@ function StatusBar({
               ? tr(language, '币安数据格式异常', 'Binance data looks wrong')
               : c.last_error
                 ? tr(language, '最近一次请求出错', 'Last request failed')
-                : dataPending
-                  ? tr(language, '部分数据待同步', 'Data sync incomplete')
-                  : tr(language, '正常', 'OK')}
+                : noFollows
+                  ? tr(language, '尚未关注交易员', 'No traders followed')
+                  : noUsableData
+                    ? tr(language, '暂无可用数据', 'No usable data yet')
+                    : dataPending
+                      ? tr(language, '部分数据待同步', 'Data sync incomplete')
+                      : tr(language, '正常', 'OK')}
         </span>
         <span className={ui.muted}>
           {tr(
@@ -100,7 +106,7 @@ function StatusBar({
               'Data readiness only; a strategy must enable copy-trade context before these data are sent to AI. Click for the breakdown.'
             )}
           >
-            {tr(language, '数据就绪', 'Data ready')}{' '}
+            {tr(language, '监控数据可用', 'Monitor data ready')}{' '}
             <span className="tabular-nums">
               {status.ai_ready}/{status.ai_total ?? 0}
             </span>
@@ -125,7 +131,7 @@ function StatusBar({
             {staleText}
           </span>
         ) : null}
-        <span className={`${ui.muted} tabular-nums`}>
+        <span className={`${ui.muted} hidden tabular-nums sm:inline`}>
           {tr(
             language,
             `每分钟 ${c.requests_per_min} 次请求`,
@@ -178,7 +184,13 @@ function StatusBar({
 
 export function CopyTradePage() {
   const { language } = useLanguage()
-  const [tab, setTab] = useState<Tab>('following')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const initialTab = (
+    ['discover', 'following', 'feed', 'coins', 'paper'] as Tab[]
+  ).includes(searchParams.get('tab') as Tab)
+    ? (searchParams.get('tab') as Tab)
+    : 'following'
+  const [tab, setTab] = useState<Tab>(initialTab)
   // These endpoints read local monitor snapshots. Do not tie their completion
   // together: a slow/failing status request must not hold positions or feed up.
   const { data: status } = useSWR(
@@ -193,14 +205,22 @@ export function CopyTradePage() {
     error: followsError,
   } = useSWR('copytrade/follows', api.getFollows, LOCAL_SNAPSHOT_OPTIONS)
   const snaps = follows?.follows || EMPTY_SNAPS
-  const [coin, setCoin] = useState('')
-  // NOTE: tab/coin are kept in local state, not the URL: the app shell remounts
-  // the page subtree on any location.search change (AnimatePresence key), which
-  // would reset the By-coin sort/filter every time a coin is clicked.
-  const changeTab = (t: Tab) => setTab(t)
+  const [coin, setCoin] = useState(searchParams.get('coin') || '')
+  const changeTab = (t: Tab) => {
+    setTab(t)
+    const next = new URLSearchParams(searchParams)
+    next.set('tab', t)
+    if (t !== 'coins') next.delete('coin')
+    setSearchParams(next, { replace: true })
+  }
   const changeCoin = (symbol: string) => {
     setCoin(symbol)
     setTab('coins')
+    const next = new URLSearchParams(searchParams)
+    next.set('tab', 'coins')
+    if (symbol) next.set('coin', symbol)
+    else next.delete('coin')
+    setSearchParams(next, { replace: true })
   }
   // The long caveat about polling used to sit under the title on every visit.
   const [help, setHelp] = useState(false)
@@ -219,7 +239,7 @@ export function CopyTradePage() {
     },
     { id: 'feed', zh: '实时动态', en: 'Live feed' },
     { id: 'coins', zh: '按币种', en: 'By coin' },
-    { id: 'paper', zh: '模拟跟单', en: 'Paper copy' },
+    { id: 'paper', zh: '模拟跟单（仅记录）', en: 'Paper copy (record only)' },
   ]
 
   return (
@@ -258,13 +278,17 @@ export function CopyTradePage() {
       <StatusBar language={language} status={status ?? null} />
       <nav
         className="mb-4 flex flex-wrap gap-2"
+        role="tablist"
         aria-label={tr(language, '带单监控', 'Copy-trade monitor')}
       >
         {tabs.map((t) => (
           <button
             key={t.id}
             type="button"
-            aria-pressed={t.id === tab}
+            id={`copytrade-tab-${t.id}`}
+            role="tab"
+            aria-selected={t.id === tab}
+            aria-controls={`copytrade-panel-${t.id}`}
             onClick={() => changeTab(t.id)}
             className={`rounded-lg border px-3 py-2 text-sm font-semibold ${t.id === tab ? 'border-nofx-gold bg-nofx-gold/10 text-nofx-text' : `${ui.border} bg-nofx-bg-lighter text-nofx-text hover:border-nofx-gold`}`}
           >
@@ -273,32 +297,63 @@ export function CopyTradePage() {
         ))}
       </nav>
       {tab === 'discover' ? (
-        <DiscoverTab
-          language={language}
-          followed={followed}
-          onFollowed={() => void refreshFollows()}
-        />
+        <div
+          id="copytrade-panel-discover"
+          role="tabpanel"
+          aria-labelledby="copytrade-tab-discover"
+        >
+          <DiscoverTab
+            language={language}
+            followed={followed}
+            onFollowed={() => void refreshFollows()}
+          />
+        </div>
       ) : null}
       {tab === 'following' ? (
-        <FollowingTab
-          language={language}
-          snaps={snaps}
-          onChanged={() => void refreshFollows()}
-          onSymbol={openCoin}
-          loading={followsLoading && !follows}
-          error={Boolean(followsError)}
-        />
+        <div
+          id="copytrade-panel-following"
+          role="tabpanel"
+          aria-labelledby="copytrade-tab-following"
+        >
+          <FollowingTab
+            language={language}
+            snaps={snaps}
+            onChanged={() => void refreshFollows()}
+            onSymbol={openCoin}
+            loading={followsLoading && !follows}
+            error={Boolean(followsError)}
+            onDiscover={() => changeTab('discover')}
+          />
+        </div>
       ) : null}
       {tab === 'feed' ? (
-        <FeedTab language={language} snaps={snaps} onSymbol={openCoin} />
+        <div
+          id="copytrade-panel-feed"
+          role="tabpanel"
+          aria-labelledby="copytrade-tab-feed"
+        >
+          <FeedTab language={language} snaps={snaps} onSymbol={openCoin} />
+        </div>
       ) : null}
       {tab === 'coins' ? (
-        <>
+        <div
+          id="copytrade-panel-coins"
+          role="tabpanel"
+          aria-labelledby="copytrade-tab-coins"
+        >
           <CoinPoolPanel language={language} />
           <CoinsTab language={language} selected={coin} onSelect={changeCoin} />
-        </>
+        </div>
       ) : null}
-      {tab === 'paper' ? <PaperTab language={language} /> : null}
+      {tab === 'paper' ? (
+        <div
+          id="copytrade-panel-paper"
+          role="tabpanel"
+          aria-labelledby="copytrade-tab-paper"
+        >
+          <PaperTab language={language} />
+        </div>
+      ) : null}
     </div>
   )
 }
