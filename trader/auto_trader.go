@@ -3,6 +3,7 @@ package trader
 import (
 	"fmt"
 	"github.com/ethereum/go-ethereum/crypto"
+	"nofx/events"
 	"nofx/kernel"
 	"nofx/logger"
 	"nofx/mcp"
@@ -178,6 +179,7 @@ type AutoTrader struct {
 	mcpClient             mcp.AIClient
 	store                 *store.Store           // Data storage (decision records, etc.)
 	strategyEngine        *kernel.StrategyEngine // Strategy engine (uses strategy configuration)
+	eventFeed             *events.Feed           // Read-only news/prediction feed (event context)
 	strategyMu            sync.RWMutex           // Guards strategy replacement and API snapshots
 	cycleNumber           int                    // Current cycle number
 	initialBalance        float64
@@ -447,6 +449,7 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		mcpClient:             mcpClient,
 		store:                 st,
 		strategyEngine:        strategyEngine,
+		eventFeed:             events.New(),
 		cycleNumber:           cycleNumber,
 		initialBalance:        config.InitialBalance,
 		lastResetTime:         time.Now(),

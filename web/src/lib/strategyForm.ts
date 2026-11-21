@@ -196,6 +196,16 @@ export interface FreeForm {
   indicators: Record<IndicatorKey, boolean>
   enableOI?: boolean
   enableFunding?: boolean
+  // Feed recent news/prediction-market items to the AI as unverified context.
+  enableEventContext?: boolean
+  // Two-model event signal: a tagging model returns a per-coin stance that
+  // programmatically gates opens.
+  eventSignalEnabled?: boolean
+  eventSignalModelId?: string
+  eventSignalGate?: boolean
+  eventSignalRequireBias?: boolean
+  eventSignalExitOnFlip?: boolean
+  eventSignalMinConfidence?: number
 }
 
 export const DEFAULT_COINS = 'BTCUSDT, ETHUSDT, SOLUSDT'
@@ -411,6 +421,16 @@ export function formFromStrategy(strategy: Strategy): FreeForm {
       signal: src?.copy_trade_signal === 'fresh' ? 'fresh' : 'confidence',
     },
     copyTradeContext: Boolean(src?.copy_trade_context),
+    eventSignalEnabled: Boolean(src?.event_signal_enabled),
+    eventSignalModelId: src?.event_signal_model_id || '',
+    eventSignalGate: Boolean(src?.event_signal_gate),
+    eventSignalRequireBias: Boolean(src?.event_signal_require_bias),
+    eventSignalExitOnFlip: Boolean(src?.event_signal_exit_on_flip),
+    eventSignalMinConfidence: clampNumber(
+      src?.event_signal_min_confidence,
+      { min: 0, max: 100 },
+      60
+    ),
     // Only a saved choice; unset takes the default of the source chosen
     // (follow for the copy source, free for context only).
     copyTradeFollow: (['follow', 'fade', 'free'] as const).includes(
@@ -494,6 +514,7 @@ export function formFromStrategy(strategy: Strategy): FreeForm {
     },
     enableOI: Boolean(ind?.enable_oi),
     enableFunding: Boolean(ind?.enable_funding_rate),
+    enableEventContext: Boolean(ind?.enable_event_context),
   }
 }
 
@@ -586,6 +607,12 @@ export function configFromForm(
                     copy_trade_signal: copyTrade.signal,
                   }
                 : {}),
+              event_signal_enabled: Boolean(form.eventSignalEnabled),
+              event_signal_model_id: (form.eventSignalModelId || '').trim(),
+              event_signal_gate: Boolean(form.eventSignalGate),
+              event_signal_require_bias: Boolean(form.eventSignalRequireBias),
+              event_signal_exit_on_flip: Boolean(form.eventSignalExitOnFlip),
+              event_signal_min_confidence: form.eventSignalMinConfidence || 60,
               static_coins:
                 horn || copy
                   ? []
@@ -613,6 +640,7 @@ export function configFromForm(
         ...form.indicators,
         enable_oi: Boolean(form.enableOI),
         enable_funding_rate: Boolean(form.enableFunding),
+        enable_event_context: Boolean(form.enableEventContext),
         // Paid NofxOS datasets stay off.
         nofxos_api_key: '',
         enable_quant_data: false,

@@ -11,6 +11,7 @@ import (
 	"nofx/provider/hyperliquid"
 	"nofx/store"
 	"nofx/wallet"
+	"sort"
 	"strings"
 	"time"
 )
@@ -278,6 +279,21 @@ func (at *AutoTrader) runCycle() error {
 	sortedDecisions = at.filterDecisionsToStrategyUniverse(sortedDecisions, ctx)
 	sortedDecisions = at.enforceVergexSignalPolicy(sortedDecisions, ctx)
 	sortedDecisions = sortDecisionsByPriority(sortedDecisions)
+
+	// Record the two-model event stance for auditability (visible in the
+	// decision record's execution log).
+	if len(ctx.EventBias) > 0 {
+		coins := make([]string, 0, len(ctx.EventBias))
+		for coin := range ctx.EventBias {
+			coins = append(coins, coin)
+		}
+		sort.Strings(coins)
+		parts := make([]string, 0, len(coins))
+		for _, coin := range coins {
+			parts = append(parts, coin+"="+ctx.EventBias[coin])
+		}
+		record.ExecutionLog = append(record.ExecutionLog, "event bias: "+strings.Join(parts, ", "))
+	}
 
 	logger.Info("🔄 Execution order (optimized): Close positions first → Open positions later")
 	for i, d := range sortedDecisions {
@@ -675,6 +691,26 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 		},
 		Positions:      positionInfos,
 		CandidateCoins: candidateCoins,
+	}
+
+	// 6b. Read-only news/event context (only when the strategy enables it).
+	// Built from candidate + held coins so the AI can weigh information on both
+	// fresh opportunities and open positions. Never places or cancels orders.
+	if strategyConfig.Indicators.EnableEventContext {
+		symbols := make([]string, 0, len(candidateCoins)+len(positionInfos))
+		for _, coin := range candidateCoins {
+			symbols = append(symbols, coin.Symbol)
+		}
+		for _, pos := range positionInfos {
+			symbols = append(symbols, pos.Symbol)
+		}
+		ctx.EventContext = at.buildEventContext(symbols)
+	}
+
+	// 6c. Information tagging: turn each coin's events into structured event
+	// cards (catalysts) for the trading prompt. Read-only intelligence.
+	if strategyConfig.CoinSource.EventSignalEnabled {
+		at.tagEventCards(ctx)
 	}
 
 	// 7. Add recent closed trades (if store is available)

@@ -35,6 +35,17 @@ function fmtTime(iso: string): string {
 
 type Side = 'long' | 'short' | 'flat'
 
+// Pull the "## 事件卡" section out of the stored AI input prompt so the log can
+// show which tagged catalysts the model actually saw.
+function eventEvidenceFromPrompt(p: string): string {
+  if (!p) return ''
+  const i = p.indexOf('## 事件卡')
+  if (i < 0) return ''
+  const rest = p.slice(i)
+  const j = rest.indexOf('\n## ', 5)
+  return (j > 0 ? rest.slice(0, j) : rest).slice(0, 3000)
+}
+
 // Trade side of an action token — drives badge color.
 function actionSide(action: string): Side {
   const a = action.toLowerCase()
@@ -291,29 +302,35 @@ function Cycle({ record }: CycleProps) {
       {actions.map((a, i) => {
         const side = actionSide(a.action)
         const aTime = fmtTime(a.timestamp)
+        const isOpen = a.action === 'open_long' || a.action === 'open_short'
+        const params: string[] = []
+        if (isOpen) {
+          if (a.leverage) params.push(`${a.leverage}x`)
+          if (a.quantity) params.push(`qty ${a.quantity}`)
+          if (a.stop_loss) params.push(`SL ${a.stop_loss}`)
+          if (a.take_profit) params.push(`TP ${a.take_profit}`)
+        }
         return (
-          <div
-            key={`act-${i}`}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '1px 6px',
-              color: 'var(--tm-ink-2)',
-            }}
-          >
-            <span style={{ color: 'var(--tm-muted)', flex: '0 0 auto', minWidth: 52 }}>
-              {aTime !== '--:--:--' ? aTime : time}
-            </span>
-            <ActionBadge action={a.action} side={side} />
-            <span style={{ color: 'var(--tm-ink)', fontWeight: 600, flex: '0 0 auto', minWidth: 48 }}>
-              {baseSymbol(a.symbol)}
-            </span>
-            {a.confidence != null ? (
-              <span style={{ color: 'var(--tm-muted)', flex: '0 0 auto' }}>
-                {isZh ? '置信度 ' : 'conf'}<span style={{ color: 'var(--tm-ink-2)' }}>{Math.round(a.confidence)}</span>
+          <div key={`act-${i}`}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '1px 6px', color: 'var(--tm-ink-2)' }}>
+              <span style={{ color: 'var(--tm-muted)', flex: '0 0 auto', minWidth: 52 }}>
+                {aTime !== '--:--:--' ? aTime : time}
               </span>
-            ) : null}
+              <ActionBadge action={a.action} side={side} />
+              <span style={{ color: 'var(--tm-ink)', fontWeight: 600, flex: '0 0 auto', minWidth: 48 }}>
+                {baseSymbol(a.symbol)}
+              </span>
+              {a.confidence != null ? (
+                <span style={{ color: 'var(--tm-muted)', flex: '0 0 auto' }}>
+                  {isZh ? '置信度 ' : 'conf'}<span style={{ color: 'var(--tm-ink-2)' }}>{Math.round(a.confidence)}</span>
+                </span>
+              ) : null}
+              {params.length ? (
+                <span className="tm-sc" style={{ flex: '1 1 auto', textAlign: 'right' }}>{params.join(' · ')}</span>
+              ) : null}
+            </div>
+            {a.reasoning ? <SubLine tone="info" text={a.reasoning} /> : null}
+            {a.error ? <SubLine tone="risk" text={cleanLog(a.error, isZh)} /> : null}
           </div>
         )
       })}
@@ -322,6 +339,53 @@ function Cycle({ record }: CycleProps) {
       {logs.map((line, i) => (
         <SubLine key={`log-${i}`} tone={logTone(line)} text={cleanLog(line, isZh)} />
       ))}
+
+      {/* detailed decision + AI evidence (collapsible) */}
+      {(() => {
+        const evidence = eventEvidenceFromPrompt(record.input_prompt || '')
+        const hasDetail = (record.candidate_coins?.length ?? 0) > 0 || !!evidence || !!record.cot_trace || !!record.decision_json
+        if (!hasDetail) return null
+        const preStyle = {
+          whiteSpace: 'pre-wrap' as const,
+          wordBreak: 'break-word' as const,
+          margin: '2px 0 0',
+          padding: '4px 6px',
+          background: 'rgba(25,36,52,0.04)',
+          borderRadius: 4,
+          fontSize: 10,
+          color: 'var(--tm-ink-2)',
+          maxHeight: 200,
+          overflow: 'auto' as const,
+        }
+        return (
+          <details style={{ margin: '4px 6px 2px', paddingLeft: 6 }}>
+            <summary className="tm-sc" style={{ cursor: 'pointer', color: 'var(--tm-ink-2)' }}>
+              {isZh ? '决策详情 / AI 依据' : 'Decision details / AI evidence'}
+            </summary>
+            {(record.candidate_coins?.length ?? 0) > 0 ? (
+              <div className="tm-sc" style={{ marginTop: 3 }}>{isZh ? '候选币种：' : 'candidates: '}{record.candidate_coins.join(', ')}</div>
+            ) : null}
+            {evidence ? (
+              <div style={{ marginTop: 3 }}>
+                <div className="tm-sc">{isZh ? '事件卡依据（AI 输入节选）' : 'Event-card evidence (prompt excerpt)'}</div>
+                <pre style={preStyle}>{evidence}</pre>
+              </div>
+            ) : null}
+            {record.cot_trace ? (
+              <div style={{ marginTop: 3 }}>
+                <div className="tm-sc">{isZh ? 'AI 思维链' : 'AI chain of thought'}</div>
+                <pre style={preStyle}>{record.cot_trace.slice(0, 4000)}</pre>
+              </div>
+            ) : null}
+            {record.decision_json ? (
+              <div style={{ marginTop: 3 }}>
+                <div className="tm-sc">{isZh ? '决策 JSON' : 'Decision JSON'}</div>
+                <pre style={preStyle}>{record.decision_json.slice(0, 3000)}</pre>
+              </div>
+            ) : null}
+          </details>
+        )
+      })()}
 
       {/* fault message */}
       {record.error_message ? (

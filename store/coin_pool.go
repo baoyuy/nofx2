@@ -72,7 +72,11 @@ func NewCoinPoolStore(db *gorm.DB) *CoinPoolStore { return &CoinPoolStore{db: db
 func (s *CoinPoolStore) initTables() error { return s.db.AutoMigrate(&CoinPool{}, &CoinPoolLog{}) }
 
 // cleanPool normalizes symbols, drops duplicates and enforces limits.
-func cleanPool(p *CoinPool) error {
+func cleanPool(p *CoinPool) error { return cleanPoolCoins(p, false) }
+
+// cleanPoolCoins is cleanPool with an option to accept an empty pool, which
+// only an auto-generated pool may be ("nothing worth trading right now").
+func cleanPoolCoins(p *CoinPool, allowEmpty bool) error {
 	p.Name = strings.TrimSpace(p.Name)
 	if p.Name == "" || len([]rune(p.Name)) > 60 {
 		return errors.New("pool name must be 1-60 characters")
@@ -93,7 +97,7 @@ func cleanPool(p *CoinPool) error {
 		seen[c.Symbol] = true
 		coins = append(coins, c)
 	}
-	if len(coins) == 0 {
+	if len(coins) == 0 && !allowEmpty {
 		return errors.New("pool needs at least one coin")
 	}
 	if len(coins) > MaxCoinPoolCoins {
@@ -177,6 +181,58 @@ func (s *CoinPoolStore) Update(userID string, p *CoinPool) error {
 		return gorm.ErrRecordNotFound
 	}
 	return nil
+}
+
+// GetAuto returns the user's auto-generated pool for a screener (the most
+// recently updated one if several exist), or gorm.ErrRecordNotFound.
+func (s *CoinPoolStore) GetAuto(userID, screener string) (*CoinPool, error) {
+	var p CoinPool
+	if err := s.db.Where("user_id = ? AND screener = ?", userID, screener).
+		Order("updated_at DESC").First(&p).Error; err != nil {
+		return nil, err
+	}
+	decodePool(&p)
+	return &p, nil
+}
+
+// SaveAuto writes the user's auto-generated pool for p.Screener in place, so
+// its ID never changes and strategies that reference it keep reading it.
+// Unlike a hand-made pool it may be empty: an empty auto pool means "nothing
+// to trade now", which the engine must respect instead of trading the
+// snapshot saved with the strategy.
+func (s *CoinPoolStore) SaveAuto(userID string, p *CoinPool) error {
+	if strings.TrimSpace(p.Screener) == "" {
+		return errors.New("auto pool needs a screener")
+	}
+	if err := cleanPoolCoins(p, true); err != nil {
+		return err
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var existing CoinPool
+		err := tx.Where("user_id = ? AND screener = ?", userID, p.Screener).Order("updated_at DESC").First(&existing).Error
+		if err == nil {
+			now := time.Now()
+			if err := tx.Model(&CoinPool{}).Where("user_id = ? AND id = ?", userID, existing.ID).Updates(map[string]any{
+				"name": p.Name, "interval_": p.Interval, "coins": p.CoinsJSON, "updated_at": now,
+			}).Error; err != nil {
+				return err
+			}
+			p.ID, p.UserID, p.CreatedAt, p.UpdatedAt = existing.ID, userID, existing.CreatedAt, now
+			return nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		var count int64
+		if err := tx.Model(&CoinPool{}).Where("user_id = ?", userID).Count(&count).Error; err != nil {
+			return err
+		}
+		if count >= MaxCoinPoolsPerUser {
+			return errors.New("too many coin pools; delete an old one first")
+		}
+		p.ID, p.UserID = uuid.NewString(), userID
+		return tx.Create(p).Error
+	})
 }
 
 func (s *CoinPoolStore) Delete(userID, id string) error {

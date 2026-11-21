@@ -119,6 +119,7 @@ export interface CoinSourceConfig {
     | 'vergex_signal'
     | 'explosive'
     | 'hybrid'
+    | 'event_signals'
   coin_pool_id?: string // Saved coin pool traded when source_type = 'coin_pool'
   horn_interval?: string // Bollinger horn interval (15m | 1h | 4h) when source_type = 'bollinger_horn'
   // source_type = 'hybrid': which parts to union (all three when none is set)
@@ -177,6 +178,14 @@ export interface CoinSourceConfig {
   vergex_market_type?: string
   vergex_chain?: string
   vergex_liq_band?: string
+  // Two-model event signal: a tagging model returns a per-coin stance that
+  // programmatically gates opens (never places orders by itself).
+  event_signal_enabled?: boolean
+  event_signal_model_id?: string // enabled model for tagging; empty = trader's own model
+  event_signal_gate?: boolean
+  event_signal_require_bias?: boolean
+  event_signal_exit_on_flip?: boolean
+  event_signal_min_confidence?: number
   // Note: API URLs are now built automatically using nofxos_api_key from IndicatorConfig
 }
 
@@ -193,6 +202,8 @@ export interface IndicatorConfig {
   enable_volume: boolean
   enable_oi: boolean
   enable_funding_rate: boolean
+  // Feed recent news/prediction-market items to the AI as unverified context.
+  enable_event_context?: boolean
   ema_periods?: number[]
   rsi_periods?: number[]
   atr_periods?: number[]

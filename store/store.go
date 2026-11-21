@@ -18,24 +18,29 @@ type Store struct {
 	driver *DBDriver // Database driver for abstraction (legacy)
 
 	// Sub-stores (lazy initialization)
-	user           *UserStore
-	aiModel        *AIModelStore
-	exchange       *ExchangeStore
-	trader         *TraderStore
-	decision       *DecisionStore
-	position       *PositionStore
-	strategy       *StrategyStore
-	equity         *EquityStore
-	order          *OrderStore
-	grid           *GridStore
-	aiCharge       *AIChargeStore
-	marketAnalysis *MarketAnalysisStore
-	coinPool       *CoinPoolStore
-	copyTrade      *CopyTradeStore
-	explosive      *ExplosiveStore
-	paper          *PaperStore
-	mirror         *MirrorStore
-	telegramConfig TelegramConfigStore
+	user               *UserStore
+	aiModel            *AIModelStore
+	exchange           *ExchangeStore
+	trader             *TraderStore
+	decision           *DecisionStore
+	position           *PositionStore
+	strategy           *StrategyStore
+	equity             *EquityStore
+	order              *OrderStore
+	grid               *GridStore
+	aiCharge           *AIChargeStore
+	marketAnalysis     *MarketAnalysisStore
+	coinPool           *CoinPoolStore
+	copyTrade          *CopyTradeStore
+	explosive          *ExplosiveStore
+	paper              *PaperStore
+	mirror             *MirrorStore
+	eventHistory       *EventHistoryStore
+	eventLabels        *EventLabelStore
+	eventLabelSettings *EventLabelSettingsStore
+	eventTradeTags     *EventTradeTagStore
+	eventCards         *EventCardStore
+	telegramConfig     TelegramConfigStore
 
 	mu sync.RWMutex
 }
@@ -185,7 +190,32 @@ func (s *Store) initTables() error {
 	if err := s.Mirror().initTables(); err != nil {
 		return fmt.Errorf("failed to initialize mirror tables: %w", err)
 	}
+	if err := s.EventHistory().initTables(); err != nil {
+		return fmt.Errorf("failed to initialize event history tables: %w", err)
+	}
+	if err := s.EventLabels().InitTables(); err != nil {
+		return fmt.Errorf("failed to initialize event labels: %w", err)
+	}
+	if err := s.EventLabelSettings().initTables(); err != nil {
+		return fmt.Errorf("failed to initialize event label settings: %w", err)
+	}
+	if err := s.EventTradeTags().InitTables(); err != nil {
+		return fmt.Errorf("failed to initialize event trade tags: %w", err)
+	}
+	if err := s.EventCards().InitTables(); err != nil {
+		return fmt.Errorf("failed to initialize event cards: %w", err)
+	}
 	return nil
+}
+
+// EventLabelSettings gets per-user event labeling preferences.
+func (s *Store) EventLabelSettings() *EventLabelSettingsStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.eventLabelSettings == nil {
+		s.eventLabelSettings = NewEventLabelSettingsStore(s.gdb)
+	}
+	return s.eventLabelSettings
 }
 
 // initDefaultData initializes default data
@@ -484,4 +514,43 @@ func (s *Store) TransactionSQL(fn func(tx *sql.Tx) error) error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 	return nil
+}
+
+// EventHistory gets the read-only prediction-market history storage.
+func (s *Store) EventHistory() *EventHistoryStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.eventHistory == nil {
+		s.eventHistory = NewEventHistoryStore(s.gdb)
+	}
+	return s.eventHistory
+}
+
+func (s *Store) EventLabels() *EventLabelStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.eventLabels == nil {
+		s.eventLabels = NewEventLabelStore(s.gdb)
+	}
+	return s.eventLabels
+}
+
+// EventTradeTags gets the latest per-coin two-model stance storage.
+func (s *Store) EventTradeTags() *EventTradeTagStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.eventTradeTags == nil {
+		s.eventTradeTags = NewEventTradeTagStore(s.gdb)
+	}
+	return s.eventTradeTags
+}
+
+// EventCards gets the tagged information-event storage.
+func (s *Store) EventCards() *EventCardStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.eventCards == nil {
+		s.eventCards = NewEventCardStore(s.gdb)
+	}
+	return s.eventCards
 }

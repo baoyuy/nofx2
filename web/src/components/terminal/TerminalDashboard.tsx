@@ -17,8 +17,7 @@ import { LiquidationMap } from './LiquidationMap'
 import { KlineChart } from './KlineChart'
 import { ExecutionLog } from './ExecutionLog'
 import { formatRequestError } from '../../lib/requestErrors'
-import { SignalMatrix, type MatrixSource } from './SignalMatrix'
-import type { CoinPoolInfo } from '../../lib/api/copyTrade'
+import { SignalMatrix } from './SignalMatrix'
 import { RiskRadar } from './RiskRadar'
 import { EdgeProfile } from './EdgeProfile'
 import { useDemoEngine } from '../../lib/demo/useDemoEngine'
@@ -199,18 +198,12 @@ export function TerminalDashboard({
     // Public snapshot: start alongside trader discovery, not after account data.
     { ...SNAPSHOT_READ_OPTIONS, refreshInterval: 120000 }
   )
-  // The meta-AI coin pool (<=10, long/short) — can drive the signal matrix so the
-  // dashboard follows the same coins the strategy would trade.
-  const { data: coinPool } = useSWR<CoinPoolInfo>(
-    'copytrade/coin-pool',
-    () => api.getCoinPool(),
-    { ...SNAPSHOT_READ_OPTIONS, refreshInterval: 30000 }
-  )
-  const [matrixSource, setMatrixSource] = useState<MatrixSource>('pool')
   // The signal matrix (and through it the cost/liquidation map and the
   // topology's signal column) follows the AI: it scores only this cycle's
-  // candidates plus whatever the trader still holds. Hyperliquid synthetic
-  // (xyz:) markets have no Binance data, so they are left out.
+  // candidates plus whatever the trader still holds. Candidates come from the
+  // trader's strategy (e.g. a strategy whose coin source is the copy-trade AI
+  // coin pool), so the dashboard never reads a coin pool directly. Hyperliquid
+  // synthetic (xyz:) markets have no Binance data, so they are left out.
   const aiSymbols = useMemo(() => {
     const raw = [...(propPositions ?? []).map((p) => p.symbol), ...(propDecisions?.[0]?.candidate_coins ?? [])]
     const seen = new Set<string>()
@@ -220,31 +213,9 @@ export function TerminalDashboard({
       .filter((s) => s && !seen.has(s) && (seen.add(s), true))
       .sort()
   }, [propPositions, propDecisions])
-  const poolCoins = coinPool?.coins ?? []
-  const poolSymbols = useMemo(
-    () => poolCoins.map((c) => baseLabel(c.symbol).toUpperCase()).filter(Boolean),
-    [poolCoins]
-  )
-  const aiScoreMap = useMemo(() => {
-    const m: Record<string, { dir: 'long' | 'short' | 'neutral'; score: number }> = {}
-    for (const c of poolCoins) {
-      const k = baseLabel(c.symbol).toUpperCase()
-      if (k) m[k] = { dir: c.direction, score: c.score ?? 0 }
-    }
-    return m
-  }, [poolCoins])
-  // Effective source: default to the pool, but fall back to the trader's coins
-  // when the pool is empty so the matrix is never blank by accident.
-  const effSource: MatrixSource =
-    matrixSource === 'pool' && poolSymbols.length === 0 ? 'trader' : matrixSource
-  const matrixSymbols = useMemo(() => {
-    if (effSource === 'pool') return poolSymbols
-    if (effSource === 'both') return [...new Set([...poolSymbols, ...aiSymbols])].sort()
-    return aiSymbols
-  }, [effSource, poolSymbols, aiSymbols])
   const { data: realSignalRank } = useSWR(
-    matrixSymbols.length ? ['signal-rank', matrixSymbols.join(',')] : null,
-    () => api.getDirectionChangeLeaderboard(30, true, matrixSymbols),
+    traderId && aiSymbols.length ? ['signal-rank', aiSymbols.join(',')] : null,
+    () => api.getDirectionChangeLeaderboard(30, true, aiSymbols),
     { ...SNAPSHOT_READ_OPTIONS, refreshInterval: 120000 }
   )
 
@@ -555,7 +526,7 @@ export function TerminalDashboard({
             <OrderBook symbol={activeRequestSymbol} demo={on} markPrice={positions?.find((p) => baseLabel(p.symbol) === activeSym)?.entry_price} />
           </div>
           <div style={{ ...sc, height: ROW1_H, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            <SignalMatrix items={signalRank?.items} max={18} active={activeSym} onSelect={setSelectedSym} aiScore={aiScoreMap} source={effSource} onSourceChange={setMatrixSource} poolUpdatedAt={coinPool?.updated_at} />
+            <SignalMatrix items={signalRank?.items} max={18} active={activeSym} onSelect={setSelectedSym} />
             {/* the live K-line always sits under the selector and flexes to fill */}
             <div className="tm-rule" style={{ margin: '10px 0 8px' }} />
             <div style={{ flex: 1, minHeight: 0 }}>

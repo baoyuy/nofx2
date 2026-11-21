@@ -1042,6 +1042,25 @@ type CoinSourceConfig struct {
 	VergexChain string `json:"vergex_chain,omitempty"`
 	// Vergex liquidation band query parameter.
 	VergexLiqBand string `json:"vergex_liq_band,omitempty"`
+
+	// ===== Two-model event signal (P1) =====
+	// EventSignalEnabled turns on per-cycle event stance tagging: a separate
+	// "tagging" model reads each coin's recent news/prediction items and returns
+	// a bullish/bearish/neutral stance. Read-only; it never places orders.
+	EventSignalEnabled bool `json:"event_signal_enabled,omitempty"`
+	// EventSignalModelID is the enabled AI model used ONLY for tagging. Empty
+	// falls back to the trader's own model (still a single model, no split).
+	EventSignalModelID string `json:"event_signal_model_id,omitempty"`
+	// EventSignalGate blocks opens that contradict the tagged stance. With
+	// EventSignalRequireBias, opens also require a clear (non-neutral) stance.
+	EventSignalGate bool `json:"event_signal_gate,omitempty"`
+	EventSignalRequireBias bool `json:"event_signal_require_bias,omitempty"`
+	// EventSignalExitOnFlip closes a held position when the stance flips against
+	// it. Off by default: a stance is a weak, unverified signal.
+	EventSignalExitOnFlip bool `json:"event_signal_exit_on_flip,omitempty"`
+	// EventSignalMinConfidence is the tagger confidence (0-100) below which a
+	// stance is treated as neutral. Default 60.
+	EventSignalMinConfidence int `json:"event_signal_min_confidence,omitempty"`
 	// Note: API URLs are now built automatically using NofxOSAPIKey from IndicatorConfig
 }
 
@@ -1094,6 +1113,11 @@ type IndicatorConfig struct {
 	EnablePriceRanking   bool   `json:"enable_price_ranking"`             // whether to enable price ranking data
 	PriceRankingDuration string `json:"price_ranking_duration,omitempty"` // durations: "1h" or "1h,4h,24h"
 	PriceRankingLimit    int    `json:"price_ranking_limit,omitempty"`    // number of entries per ranking (default 10)
+
+	// News & event context (Polymarket / Kalshi / Free Crypto News / Hacker
+	// News), scoped to the trader's candidate and held coins. Read-only: it is
+	// fitted into the AI prompt as unverified context and never places orders.
+	EnableEventContext bool `json:"enable_event_context"`
 }
 
 // KlineConfig K-line configuration

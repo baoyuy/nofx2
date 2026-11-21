@@ -18,39 +18,44 @@ var CoinPoolResolver func(poolID string) ([]string, error)
 var CoinPoolDetailResolver func(poolID string) ([]store.CoinPoolCoin, error)
 
 // coinPoolCandidates reads the pool fresh each cycle, so edits on the coin
-// pool page reach running strategies. A missing pool falls back to the
-// snapshot saved with the strategy.
+// pool page (and every rebuild of the copy-trade AI pool) reach running
+// strategies. Only a missing/unreadable pool falls back to the snapshot saved
+// with the strategy. A pool that exists but is empty, or whose picks have all
+// expired, means "nothing to open now": no candidates (open positions are
+// still managed by the trader loop).
 func coinPoolCandidates(source store.CoinSourceConfig) []CandidateCoin {
-	if CoinPoolResolver != nil && source.CoinPoolID != "" {
-		if live, err := CoinPoolResolver(source.CoinPoolID); err == nil && len(live) > 0 {
-			dirs := map[string]string{}
-			if CoinPoolDetailResolver != nil {
-				if coins, derr := CoinPoolDetailResolver(source.CoinPoolID); derr == nil {
-					now := time.Now().UnixMilli()
-					fresh := make([]string, 0, len(coins))
-					for _, c := range coins {
-						if c.ExpiryAt > 0 && now > c.ExpiryAt {
-							continue // stale AI pick: never trade it
-						}
-						dirs[market.Normalize(c.Symbol)] = c.Direction
-						fresh = append(fresh, c.Symbol)
-					}
-					if len(fresh) > 0 {
-						return toCandidatesDir(fresh, "coin_pool", dirs)
-					}
-					// Detail resolver worked but every pick is expired: treat the
-					// pool as empty rather than trading stale coins.
-					if len(coins) > 0 {
-						return nil
-					}
+	if CoinPoolResolver == nil || source.CoinPoolID == "" {
+		return toCandidates(source.StaticCoins, "coin_pool_snapshot")
+	}
+	live, err := CoinPoolResolver(source.CoinPoolID)
+	if err != nil {
+		logger.Warnf("⚠️  Coin pool %s unavailable (%v), using the saved snapshot", source.CoinPoolID, err)
+		return toCandidates(source.StaticCoins, "coin_pool_snapshot")
+	}
+	if len(live) == 0 {
+		logger.Infof("ℹ️  Coin pool %s is empty this cycle; no new candidates", source.CoinPoolID)
+		return nil
+	}
+	dirs := map[string]string{}
+	if CoinPoolDetailResolver != nil {
+		if coins, derr := CoinPoolDetailResolver(source.CoinPoolID); derr == nil {
+			now := time.Now().UnixMilli()
+			fresh := make([]string, 0, len(coins))
+			for _, c := range coins {
+				if c.ExpiryAt > 0 && now > c.ExpiryAt {
+					continue // stale AI pick: never trade it
 				}
+				dirs[market.Normalize(c.Symbol)] = c.Direction
+				fresh = append(fresh, c.Symbol)
 			}
-			return toCandidatesDir(live, "coin_pool", dirs)
-		} else {
-			logger.Warnf("⚠️  Coin pool %s unavailable (%v), using the saved snapshot", source.CoinPoolID, err)
+			if len(fresh) == 0 {
+				logger.Infof("ℹ️  Coin pool %s: all %d picks expired; no new candidates", source.CoinPoolID, len(coins))
+				return nil
+			}
+			return toCandidatesDir(fresh, "coin_pool", dirs)
 		}
 	}
-	return toCandidates(source.StaticCoins, "coin_pool_snapshot")
+	return toCandidatesDir(live, "coin_pool", dirs)
 }
 
 func toCandidates(symbols []string, origin string) []CandidateCoin {

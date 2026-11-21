@@ -1264,6 +1264,15 @@ export function FreeStrategyPage() {
                           'Very high means crowded longs; very low crowded shorts'
                         ),
                       ],
+                      [
+                        'enableEventContext',
+                        text(language, '资讯与事件（免费）', 'News & events (free)'),
+                        text(
+                          language,
+                          '把关注币种近期的预测市场与新闻作为参考喂给 AI；未核实，仅作上下文，不会自动下单',
+                          'Feeds recent prediction-market and news items to the AI as unverified context; never auto-trades'
+                        ),
+                      ],
                     ] as const
                   ).map(([key, label, hint]) => (
                     <label
@@ -1284,6 +1293,73 @@ export function FreeStrategyPage() {
                       </span>
                     </label>
                   ))}
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend className="mb-2 text-sm font-medium text-nofx-text">
+                  {text(
+                    language,
+                    '事件打标（信息打标 / 事件卡）',
+                    'Event tagging (information / event cards)'
+                  )}
+                </legend>
+                <p className="mb-2 text-xs text-nofx-text-muted">
+                  {text(
+                    language,
+                    '用一个打标模型把资讯与预测市场提炼成“催化剂事件卡”：事件类型、涉及币、利好利空、是否超预期、重要度、关键节点。事件卡作为情报喂给操盘模型，再由程序按节点做风控；未核实，不会自动下单。',
+                    'A tagging model turns news/prediction markets into catalyst event cards: type, coin, direction, surprise, importance, key node. Cards are intelligence for the trading model; unverified, never auto-trades.'
+                  )}
+                </p>
+                <label className="flex items-start gap-2 rounded-md border border-[rgba(25,36,52,0.08)] p-2 text-sm text-nofx-text">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={Boolean(form.eventSignalEnabled)}
+                    onChange={(e) => patchForm({ eventSignalEnabled: e.target.checked })}
+                  />
+                  <span>{text(language, '启用事件卡打标', 'Enable event-card tagging')}</span>
+                </label>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <Field
+                    language={language}
+                    enforced="ai"
+                    label={text(
+                      language,
+                      '打标模型 ID（留空=交易员模型）',
+                      'Tagging model ID (empty = trader model)'
+                    )}
+                    hint={text(
+                      language,
+                      '填一个已启用的模型 ID；与操盘模型分开即为双模型',
+                      'An enabled model id; separate from the trading model gives a two-model split'
+                    )}
+                  >
+                    <input
+                      className={inputClass}
+                      value={form.eventSignalModelId || ''}
+                      onChange={(e) =>
+                        patchForm({ eventSignalModelId: e.target.value })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    language={language}
+                    enforced="ai"
+                    label={text(language, '最低重要度', 'Min importance')}
+                    hint={text(
+                      language,
+                      '低于此重要度(0-100)的事件卡不作为信号，默认 60',
+                      'Event cards below this importance (0-100) are dropped; default 60'
+                    )}
+                  >
+                    <NumberInput
+                      value={form.eventSignalMinConfidence ?? 60}
+                      range={{ min: 0, max: 100 }}
+                      onChange={(eventSignalMinConfidence) =>
+                        patchForm({ eventSignalMinConfidence })
+                      }
+                    />
+                  </Field>
                 </div>
               </fieldset>
             </Section>

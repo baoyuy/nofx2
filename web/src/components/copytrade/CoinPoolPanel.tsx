@@ -103,6 +103,14 @@ export function CoinPoolPanel({ language }: { language: string }) {
             )
           })}
         </div>
+      ) : data?.id ? (
+        <p className={`${ui.muted} text-xs`}>
+          {tr(
+            language,
+            '本轮没有达到入池条件的币。币池保留（ID 不变），使用它的策略本轮不开新仓，已有持仓照常管理。',
+            'No coin qualifies this round. The pool is kept (same ID); strategies using it open nothing new, existing positions are still managed.'
+          )}
+        </p>
       ) : (
         <p className={`${ui.muted} text-xs`}>
           {tr(
@@ -112,6 +120,15 @@ export function CoinPoolPanel({ language }: { language: string }) {
           )}
         </p>
       )}
+      {data?.id ? (
+        <p className={`${ui.muted} mt-1 text-xs`}>
+          {tr(
+            language,
+            '交易方式：在策略编辑里把币源选为「我的币池 → 带单AI币池」，交易员使用该策略后，看板会显示策略加载的这些币。',
+            'To trade it: in the strategy editor set the coin source to "My coin pool → 带单AI币池"; a trader using that strategy shows these coins on the dashboard.'
+          )}
+        </p>
+      ) : null}
       {data?.history && data.history.length > 0 ? (
         <details className="mt-2">
           <summary className={`${ui.muted} cursor-pointer text-xs`}>

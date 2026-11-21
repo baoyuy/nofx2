@@ -26,6 +26,7 @@ import { MarketPage } from '../pages/MarketPage'
 import { CoinPoolPage } from '../pages/CoinPoolPage'
 import { ExplosivePage } from '../pages/ExplosivePage'
 import { CopyTradePage } from '../pages/CopyTradePage'
+import { EventsPage } from '../pages/EventsPage'
 import { TradingPlanningPage } from '../pages/TradingPlanningPage'
 import { TerminalDashboard } from '../components/terminal/TerminalDashboard'
 import { useAuth } from '../contexts/AuthContext'
@@ -350,7 +351,6 @@ function DashboardRoute() {
     }
   )
 
-
   const selectedTrader = traders?.find(
     (trader) => trader.trader_id === selectedTraderId
   )
@@ -503,6 +503,18 @@ export function AppRoutes() {
         <Route
           path={ROUTES.dashboard}
           element={isAuthenticated ? <DashboardRoute /> : <LandingPage />}
+        />
+        <Route
+          path={ROUTES.events}
+          element={
+            isAuthenticated ? (
+              <AppChrome currentPage="events" animateContent>
+                <EventsPage />
+              </AppChrome>
+            ) : (
+              <Navigate to={ROUTES.login} replace />
+            )
+          }
         />
         <Route
           path={ROUTES.strategy}
