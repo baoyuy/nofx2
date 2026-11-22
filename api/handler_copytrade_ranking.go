@@ -114,7 +114,8 @@ func (s *Server) handleCoinRanking(c *gin.Context) {
 	now := time.Now()
 	nowMs := now.UnixMilli()
 	sums := copytrade.Symbols(s.copyTrade.Snapshots())
-	if vols, err := binance.PublicQuoteVolumes(ctx); err == nil && len(vols) > 0 {
+	vols, _ := binance.PublicQuoteVolumes(ctx)
+	if len(vols) > 0 {
 		copytrade.AttachRanks(sums, vols)
 	}
 	scoreRows, _ := s.store.CopyTrade().ListCoinScores(userID)
@@ -146,6 +147,11 @@ func (s *Server) handleCoinRanking(c *gin.Context) {
 			Traders: sum.Long.Traders + sum.Short.Traders, RankScore: sum.Rank.Score,
 		}
 		outOfScope := minVol > 0 && (sum.Volume24h <= 0 || sum.Volume24h < minVol)
+		if !outOfScope && len(vols) > 0 {
+			if _, ok := vols[sum.Symbol]; !ok {
+				outOfScope = true // not a Binance USDT-M perpetual
+			}
+		}
 		if outOfScope {
 			row.Status = "out_of_scope"
 			row.Reason = "volume_below_min"

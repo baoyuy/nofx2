@@ -44,7 +44,8 @@ func (s *Server) stableRanksForProgram(userID string) []kernel.StableRank {
 	now := time.Now()
 	nowMs := now.UnixMilli()
 	sums := copytrade.Symbols(s.copyTrade.Snapshots())
-	if vols, e := binance.PublicQuoteVolumes(ctx); e == nil && len(vols) > 0 {
+	vols, _ := binance.PublicQuoteVolumes(ctx)
+	if len(vols) > 0 {
 		copytrade.AttachRanks(sums, vols)
 	}
 	rows, _ := s.store.CopyTrade().ListCoinScores(uid)
@@ -67,6 +68,11 @@ func (s *Server) stableRanksForProgram(userID string) []kernel.StableRank {
 	out := make([]kernel.StableRank, 0, len(sums))
 	for i := range sums {
 		sum := &sums[i]
+		if len(vols) > 0 {
+			if _, ok := vols[sum.Symbol]; !ok {
+				continue // keep only Binance USDT-M perpetuals
+			}
+		}
 		if minVol > 0 && (sum.Volume24h <= 0 || sum.Volume24h < minVol) {
 			continue
 		}

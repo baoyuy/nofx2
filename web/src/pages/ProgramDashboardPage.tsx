@@ -14,6 +14,20 @@ function pick(obj: any, keys: string[]): number {
   }
   return 0
 }
+function reasonText(raw: any): string {
+  const r = String(raw || '')
+  const map: Record<string, string> = {
+    sync: '同步平仓',
+    paper_sync: '同步平仓',
+    drop: '掉出TopN',
+    flip: '方向翻转',
+    expire: '评分过期',
+    stop: '止损',
+    take: '止盈',
+    signal: '信号平仓',
+  }
+  return map[r] || r
+}
 function pickTime(o: any): number {
   for (const k of ['timestamp', 'time', 'ts', 'created_at', 'datetime', 'date']) {
     const v = o?.[k]
@@ -85,8 +99,23 @@ export function ProgramDashboardPage() {
   const totalPnlPct = pick(account, ['total_pnl_pct', 'totalPnlPct', 'pnl_pct'])
   const dayPnl = dailyCalc != null ? dailyCalc : pick(account, ['daily_pnl', 'day_pnl', 'today_pnl'])
   const hasStats = Number((full as any)?.total_trades ?? 0) > 0
-  const winRate = pick(full as any, ['win_rate'])
-  const maxDD = pick(full as any, ['max_drawdown_pct'])
+  const tradePnl = (t: any) => pick(t, ['realized_pnl', 'pnl', 'profit', 'close_pnl'])
+  const winsCalc = trades.filter((t) => tradePnl(t) > 0).length
+  const winRateCalc = trades.length > 0 ? (winsCalc / trades.length) * 100 : NaN
+  const maxDDCalc = eqSeries.length >= 2
+    ? (() => {
+        let peak = -Infinity
+        let m = 0
+        for (const v of eqSeries) {
+          if (v > peak) peak = v
+          const dd = peak > 0 ? ((peak - v) / peak) * 100 : 0
+          if (dd > m) m = dd
+        }
+        return m
+      })()
+    : NaN
+  const winRate = hasStats ? pick(full as any, ['win_rate']) : winRateCalc
+  const maxDD = hasStats ? pick(full as any, ['max_drawdown_pct']) : maxDDCalc
   const posCount = posList.length
 
   const Card = ({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: string }) => (
@@ -120,8 +149,8 @@ export function ProgramDashboardPage() {
         <Card label={tr(language, '总盈亏', 'Total PnL')} value={totalPnl.toFixed(2)} sub={`${totalPnlPct.toFixed(2)}%`} tone={totalPnl >= 0 ? 'text-nofx-success' : 'text-nofx-danger'} />
         <Card label={tr(language, '当日盈亏', 'Day PnL')} value={dayPnl.toFixed(2)} tone={dayPnl >= 0 ? 'text-nofx-success' : 'text-nofx-danger'} />
         <Card label={tr(language, '持仓数', 'Positions')} value={String(posCount)} />
-        <Card label={tr(language, '胜率', 'Win rate')} value={hasStats ? `${winRate.toFixed(1)}%` : '—'} />
-        <Card label={tr(language, '最大回撤', 'Max DD')} value={hasStats ? `${maxDD.toFixed(1)}%` : '—'} />
+        <Card label={tr(language, '胜率', 'Win rate')} value={Number.isFinite(winRate) ? `${winRate.toFixed(1)}%` : '—'} />
+        <Card label={tr(language, '最大回撤', 'Max DD')} value={Number.isFinite(maxDD) ? `${maxDD.toFixed(1)}%` : '—'} />
       </div>
 
       <div className={`${ui.panel} p-3`}>
@@ -177,7 +206,7 @@ export function ProgramDashboardPage() {
                       <td className={t.side === 'short' ? 'text-nofx-danger' : 'text-nofx-success'}>{t.side}</td>
                       <td className="text-right">{num(t.close_price ?? t.exit_price ?? t.closePrice).toFixed(4)}</td>
                       <td className={`text-right ${pnl >= 0 ? 'text-nofx-success' : 'text-nofx-danger'}`}>{pnl.toFixed(2)}</td>
-                      <td className={ui.muted}>{t.close_reason || t.reason || t.exit_reason || ''}</td>
+                      <td className={ui.muted}>{reasonText(t.close_reason || t.reason || t.exit_reason)}</td>
                     </tr>
                   )
                 })}
@@ -194,10 +223,19 @@ export function ProgramDashboardPage() {
         <div className="flex flex-wrap gap-2">
           {rankItems.map((r, i) => {
             const held = heldSyms.has(String(r.symbol || '').toUpperCase())
-            const short = r.direction === 'short'
+            const sc = Math.round(num(r.stable_score))
+            const dir = r.direction
+            const pending = sc <= 0 || (dir !== 'long' && dir !== 'short')
+            const short = dir === 'short'
+            const tone = pending
+              ? 'text-nofx-text-muted border-[rgba(25,36,52,0.15)]'
+              : short
+                ? 'text-nofx-danger border-nofx-danger/40'
+                : 'text-nofx-success border-nofx-success/40'
             return (
-              <span key={i} className={`rounded border px-2 py-1 text-xs tabular-nums ${short ? 'text-nofx-danger border-nofx-danger/40' : 'text-nofx-success border-nofx-success/40'} ${held ? 'ring-1 ring-nofx-gold' : ''}`}>
-                #{i + 1} {String(r.symbol || '').replace(/USDT$/, '')} {short ? tr(language, '空', 'S') : tr(language, '多', 'L')} {Math.round(num(r.stable_score))}
+              <span key={i} className={`rounded border px-2 py-1 text-xs tabular-nums ${tone} ${held ? 'ring-1 ring-nofx-gold' : ''}`}>
+                #{i + 1} {String(r.symbol || '').replace(/USDT$/, '')}{' '}
+                {pending ? tr(language, '待评分', 'pending') : `${short ? tr(language, '空', 'S') : tr(language, '多', 'L')} ${sc}`}
                 {held ? ' ★' : ''}
               </span>
             )
