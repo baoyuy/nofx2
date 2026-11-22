@@ -20,7 +20,7 @@ import (
 // coin+direction counts at most once per 4h.
 
 const (
-	outcomeBucketMs = int64(30 * 60 * 1000)  // cohort window for the benchmark
+	outcomeBucketMs = int64(30 * 60 * 1000)     // cohort window for the benchmark
 	outcomeDedupMs  = int64(4 * 60 * 60 * 1000) // same coin+side counts once per 4h
 )
 
@@ -242,6 +242,12 @@ func statFor(h, side, band string, rows []store.CopyTradeScoreOutcome, bench map
 			hit++
 		}
 		bm := benchAt(bench, h, o.AnalyzedAt)
+		// Returns are signed in the predicted direction, while the cohort
+		// benchmark is stored as a raw long return. Flip it for shorts before
+		// comparing; otherwise the page compares a short's PnL to a long return.
+		if o.Bias == "short" {
+			bm = -bm
+		}
 		exSum += *r - bm
 		if *r > bm {
 			beat++
