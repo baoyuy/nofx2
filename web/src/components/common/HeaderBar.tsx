@@ -79,15 +79,15 @@ export default function HeaderBar({
       auth: true,
     },
     {
-      page: 'program',
-      path: ROUTES.program,
-      label: language === 'zh' ? '程序交易' : 'Program',
-      auth: true,
-    },
-    {
       page: 'events',
       path: ROUTES.events,
       label: language === 'zh' ? '事件' : 'Events',
+      auth: true,
+    },
+    {
+      page: 'program',
+      path: ROUTES.program,
+      label: language === 'zh' ? '程序交易' : 'Program',
       auth: true,
     },
     {
