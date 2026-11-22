@@ -150,3 +150,6 @@ nofx.new.exe
 
 # Local deployment helper: server address and SSH settings.
 server-ssh.config
+
+# Local analysis outputs
+work/

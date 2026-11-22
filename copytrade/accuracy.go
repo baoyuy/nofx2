@@ -158,9 +158,11 @@ func (m *Monitor) accuracyLoop(ctx context.Context) {
 func (m *Monitor) ScoreAccuracy(ctx context.Context, now time.Time) {
 	m.mu.RLock()
 	byTrader := make(map[string][]call, len(m.snaps))
+	kinds := make(map[string]string, len(m.snaps))
 	symbols := map[string]bool{}
 	for id, s := range m.snaps {
 		byTrader[id] = s.calls
+		kinds[id] = s.Style.Kind
 		for _, c := range s.calls {
 			symbols[c.symbol] = true
 		}
@@ -180,9 +182,11 @@ func (m *Monitor) ScoreAccuracy(ctx context.Context, now time.Time) {
 		bars[sym] = b
 	}
 	out := make(map[string]Accuracy, len(byTrader))
+	outStyle := make(map[string]Accuracy, len(byTrader))
 	outBy := make(map[string]map[string]Accuracy, len(byTrader))
 	for id, calls := range byTrader {
 		out[id] = scoreCalls(calls, bars, now)
+		outStyle[id] = scoreCallsOver(calls, bars, now, styleHorizon(kinds[id]))
 		classes := map[string][]call{}
 		for _, c := range calls {
 			classes[ClassOf(c.symbol)] = append(classes[ClassOf(c.symbol)], c)
@@ -197,6 +201,7 @@ func (m *Monitor) ScoreAccuracy(ctx context.Context, now time.Time) {
 	}
 	m.accMu.Lock()
 	m.accuracy, m.accuracyBy = out, outBy
+	m.styleAccuracy = outStyle
 	m.accMu.Unlock()
 	logger.Infof("copy-trade: scored the calls of %d traders over %d coins", len(out), len(bars))
 }
@@ -212,4 +217,10 @@ func (m *Monitor) accuracyOf(id string) (Accuracy, map[string]Accuracy) {
 	m.accMu.RLock()
 	defer m.accMu.RUnlock()
 	return m.accuracy[id], m.accuracyBy[id]
+}
+
+func (m *Monitor) styleAccuracyOf(id string) Accuracy {
+	m.accMu.RLock()
+	defer m.accMu.RUnlock()
+	return m.styleAccuracy[id]
 }

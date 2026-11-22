@@ -167,6 +167,8 @@ export interface TraderSnapshot {
   /** picked by auto-follow within 7 days; votes count half */
   probation?: boolean
   accuracy?: TraderAccuracy
+  /** accuracy at the trader's own style horizon (4h for scalp/martingale) */
+  style_accuracy?: TraderAccuracy
 }
 
 export interface AutoConfig {

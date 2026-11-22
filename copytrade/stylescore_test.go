@@ -62,13 +62,14 @@ func TestStyleReadingsWeighsTradersByTheirOwnRecord(t *testing.T) {
 		t.Fatalf("direction %s with %d traders, want short with 3", r.Direction, r.Traders)
 	}
 
-	// Averaging down and high-frequency traders do not vote.
+	// Averaging down and high-frequency traders remain visible, but their
+	// directional votes are discounted so a clean swing signal can win.
 	r = StyleReadings([]Snapshot{
 		trader("a", "long", Style{Kind: StyleMartingale, MedianHoldHours: 1}, good, false),
 		trader("b", "long", swing, good, true),
 		trader("c", "short", swing, Accuracy{}, false),
 	}, now)["XUSDT"]
-	if r.Direction != "short" || r.Traders != 1 {
-		t.Fatalf("direction %s with %d traders, want short with 1", r.Direction, r.Traders)
+	if r.Direction != "short" || r.Traders != 3 {
+		t.Fatalf("direction %s with %d traders, want short with 3 style-adjusted traders", r.Direction, r.Traders)
 	}
 }

@@ -333,6 +333,17 @@ function TraderCard({
             ) : null}
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1">
+            {snap.style_accuracy && snap.style_accuracy.calls > 0 ? (
+              <Stat
+                label={tr(language, '风格周期命中', 'Style horizon')}
+                value={`${Math.round(snap.style_accuracy.rate * 100)}%`}
+                hint={tr(
+                  language,
+                  `按 ${snap.style_accuracy.calls} 个成熟信号和该带单员的交易风格周期计算；样本越多越可靠。高频、马丁和网格保留为参考，但按短周期单独评价。`,
+                  `Based on ${snap.style_accuracy.calls} mature signals at this trader's own style horizon; more samples are more reliable. High-frequency, martingale and grid traders remain useful references and are judged on a shorter horizon.`
+                )}
+              />
+            ) : null}
             <Stat
               label={tr(language, '30 天', '30d')}
               value={pct(t.roi)}
@@ -825,7 +836,7 @@ function TraderCard({
   )
 }
 
-type SortKey = 'score' | 'roi' | 'followed' | 'recent'
+type SortKey = 'score' | 'style_accuracy' | 'roi' | 'followed' | 'recent'
 type FilterKey =
   | 'positions'
   | 'active'
@@ -847,6 +858,10 @@ const FILTERS: { key: FilterKey; zh: string; en: string }[] = [
  *  under the pointer. */
 function sortValue(snap: TraderSnapshot, sort: SortKey): number {
   switch (sort) {
+    case 'style_accuracy':
+      return snap.style_accuracy && snap.style_accuracy.calls > 0
+        ? snap.style_accuracy.rate * Math.min(1, snap.style_accuracy.calls / 30)
+        : -1
     case 'roi':
       return snap.trader.roi
     case 'followed':
@@ -1078,7 +1093,10 @@ export function FollowingTab({
           aria-label={tr(language, '排序', 'Sort')}
         >
           <option value="score">
-            {tr(language, '可信度最高', 'Highest score')}
+            {tr(language, '综合可信度', 'Overall confidence')}
+          </option>
+          <option value="style_accuracy">
+            {tr(language, '4 小时风格命中', '4h style accuracy')}
           </option>
           <option value="roi">
             {tr(language, '30 天收益最高', 'Best 30-day ROI')}

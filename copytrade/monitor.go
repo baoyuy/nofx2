@@ -96,9 +96,10 @@ type Snapshot struct {
 	Accuracy Accuracy `json:"accuracy"`
 	// AccuracyBy is the same record per market class (see ClassOf).
 	AccuracyBy map[string]Accuracy `json:"accuracy_by,omitempty"`
-	// StyleAccuracy is the record at the horizon of the trader's own style
-	// (see stylescore.go). Set in backtests only, until the reading is live.
-	StyleAccuracy Accuracy `json:"-"`
+	// StyleAccuracy is the record at the horizon of the trader's own style.
+	// It is exposed separately so a four-hour rank does not confuse a swing
+	// trader's 24h record with a scalp or martingale's short record.
+	StyleAccuracy Accuracy `json:"style_accuracy"`
 
 	// Independent deadlines keep history backfills from blocking live work.
 	nextDue     time.Time // pause / initial stagger
@@ -145,9 +146,10 @@ type Monitor struct {
 	paperMembers map[string]bool
 	paperCursor  map[string]int64
 
-	accMu      sync.RWMutex
-	accuracy   map[string]Accuracy
-	accuracyBy map[string]map[string]Accuracy
+	accMu         sync.RWMutex
+	accuracy      map[string]Accuracy
+	accuracyBy    map[string]map[string]Accuracy
+	styleAccuracy map[string]Accuracy
 
 	hitMu    sync.Mutex
 	hitCache []HitRate
@@ -605,6 +607,7 @@ func (m *Monitor) view(s *Snapshot, marks map[string]float64, now time.Time, pee
 		snap.Events,
 	)
 	snap.Accuracy, snap.AccuracyBy = m.accuracyOf(s.Follow.PortfolioID)
+	snap.StyleAccuracy = m.styleAccuracyOf(s.Follow.PortfolioID)
 	snap.Review = DropReasonsIn(snap, now, peers)
 	snap.Probation = onProbation(snap.Follow, now)
 	return snap
