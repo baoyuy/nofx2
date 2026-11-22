@@ -155,7 +155,7 @@ func (s *Server) handleCoinRanking(c *gin.Context) {
 			dir = sum.Shadow.Direction
 		}
 		risk := float64(sum.Liquidated+sum.Long.Trapped+sum.Short.Trapped) / float64(max(1, sum.Long.Traders+sum.Short.Traders))
-		fresh := len(copytrade.Fresh(s.copyTrade.Snapshots(), copyTradeFreshness, now)) > 0 || copytrade.StableFresh(am[sum.Symbol].at, now)
+		fresh := copytrade.StableFresh(am[sum.Symbol].at, now)
 		sum.Stable = copytrade.StableScore(ah, an, th, tn, dir, risk, fresh)
 		sum.Stable.Traders = sum.Long.Traders + sum.Short.Traders
 	}
@@ -213,6 +213,10 @@ func (s *Server) handleCoinRanking(c *gin.Context) {
 						ded += 5
 					}
 					row.Composite = clampPct(.25*aiStrength + .25*dirQuality + .20*fourH + .15*histHit + .10*consensus + .05*freshPct - ded)
+					// 4h STABLE composite = current + historical, per spec section 4/5:
+					// 4h consistency 30 + holding/direction quality 25 + history hit 20
+					// + freshness 15 + consensus 10 - risk. Distinct from the AI order.
+					row.StableScore = clampPct(.30*fourH + .25*dirQuality + .20*histHit + .15*freshPct + .10*consensus - ded)
 					row.Reliability = reliabilityOf(sum.Stable.AI_Samples, sum.Stable.AIAccuracy*100, sum.Stable.Fresh, sum.Stable.Accuracy*100)
 				} else {
 					row.Status = "expired"
@@ -236,7 +240,9 @@ func (s *Server) handleCoinRanking(c *gin.Context) {
 	//   ai     -> by the AI composite score
 	scored := rows[:0:0]
 	for _, r := range rows {
-		if r.Status == "scored" {
+		// Only scored coins with a clear tradeable direction enter the rankings;
+		// neutral-direction coins have nothing to rank for trading.
+		if r.Status == "scored" && (r.Direction == "long" || r.Direction == "short") {
 			scored = append(scored, r)
 		}
 	}

@@ -530,7 +530,8 @@ func (s *Server) handleCopyTradeSymbols(c *gin.Context) {
 			dir = sum.Shadow.Direction
 		}
 		risk := float64(sum.Liquidated+sum.Long.Trapped+sum.Short.Trapped) / float64(max(1, sum.Long.Traders+sum.Short.Traders))
-		fresh := len(copytrade.Fresh(snaps, copyTradeFreshness, now)) > 0 || copytrade.StableFresh(scoreAtBySymbol[sum.Symbol], now)
+		// Per-coin freshness (a single fresh trader must NOT mark every coin fresh).
+		fresh := copytrade.StableFresh(scoreAtBySymbol[sum.Symbol], now)
 		sum.Stable = copytrade.StableScore(ah, an, th, tn, dir, risk, fresh)
 		sum.Stable.Traders = sum.Long.Traders + sum.Short.Traders
 	}

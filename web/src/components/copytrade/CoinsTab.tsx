@@ -1002,21 +1002,18 @@ export function CoinsTab({
   )
   const [sort, setSort] = useState<CoinSort>('stable')
   const [bias, setBias] = useState<CoinBias>('all')
-  const { data: rankAI } = useSWR(
-    sort === 'ai' ? ['coin-ranking', 'ai'] : null,
-    () => api.getCoinRanking('ai'),
+  const needRank = sort === 'stable' || sort === 'ai'
+  const { data: rankData } = useSWR(
+    needRank ? ['coin-ranking', sort] : null,
+    () => api.getCoinRanking(sort === 'ai' ? 'ai' : 'stable'),
     { refreshInterval: 60000 }
   )
   const shown = useMemo(() => {
     let list = sortCoins(symbols, sort, bias, aiScore)
-    // Both the "4h stable" and "AI" rankings list ONLY coins that passed the
-    // volume filter and have a FRESH AI score (same set as the AI scoring list).
+    // Both the "4h stable" and "AI" rankings use the SAME backend set (scored +
+    // clear direction) and are ORDERED by the backend composite for that mode.
     if (sort === 'stable' || sort === 'ai') {
-      list = list.filter((x) => statusMap.get(x.symbol)?.status === 'scored')
-    }
-    if (sort === 'ai') {
-      // AI ranking is ordered by the backend AI composite score.
-      const items = ((rankAI?.items as { symbol: string }[] | undefined) ?? [])
+      const items = ((rankData?.items as { symbol: string }[] | undefined) ?? [])
       const order = new Map<string, number>()
       items.forEach((it, i) => order.set(it.symbol, i))
       list = list
@@ -1024,7 +1021,7 @@ export function CoinsTab({
         .sort((a, b) => (order.get(a.symbol) ?? 0) - (order.get(b.symbol) ?? 0))
     }
     return list
-  }, [symbols, sort, bias, aiScore, statusMap, rankAI])
+  }, [symbols, sort, bias, aiScore, statusMap, rankData])
   // Freeze the default detail coin once, so a ranking reshuffle does not swap
   // the chart under the user; an explicit selection still wins.
   const [pinned, setPinned] = useState('')
