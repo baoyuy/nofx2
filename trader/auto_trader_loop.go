@@ -293,8 +293,12 @@ func (at *AutoTrader) runCycle() error {
 
 	// 8. Sort decisions: ensure close positions first, then open positions (prevent position stacking overflow)
 	sortedDecisions := sortDecisionsByPriority(aiDecision.Decisions)
-	sortedDecisions = at.filterDecisionsToStrategyUniverse(sortedDecisions, ctx)
-	sortedDecisions = at.enforceVergexSignalPolicy(sortedDecisions, ctx)
+	if at.programStableConfig() == nil {
+		// Program-stable decisions come from the 4h stable ranking, not from the
+		// strategy's static/pool candidate universe, so do not filter them out.
+		sortedDecisions = at.filterDecisionsToStrategyUniverse(sortedDecisions, ctx)
+		sortedDecisions = at.enforceVergexSignalPolicy(sortedDecisions, ctx)
+	}
 	sortedDecisions = sortDecisionsByPriority(sortedDecisions)
 
 	// Record the two-model event stance for auditability (visible in the
