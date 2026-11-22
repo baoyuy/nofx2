@@ -229,14 +229,19 @@ func (s *Server) handleCoinRanking(c *gin.Context) {
 	}
 	counts.Pending = counts.InScope - counts.Scored
 
-	if mode == "ai" {
-		filtered := rows[:0:0]
-		for _, r := range rows {
-			if r.Status == "scored" {
-				filtered = append(filtered, r)
-			}
+	// BOTH rankings now use the SAME universe: coins that passed the volume
+	// filter AND have a FRESH AI score (status=scored) — i.e. exactly the AI
+	// scoring list (currently ~28). Only the ordering differs:
+	//   stable -> by the calibrated 4h stable score
+	//   ai     -> by the AI composite score
+	scored := rows[:0:0]
+	for _, r := range rows {
+		if r.Status == "scored" {
+			scored = append(scored, r)
 		}
-		rows = filtered
+	}
+	rows = scored
+	if mode == "ai" {
 		sort.SliceStable(rows, func(i, j int) bool {
 			if rows[i].Composite != rows[j].Composite {
 				return rows[i].Composite > rows[j].Composite

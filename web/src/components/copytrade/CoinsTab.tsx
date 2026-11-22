@@ -1009,9 +1009,13 @@ export function CoinsTab({
   )
   const shown = useMemo(() => {
     let list = sortCoins(symbols, sort, bias, aiScore)
+    // Both the "4h stable" and "AI" rankings list ONLY coins that passed the
+    // volume filter and have a FRESH AI score (same set as the AI scoring list).
+    if (sort === 'stable' || sort === 'ai') {
+      list = list.filter((x) => statusMap.get(x.symbol)?.status === 'scored')
+    }
     if (sort === 'ai') {
-      // AI ranking only lists valid (fresh, in-scope) scored coins and is ordered
-      // by the backend AI composite score (not the raw AI edge).
+      // AI ranking is ordered by the backend AI composite score.
       const items = ((rankAI?.items as { symbol: string }[] | undefined) ?? [])
       const order = new Map<string, number>()
       items.forEach((it, i) => order.set(it.symbol, i))
