@@ -96,6 +96,10 @@ func (at *AutoTrader) programDecision(ctx *kernel.Context) (*kernel.FullDecision
 		targetDir[t.Symbol] = t.Direction
 	}
 
+	inRanks := map[string]bool{}
+	for _, r := range ranks {
+		inRanks[r.Symbol] = true
+	}
 	var decisions []kernel.Decision
 	stillHeld := map[string]string{}
 	closed := 0
@@ -108,8 +112,16 @@ func (at *AutoTrader) programDecision(ctx *kernel.Context) (*kernel.FullDecision
 			if cs.ProgramCloseOnFlip || cs.ProgramExitOnDrop {
 				closeIt, reason = true, "方向翻转"
 			}
-		} else if !inTarget && cs.ProgramExitOnDrop {
-			closeIt, reason = true, "掉出Top"+itoaInt(topN)
+		} else if !inTarget {
+			if inRanks[p.Symbol] {
+				// still scored/ranked but fell out of the top-N
+				if cs.ProgramExitOnDrop {
+					closeIt, reason = true, "掉出Top"+itoaInt(topN)
+				}
+			} else if cs.ProgramCloseOnExpire {
+				// no longer ranked => score expired / out of scope
+				closeIt, reason = true, "评分过期"
+			}
 		}
 		if closeIt {
 			act := "close_long"

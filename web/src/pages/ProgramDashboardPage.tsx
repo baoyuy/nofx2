@@ -34,6 +34,7 @@ export function ProgramDashboardPage() {
   const { data: hist } = useSWR(traderId ? `pd-hist-${traderId}` : null, () => api.getPositionHistory(traderId, 50, true), { refreshInterval: 30000 })
   const { data: equity } = useSWR(traderId ? `pd-eq-${traderId}` : null, () => api.getEquityHistory(traderId, true), { refreshInterval: 60000 })
   const { data: rank } = useSWR('copytrade/coin-ranking:stable', () => api.getCoinRanking('stable'), { refreshInterval: 30000 })
+  const { data: full } = useSWR(traderId ? `pd-full-${traderId}` : null, () => api.getFullStats(traderId, true), { refreshInterval: 30000 })
 
   const eqSeries = useMemo(() => {
     const arr = (equity as any[]) || []
@@ -58,8 +59,9 @@ export function ProgramDashboardPage() {
   const totalPnl = pick(account, ['total_pnl', 'totalPnl', 'pnl'])
   const totalPnlPct = pick(account, ['total_pnl_pct', 'totalPnlPct', 'pnl_pct'])
   const dayPnl = pick(account, ['daily_pnl', 'day_pnl', 'today_pnl'])
-  const winRate = pick((hist as any) || account, ['win_rate', 'winRate'])
-  const maxDD = pick((hist as any) || account, ['max_drawdown', 'maxDrawdown'])
+  const hasStats = Number((full as any)?.total_trades ?? 0) > 0
+  const winRate = pick(full as any, ['win_rate'])
+  const maxDD = pick(full as any, ['max_drawdown_pct'])
   const posCount = posList.length
 
   const Card = ({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: string }) => (
@@ -93,8 +95,8 @@ export function ProgramDashboardPage() {
         <Card label={tr(language, '总盈亏', 'Total PnL')} value={totalPnl.toFixed(2)} sub={`${totalPnlPct.toFixed(2)}%`} tone={totalPnl >= 0 ? 'text-nofx-success' : 'text-nofx-danger'} />
         <Card label={tr(language, '当日盈亏', 'Day PnL')} value={dayPnl.toFixed(2)} tone={dayPnl >= 0 ? 'text-nofx-success' : 'text-nofx-danger'} />
         <Card label={tr(language, '持仓数', 'Positions')} value={String(posCount)} />
-        <Card label={tr(language, '胜率', 'Win rate')} value={`${winRate.toFixed(1)}%`} />
-        <Card label={tr(language, '最大回撤', 'Max DD')} value={`${maxDD.toFixed(1)}%`} />
+        <Card label={tr(language, '胜率', 'Win rate')} value={hasStats ? `${winRate.toFixed(1)}%` : '—'} />
+        <Card label={tr(language, '最大回撤', 'Max DD')} value={hasStats ? `${maxDD.toFixed(1)}%` : '—'} />
       </div>
 
       <div className={`${ui.panel} p-3`}>

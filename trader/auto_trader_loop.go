@@ -167,7 +167,7 @@ func (at *AutoTrader) runCycle() error {
 	// the provider id (e.g. "claw402") and would fall back to the default price.
 	// Prefer the gateway-reported settled amount (upto scheme) over the flat
 	// catalog estimate when the client exposes it.
-	if aiDecision != nil && at.store != nil {
+	if aiDecision != nil && at.store != nil && at.programStableConfig() == nil {
 		chargeModel := at.config.CustomModelName
 		if chargeModel == "" {
 			chargeModel = at.aiModel
@@ -188,6 +188,17 @@ func (at *AutoTrader) runCycle() error {
 	}
 
 	if err != nil {
+		if at.programStableConfig() != nil {
+			// Program (no-AI) decision failure: do NOT count as AI failure and do
+			// NOT enter AI safe mode. Just record and retry next cycle.
+			record.Success = false
+			record.ErrorMessage = fmt.Sprintf("Program decision failed: %v", err)
+			if saveErr := at.saveDecision(record); saveErr != nil {
+				at.logWarnf("⚠ Failed to save decision record: %v", saveErr)
+			}
+			at.logWarnf("🧩 Program decision failed, will retry next cycle: %v", err)
+			return nil
+		}
 		at.consecutiveAIFailures++
 		record.Success = false
 		record.ErrorMessage = fmt.Sprintf("Failed to get AI decision: %v", err)
