@@ -6,6 +6,7 @@ import { api } from '../../lib/api'
 import type {
   CoinScoreBrief,
   CoinScoreResult,
+  CoinStatusRow,
   HitRate,
   SideSummary,
   SymbolSummary,
@@ -141,6 +142,63 @@ function AiTag({ b, language }: { b?: CoinScoreBrief; language: string }) {
       {stale ? (
         <span className="ml-1 text-nofx-gold">
           {tr(language, '过期', 'stale')}
+        </span>
+      ) : null}
+    </span>
+  )
+}
+
+function reliabilityGrade(s: SymbolSummary): string {
+  const sd = s.stable_direction
+  if (!sd) return 'D'
+  const samples = sd.ai_samples || 0
+  const hit = (sd.ai_accuracy || 0) * 100
+  const cons = (sd.accuracy || 0) * 100
+  if (samples >= 30 && hit >= 55 && sd.fresh && cons >= 55) return 'A'
+  if (samples >= 10 && hit >= 50) return 'B'
+  if (samples >= 4) return 'C'
+  return 'D'
+}
+
+/** AI cell: never shows "AI 0/—" for coins filtered out of AI scope. */
+function CoinScoreCell({
+  s,
+  status,
+  b,
+  language,
+}: {
+  s: SymbolSummary
+  status?: CoinStatusRow
+  b?: CoinScoreBrief
+  language: string
+}) {
+  if (status && status.status === 'out_of_scope') {
+    return (
+      <span className="text-[11px] text-nofx-text-muted" title={tr(language, '未通过成交量筛选，不参与 AI 评分（不是 AI 低分）', 'Filtered out by volume, not AI-scored (not a low score)')}>
+        {tr(language, '未进入AI评分范围', 'Not AI-scored')}
+        <span className="ml-1 opacity-80">
+          · 24h {usd(status.volume_24h)} / {tr(language, '门槛', 'min')} {usd(status.min_volume)}
+        </span>
+      </span>
+    )
+  }
+  if (status && status.status === 'waiting') {
+    return <span className="text-[11px] text-nofx-text-muted">{tr(language, 'AI 待评分', 'AI pending')}</span>
+  }
+  if (status && status.status === 'scoring') {
+    return <span className="text-[11px] text-nofx-gold">{tr(language, 'AI 评分中…', 'AI scoring…')}</span>
+  }
+  if (status && status.status === 'failed') {
+    return <span className="text-[11px] text-nofx-danger">{tr(language, 'AI 评分失败', 'AI failed')}</span>
+  }
+  const grade = reliabilityGrade(s)
+  const gcolor = grade === 'A' ? 'text-nofx-success' : grade === 'B' ? 'text-nofx-text' : 'text-nofx-text-muted'
+  return (
+    <span className="inline-flex items-center gap-1">
+      <AiTag b={b} language={language} />
+      {b ? (
+        <span className={`text-[10px] ${gcolor}`} title={tr(language, '可靠度', 'Reliability')}>
+          {tr(language, '可靠', 'Rel')}{grade}
         </span>
       ) : null}
     </span>
@@ -915,6 +973,17 @@ export function CoinsTab({
     for (const it of scoreData?.items || []) mp.set(it.symbol, it)
     return mp
   }, [scoreData])
+  const { data: statusData } = useSWR('copytrade/coin-status', () => api.getCoinStatus(), {
+    refreshInterval: 30000,
+  })
+  const statusMap = useMemo(() => {
+    const m = new Map<string, CoinStatusRow>()
+    for (const it of statusData?.coins || []) m.set(it.symbol, it)
+    return m
+  }, [statusData])
+  const { data: accData } = useSWR('copytrade/coin-accuracy', () => api.getCoinAccuracy(), {
+    refreshInterval: 60000,
+  })
   const aiScore = useCallback(
     (symbol: string) => {
       const b = scoreMap.get(symbol)
@@ -933,10 +1002,13 @@ export function CoinsTab({
   )
   const [sort, setSort] = useState<CoinSort>('stable')
   const [bias, setBias] = useState<CoinBias>('all')
-  const shown = useMemo(
-    () => sortCoins(symbols, sort, bias, aiScore),
-    [symbols, sort, bias, aiScore]
-  )
+  const shown = useMemo(() => {
+    let list = sortCoins(symbols, sort, bias, aiScore)
+    if (sort === 'ai') {
+      list = list.filter((x) => statusMap.get(x.symbol)?.status === 'scored')
+    }
+    return list
+  }, [symbols, sort, bias, aiScore, statusMap])
   // Freeze the default detail coin once, so a ranking reshuffle does not swap
   // the chart under the user; an explicit selection still wins.
   const [pinned, setPinned] = useState('')
@@ -970,6 +1042,24 @@ export function CoinsTab({
               '"偏多/偏空" = copy-trader crowd; "AI 多/空" = model read (reference only).'
             )}
           </p>
+          {statusData?.counts ? (
+            <div className={`${ui.muted} mb-2 rounded border border-[rgba(25,36,52,0.08)] p-2 text-[11px] leading-5`}>
+              <div className="flex flex-wrap gap-x-3 gap-y-1 tabular-nums">
+                <span>{tr(language, '全部带单币', 'All')}: <b className="text-nofx-text">{statusData.counts.all}</b></span>
+                <span>{tr(language, '符合AI筛选', 'In scope')}: <b className="text-nofx-text">{statusData.counts.in_scope}</b></span>
+                <span>{tr(language, '已完成评分', 'Scored')}: <b className="text-nofx-success">{statusData.counts.scored}</b></span>
+                <span>{tr(language, '待评分/失败', 'Pending')}: <b className="text-nofx-gold">{statusData.counts.pending}</b></span>
+              </div>
+              <div className="flex flex-wrap gap-x-3 gap-y-1 opacity-90">
+                <span>{tr(language, '门槛', 'Min vol')}: {usd(statusData.snapshot.min_volume)}</span>
+                <span>{statusData.snapshot.config_version}</span>
+                <span>{tr(language, '快照', 'Snap')}: {ago(language, statusData.snapshot.taken_at)}</span>
+                {accData?.overall && accData.overall.valid > 0 ? (
+                  <span>{tr(language, '4h命中率', '4h hit')}: <b className="text-nofx-text">{accData.overall.hit_rate.toFixed(2)}%</b> ({accData.overall.hit}/{accData.overall.valid})</span>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
           <div className="mb-2 grid grid-cols-2 gap-2">
             <select
               className={ui.input}
@@ -1065,7 +1155,7 @@ export function CoinsTab({
                         ) : null}
                       </span>
                       <span className="flex items-center gap-2">
-                        <AiTag b={scoreMap.get(s.symbol)} language={language} />
+                        <CoinScoreCell s={s} status={statusMap.get(s.symbol)} b={scoreMap.get(s.symbol)} language={language} />
                         <ConfidenceBadge
                           c={s.confidence}
                           language={language}

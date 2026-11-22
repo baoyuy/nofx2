@@ -737,6 +737,13 @@ export const copyTradeApi = {
 
   getCoinPool: () => get<CoinPoolInfo>('/copytrade/coin-pool'),
 
+  getCoinStatus: () => get<CoinStatusResp>('/copytrade/coin-status'),
+
+  getCoinAccuracy: () => get<CoinAccuracyResp>('/copytrade/coin-accuracy'),
+
+  getCoinRanking: (mode: 'stable' | 'ai' = 'stable') =>
+    get<{ mode: string; items: unknown[] }>(`/copytrade/coin-ranking?mode=${mode}`),
+
   async generateCoinPool(): Promise<CoinPoolInfo> {
     const r = await httpClient.request<CoinPoolInfo>(
       `${API_BASE}/copytrade/coin-pool/generate`,
@@ -844,4 +851,59 @@ export const copyTradeApi = {
     })
     return unwrap(r, 'Test failed')
   },
+}
+
+export interface CoinStatusRow {
+  symbol: string
+  status: 'scored' | 'scoring' | 'waiting' | 'failed' | 'expired' | 'out_of_scope'
+  volume_24h: number
+  min_volume: number
+  age_ms: number
+  bias?: string
+  score?: number
+  reason?: string
+}
+export interface CoinStatusCounts {
+  all: number
+  in_scope: number
+  scored: number
+  pending: number
+  waiting: number
+  scoring: number
+  failed: number
+  expired: number
+  out_of_scope: number
+}
+export interface CoinStatusResp {
+  snapshot: {
+    volume_source: string
+    taken_at: number
+    min_volume: number
+    ttl_minutes: number
+    config_version: string
+  }
+  counts: CoinStatusCounts
+  coins: CoinStatusRow[]
+}
+export interface AccBucket {
+  scored: number
+  matured: number
+  valid: number
+  hit: number
+  miss: number
+  invalid: number
+  pending: number
+  hit_rate: number
+}
+export interface CoinAccuracyResp {
+  snapshot: {
+    volume_source: string
+    taken_at: number
+    min_volume: number
+    neutral_pct: number
+    ttl_minutes: number
+    config_version: string
+  }
+  overall: AccBucket
+  by_side: Record<string, AccBucket>
 }
