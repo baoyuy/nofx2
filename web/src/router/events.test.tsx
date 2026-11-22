@@ -10,7 +10,7 @@ function Location() {
 }
 
 describe('events navigation', () => {
-  it('maps the events route and puts its tab immediately after dashboard', () => {
+  it('maps the events route and puts its tab after the market signal tabs', () => {
     expect(ROUTES.events).toBe('/events')
     expect(PAGE_PATHS.events).toBe('/events')
     expect(getCurrentPageForPath('/events')).toBe('events')
@@ -22,7 +22,7 @@ describe('events navigation', () => {
     )
     const events = screen.getByRole('button', { name: 'Events' })
     expect(events.getAttribute('aria-current')).toBe('page')
-    expect(events.previousElementSibling?.textContent).toMatch(/dashboard/i)
+    expect(events.previousElementSibling?.textContent).toMatch(/explosive/i)
     fireEvent.click(events)
     expect(screen.getByRole('status').textContent).toBe('/events')
   })
