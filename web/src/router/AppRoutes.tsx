@@ -155,7 +155,11 @@ function AppChrome({
   const content = animateContent ? (
     <AnimatePresence mode="wait">
       <motion.div
-        key={`${location.pathname}${location.search}`}
+        // Query-string changes (for example selecting a coin on the
+        // copy-trade page) update page state and must not remount the whole
+        // page. Remounting here reset local controls such as the coin sort
+        // back to their defaults on every selection.
+        key={location.pathname}
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, y: -8 }}
