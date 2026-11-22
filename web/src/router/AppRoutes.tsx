@@ -26,6 +26,7 @@ import { MarketPage } from '../pages/MarketPage'
 import { CoinPoolPage } from '../pages/CoinPoolPage'
 import { ExplosivePage } from '../pages/ExplosivePage'
 import { CopyTradePage } from '../pages/CopyTradePage'
+import { ProgramDashboardPage } from '../pages/ProgramDashboardPage'
 import { EventsPage } from '../pages/EventsPage'
 import { TradingPlanningPage } from '../pages/TradingPlanningPage'
 import { TerminalDashboard } from '../components/terminal/TerminalDashboard'
@@ -507,6 +508,18 @@ export function AppRoutes() {
         <Route
           path={ROUTES.dashboard}
           element={isAuthenticated ? <DashboardRoute /> : <LandingPage />}
+        />
+        <Route
+          path={ROUTES.program}
+          element={
+            isAuthenticated ? (
+              <AppChrome currentPage="program" animateContent>
+                <ProgramDashboardPage />
+              </AppChrome>
+            ) : (
+              <Navigate to={ROUTES.login} replace />
+            )
+          }
         />
         <Route
           path={ROUTES.events}
