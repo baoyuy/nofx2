@@ -1061,6 +1061,24 @@ type CoinSourceConfig struct {
 	// EventSignalMinConfidence is the tagger confidence (0-100) below which a
 	// stance is treated as neutral. Default 60.
 	EventSignalMinConfidence int `json:"event_signal_min_confidence,omitempty"`
+	// ===== Program-stable strategy (rule-based, NO AI) =====
+	// Trades off the 4h stable ranking: long/short the top-N scored coins with
+	// fixed sizing and stop/take, rebalancing each cycle. No model is called.
+	ProgramStable        bool    `json:"program_stable,omitempty"`
+	ProgramSides         string  `json:"program_sides,omitempty"` // both|long|short
+	ProgramTopN          int     `json:"program_top_n,omitempty"`
+	ProgramMinStable     float64 `json:"program_min_stable,omitempty"`
+	ProgramPositionPct   float64 `json:"program_position_pct,omitempty"`
+	ProgramLeverage      int     `json:"program_leverage,omitempty"`
+	ProgramMaxPositions  int     `json:"program_max_positions,omitempty"`
+	ProgramTakeProfitPct float64 `json:"program_take_profit_pct,omitempty"`
+	ProgramStopLossPct   float64 `json:"program_stop_loss_pct,omitempty"`
+	ProgramExitOnDrop    bool    `json:"program_exit_on_drop,omitempty"`
+	ProgramCloseOnFlip   bool    `json:"program_close_on_flip,omitempty"`
+	ProgramCloseOnExpire bool    `json:"program_close_on_expire,omitempty"`
+	ProgramScanMinutes   int     `json:"program_scan_minutes,omitempty"`
+	ProgramMaxTurnover   int     `json:"program_max_turnover,omitempty"`
+
 	// Note: API URLs are now built automatically using NofxOSAPIKey from IndicatorConfig
 }
 

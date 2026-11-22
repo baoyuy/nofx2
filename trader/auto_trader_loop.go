@@ -122,9 +122,15 @@ func (at *AutoTrader) runCycle() error {
 	at.logInfof("📊 Account equity: %.2f USDT | Available: %.2f USDT | Positions: %d",
 		ctx.Account.TotalEquity, ctx.Account.AvailableBalance, ctx.Account.PositionCount)
 
-	// 5. Use strategy engine to call AI for decision
-	at.logInfof("🤖 Requesting AI analysis and decision... [Strategy Engine]")
-	aiDecision, err := at.requestAIDecision(ctx)
+	// 5. Decide: program-stable (rule-based, no AI) or AI.
+	var aiDecision *kernel.FullDecision
+	if at.programStableConfig() != nil {
+		at.logInfof("🧩 Program (4h stable) decision cycle (no AI)...")
+		aiDecision, err = at.programDecision(ctx)
+	} else {
+		at.logInfof("🤖 Requesting AI analysis and decision... [Strategy Engine]")
+		aiDecision, err = at.requestAIDecision(ctx)
+	}
 
 	// The kernel drops candidates without usable market data or below the OI
 	// filter before prompting; record the coins the AI actually analysed.

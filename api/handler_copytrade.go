@@ -69,6 +69,7 @@ func (s *Server) StartCopyTrade(ctx context.Context) {
 	// Before traders start: their first cycle reads this.
 	m.Load()
 	kernel.CopyTradeResolver = func() kernel.CopyTradeView { return copyTradeView(m, time.Now()) }
+	kernel.StableRankingResolver = s.stableRanksForProgram
 	go m.Run(ctx)
 	// Scheduled per-coin AI readings (off unless enabled in settings).
 	s.StartCoinScoreAuto(ctx)
