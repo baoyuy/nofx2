@@ -14,6 +14,16 @@ function pick(obj: any, keys: string[]): number {
   }
   return 0
 }
+function pickTime(o: any): number {
+  for (const k of ['timestamp', 'time', 'ts', 'created_at', 'datetime', 'date']) {
+    const v = o?.[k]
+    if (v == null) continue
+    if (typeof v === 'number') return v < 1e12 ? v * 1000 : v
+    const d = Date.parse(String(v))
+    if (!Number.isNaN(d)) return d
+  }
+  return 0
+}
 
 // Program-trading dashboard: a paper trader driven by the 4h-stable rule
 // strategy. No AI decisions / event cards — just account, positions, trades and
@@ -40,6 +50,21 @@ export function ProgramDashboardPage() {
     const arr = (equity as any[]) || []
     return arr.map((e) => pick(e, ['total_equity', 'equity', 'value', 'totalEquity', 'balance'])).filter((n) => n > 0)
   }, [equity])
+  const eqPoints = useMemo(() => {
+    const arr = (equity as any[]) || []
+    return arr
+      .map((e) => ({ t: pickTime(e), p: pick(e, ['total_equity', 'equity', 'value', 'totalEquity', 'balance']) }))
+      .filter((x) => x.p > 0)
+  }, [equity])
+  const dailyCalc = useMemo(() => {
+    if (eqPoints.length < 2) return null
+    const last = eqPoints[eqPoints.length - 1]
+    if (!last.t) return null
+    const cutoff = last.t - 24 * 3600 * 1000
+    let ref = eqPoints[0]
+    for (const pt of eqPoints) if (pt.t && pt.t <= cutoff) ref = pt
+    return last.p - ref.p
+  }, [eqPoints])
   const eqLine = useMemo(() => {
     if (eqSeries.length < 2) return ''
     const min = Math.min(...eqSeries)
@@ -58,7 +83,7 @@ export function ProgramDashboardPage() {
   const equityNow = pick(account, ['total_equity', 'equity', 'totalEquity'])
   const totalPnl = pick(account, ['total_pnl', 'totalPnl', 'pnl'])
   const totalPnlPct = pick(account, ['total_pnl_pct', 'totalPnlPct', 'pnl_pct'])
-  const dayPnl = pick(account, ['daily_pnl', 'day_pnl', 'today_pnl'])
+  const dayPnl = dailyCalc != null ? dailyCalc : pick(account, ['daily_pnl', 'day_pnl', 'today_pnl'])
   const hasStats = Number((full as any)?.total_trades ?? 0) > 0
   const winRate = pick(full as any, ['win_rate'])
   const maxDD = pick(full as any, ['max_drawdown_pct'])

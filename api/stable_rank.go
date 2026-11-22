@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"sort"
+	"sync"
 	"time"
 
 	"nofx/copytrade"
@@ -18,12 +19,12 @@ import (
 // 4h-stable ranking uses.
 func jsonUnmarshalPayload(payload string, v any) error { return json.Unmarshal([]byte(payload), v) }
 
-func (s *Server) stableRanksForProgram() []kernel.StableRank {
+func (s *Server) stableRanksForProgram(userID string) []kernel.StableRank {
 	if s.copyTrade == nil {
 		return nil
 	}
-	_, uid, err := s.resolveScoreModelAny("")
-	if err != nil {
+	uid := userID
+	if uid == "" {
 		return nil
 	}
 	cfg := s.loadCoinScoreAuto()
@@ -125,15 +126,45 @@ func (s *Server) stableRanksForProgram() []kernel.StableRank {
 			ded += 10
 		}
 		comp := clampPct(.30*fourH + .25*dirQ + .20*histHit + .15*freshPct + .10*consensus - ded)
-		price := 0.0
-		if tk, e := binance.GetPublicTicker(ctx, sum.Symbol); e == nil && tk != nil {
-			price = tk.LastPrice
-		}
-		out = append(out, kernel.StableRank{Symbol: sum.Symbol, Direction: dir, Stable: comp, AI: clampPct(a.score), Price: price})
+		out = append(out, kernel.StableRank{Symbol: sum.Symbol, Direction: dir, Stable: comp, AI: clampPct(a.score)})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Stable > out[j].Stable })
 	if len(out) > 40 {
 		out = out[:40]
 	}
+	for i := range out {
+		out[i].Price = progPrice(ctx, out[i].Symbol)
+	}
 	return out
+}
+
+// progPrice caches public tickers briefly so several traders / coins in the
+// same cycle do not hammer the exchange.
+var (
+	progTickerMu    sync.Mutex
+	progTickerCache = map[string]struct {
+		p float64
+		t int64
+	}{}
+)
+
+func progPrice(ctx context.Context, sym string) float64 {
+	now := time.Now().UnixMilli()
+	progTickerMu.Lock()
+	c, ok := progTickerCache[sym]
+	progTickerMu.Unlock()
+	if ok && now-c.t < 5000 {
+		return c.p
+	}
+	tk, err := binance.GetPublicTicker(ctx, sym)
+	if err != nil || tk == nil {
+		return 0
+	}
+	progTickerMu.Lock()
+	progTickerCache[sym] = struct {
+		p float64
+		t int64
+	}{tk.LastPrice, now}
+	progTickerMu.Unlock()
+	return tk.LastPrice
 }

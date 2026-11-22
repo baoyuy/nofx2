@@ -37,7 +37,7 @@ func (at *AutoTrader) programDecision(ctx *kernel.Context) (*kernel.FullDecision
 	if kernel.StableRankingResolver == nil {
 		return nil, fmt.Errorf("stable ranking unavailable")
 	}
-	ranks := kernel.StableRankingResolver()
+	ranks := kernel.StableRankingResolver(at.userID)
 
 	allowLong := cs.ProgramSides == "" || cs.ProgramSides == "both" || cs.ProgramSides == "long"
 	allowShort := cs.ProgramSides == "" || cs.ProgramSides == "both" || cs.ProgramSides == "short"
@@ -159,6 +159,19 @@ func (at *AutoTrader) programDecision(ctx *kernel.Context) (*kernel.FullDecision
 			tp = price * (1 - take/100)
 		}
 		size := equity * posPct / 100
+		if lev < 1 {
+			lev = 1
+		}
+		if lev > 125 {
+			lev = 125
+		}
+		if size <= 0 || size > equity {
+			size = equity
+		}
+		if size < 5 || stop <= 0 || take <= 0 || sl <= 0 || tp <= 0 {
+			at.logWarnf("🧩 skip open %s: invalid size/sl/tp (size=%.2f sl=%.4f tp=%.4f)", t.Symbol, size, sl, tp)
+			continue
+		}
 		decisions = append(decisions, kernel.Decision{
 			Symbol: t.Symbol, Action: action, Leverage: lev, PositionSizeUSD: size,
 			StopLoss: sl, TakeProfit: tp, Confidence: int(clampFloat(t.Stable, 0, 100)),
@@ -180,4 +193,18 @@ func clampFloat(v, lo, hi float64) float64 {
 		return hi
 	}
 	return v
+}
+
+
+// applyProgramScanInterval lets the strategy's program_scan_minutes override the
+// trader scan interval for program-stable strategies.
+func (at *AutoTrader) applyProgramScanInterval() {
+	cs := at.programStableConfig()
+	if cs == nil {
+		return
+	}
+	if cs.ProgramScanMinutes > 0 {
+		at.config.ScanInterval = time.Duration(cs.ProgramScanMinutes) * time.Minute
+		at.logInfof("🧩 program scan interval applied: %d min", cs.ProgramScanMinutes)
+	}
 }

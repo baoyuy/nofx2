@@ -437,7 +437,7 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 	strategyEngine.SetExchange(config.Exchange)
 	logger.Infof("✓ [%s] Using strategy engine (strategy configuration loaded)", config.Name)
 
-	return &AutoTrader{
+	at := &AutoTrader{
 		id:                    config.ID,
 		name:                  config.Name,
 		aiModel:               config.AIModel,
@@ -463,7 +463,9 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		peakPnLCacheMutex:     sync.RWMutex{},
 		lastBalanceSyncTime:   time.Now(),
 		userID:                userID,
-	}, nil
+	}
+	at.applyProgramScanInterval()
+	return at, nil
 }
 
 func (at *AutoTrader) reloadStrategyConfigIfChanged() error {
@@ -521,6 +523,7 @@ func (at *AutoTrader) reloadStrategyConfigIfChanged() error {
 	at.config.StrategyConfigRaw = strategy.Config
 	at.strategyEngine = kernel.NewStrategyEngine(strategyConfig, claw402Key)
 	at.strategyEngine.SetExchange(at.exchange)
+	at.applyProgramScanInterval()
 	at.logInfof("🔄 Strategy config refreshed from DB: %s", strategy.Name)
 	return nil
 }

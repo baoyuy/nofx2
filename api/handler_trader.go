@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -370,6 +371,13 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		}
 	}
 
+	isProgram := false
+	if req.StrategyID != "" {
+		if st, e := s.store.Strategy().Get(userID, req.StrategyID); e == nil && st != nil {
+			isProgram = strategyConfigIsProgram(st.Config)
+		}
+	}
+
 	model, err := s.store.AIModel().Get(userID, req.AIModelID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -382,14 +390,14 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		)
 		return
 	}
-	if !model.Enabled {
+	if !isProgram && !model.Enabled {
 		SafeBadRequestWithDetails(c, formatTraderCreationError(
 			fmt.Sprintf("AI model \"%s\" is not enabled yet", model.Name),
 			"Please go to \"Settings > Model Config\" to enable it, then create the bot again",
 		), "trader.create.model_disabled", mapStringPairs("model_name", model.Name))
 		return
 	}
-	if model.APIKey == "" {
+	if !isProgram && model.APIKey == "" {
 		SafeBadRequestWithDetails(c, formatTraderCreationError(
 			fmt.Sprintf("AI model \"%s\" is missing an API Key or payment credentials", model.Name),
 			"Please go to \"Settings > Model Config\" to complete the model credentials, then create the bot again",
@@ -989,4 +997,16 @@ func (s *Server) handleStopTrader(c *gin.Context) {
 
 	logger.Infof("⏹  Trader %s stopped", trader.GetName())
 	c.JSON(http.StatusOK, gin.H{"message": "Trader stopped"})
+}
+
+
+// strategyConfigIsProgram reports whether a strategy JSON enables the
+// program-stable (no-AI) mode. Program traders do not call or bill a model, so
+// the model's enabled/credential checks are relaxed for them.
+func strategyConfigIsProgram(raw string) bool {
+	var c store.StrategyConfig
+	if json.Unmarshal([]byte(raw), &c) != nil {
+		return false
+	}
+	return c.CoinSource.ProgramStable
 }

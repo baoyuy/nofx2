@@ -12,4 +12,4 @@ type StableRank struct {
 
 // StableRankingResolver returns the current scored+directional stable ranking.
 // The API package sets it at startup (it has the copy-trade + score data).
-var StableRankingResolver func() []StableRank
+var StableRankingResolver func(userID string) []StableRank
