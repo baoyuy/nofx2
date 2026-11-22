@@ -495,11 +495,9 @@ func (s *Server) handleCopyTradeSymbols(c *gin.Context) {
 			if o.Bias != "long" && o.Bias != "short" {
 				continue
 			}
-			ex := *o.Ret4h
-			if o.Bench4h != nil {
-				ex -= *o.Bench4h
-			}
-			hit := (o.Bias == "long" && ex > 0) || (o.Bias == "short" && ex < 0)
+			// Score outcomes store returns in the called direction: positive
+			// means the AI call was right for both long and short.
+			hit := *o.Ret4h > 0
 			an++
 			if hit {
 				ah++

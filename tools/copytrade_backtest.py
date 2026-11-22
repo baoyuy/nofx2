@@ -3,7 +3,7 @@
 
 Usage: python tools/copytrade_backtest.py work/server-data.db --out work/copytrade-backtest.md
 """
-import argparse, json, math, sqlite3, statistics
+import argparse, sqlite3
 from collections import defaultdict
 from datetime import datetime, timezone
 
@@ -32,6 +32,26 @@ def style_for(events):
 
 def rows(conn, q, args=()): return conn.execute(q,args).fetchall()
 
+def dedup_ai_outcomes(outcomes, window_ms=4 * 60 * 60 * 1000):
+    """Match the server outcome panel: first result per coin/side in each 4h run."""
+    seen = {}
+    kept = []
+    for row in sorted(outcomes, key=lambda r: r['analyzed_at']):
+        bias = (row['bias'] or '').lower()
+        if bias not in ('long', 'short'):
+            continue
+        key = (row['symbol'], bias)
+        previous = seen.get(key)
+        if previous is not None and row['analyzed_at'] - previous < window_ms:
+            continue
+        seen[key] = row['analyzed_at']
+        kept.append(row)
+    return kept
+
+def direction_adjusted_return(row):
+    """Score outcome returns are already signed so positive means the call won."""
+    return row['ret_4h']
+
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument('db'); ap.add_argument('--out', default='-'); args=ap.parse_args()
     con=sqlite3.connect(args.db); con.row_factory=sqlite3.Row
@@ -44,7 +64,8 @@ def main():
     styles={k:style_for(v) for k,v in fills.items()}
     sig=rows(con, '''select symbol,direction,ret_4h,bench_4h,done_4h,confidence,traders,hour
                      from copytrade_signals where done_4h=1 and ret_4h is not null''')
-    # Directional hit: long wins on positive excess return, short on negative excess return.
+    # Signal rows hold raw coin returns; AI score outcomes below hold returns
+    # signed in the predicted direction.
     by=defaultdict(lambda:[0,0,0.0,0.0]); dedup={}
     for r in sig:
         key=(r['symbol'],r['direction'], round(r['hour']/14400000))
@@ -52,16 +73,16 @@ def main():
         dedup[key]=1
         d=(r['direction'] or '').lower(); excess=(r['ret_4h'] or 0)-(r['bench_4h'] or 0)
         if d not in ('long','short'): continue
-        hit=(excess>0) if d=='long' else (excess<0)
+        hit=(r['ret_4h']>0) if d=='long' else (r['ret_4h']<0)
         g=by[d]; g[0]+=1; g[1]+=int(hit); g[2]+=excess; g[3]+=abs(excess)
-    scores=rows(con, '''select symbol,bias,ret_4h,bench_4h,done_4h,bull,bear,analyzed_at
-                        from copytrade_score_outcomes where done_4h=1 and ret_4h is not null''')
+    scores=dedup_ai_outcomes(rows(con, '''select symbol,bias,ret_4h,bench_4h,done_4h,bull,bear,analyzed_at
+                        from copytrade_score_outcomes where done_4h=1 and ret_4h is not null'''))
     ai=defaultdict(lambda:[0,0,0.0]); bands=defaultdict(lambda:[0,0]); style_ai=defaultdict(lambda:[0,0])
     for r in scores:
-        b=(r['bias'] or '').lower(); ex=(r['ret_4h'] or 0)-(r['bench_4h'] or 0)
-        if b not in ('long','short'): continue
-        hit=(ex>0) if b=='long' else (ex<0)
-        ai[b][0]+=1; ai[b][1]+=int(hit); ai[b][2]+=ex
+        b=(r['bias'] or '').lower(); ret=direction_adjusted_return(r)
+        if b not in ('long','short') or ret is None: continue
+        hit=ret>0
+        ai[b][0]+=1; ai[b][1]+=int(hit); ai[b][2]+=ret
         style_ai[(b, r['symbol'])][0]+=1; style_ai[(b, r['symbol'])][1]+=int(hit)
         edge=abs((r['bull'] or 0)-(r['bear'] or 0)); band=min(4,int(edge//10))
         bands[(b,band)][0]+=1; bands[(b,band)][1]+=int(hit)
@@ -73,13 +94,13 @@ def main():
     lines += ['', '## AI 4h 方向结果','', '|方向|样本|命中率|校准命中率|平均超额收益|','|---|---:|---:|---:|---:|']
     for d in ('long','short'):
         n,h,total=ai[d]; lines.append(f'|{d}|{n}|{pct(h/n if n else 0)}|{pct(smooth(h,n))}|{pct(total/n if n else 0)}|')
-    lines += ['', '## 方向融合验证（按币种/方向分层）','', '|方向|成熟 AI 样本|经验命中率|Beta 平滑准确率|','|---|---:|---:|---:|']
+    lines += ['', '说明：AI 的 `ret_4h` 在数据库中已按预测方向正负化，正数即命中（做空命中时底层币价收益通常为负）。样本按服务器配置页规则，同币同方向 4 小时去重；中性判断不计入多空方向命中率。','', '## AI 方向融合验证（与服务器配置页同口径）','', '|方向|成熟去重样本|命中率|Beta 平滑命中率|平均方向收益|','|---|---:|---:|---:|---:|']
     for d in ('long','short'):
-        n,h,_=ai[d]; lines.append(f'|{d}|{n}|{pct(h/n if n else 0)}|{pct(smooth(h,n))}|')
+        n,h,total=ai[d]; lines.append(f'|{d}|{n}|{pct(h/n if n else 0)}|{pct(smooth(h,n))}|{pct(total/n if n else 0)}|')
     lines += ['', '## 带单员风格分布','', '|风格|带单员数|处理方式|','|---|---:|---|']
     desc={'high_freq':'保留，4h 评价并降权','martingale':'保留，4h 评价并作为风险提示','scalp':'4h 评价','swing':'24h 评价','long':'72h 评价','few_samples':'只展示，不参与方向投票'}
     for k in sorted(style_counts): lines.append(f'|{k}|{style_counts[k][0]}|{desc.get(k,"按自身周期评价")}|')
-    lines += ['', '## 评分规则建议','', '稳定方向分 = 40% AI 4h 校准命中率 + 35% 带单 4h 校准命中率 + 15% 超额收益方向一致性 + 10% 样本新鲜度。每个方向至少 8 个成熟样本才进入主榜；否则标记为低样本。多空分别排名，避免总体偏空把样本少的多头隐藏。', '', '## 限制', '', '带单 fills 没有稳定的开仓/平仓配对时，风格识别只作为离线先验；异常价格、重复信号和未成熟结果必须继续过滤。命中率使用相对 benchmark 的超额方向，不能把单纯市场下跌误算成做空能力。']
+    lines += ['', '## 评分规则建议','', '稳定方向分 = 40% AI 4h 校准命中率 + 35% 带单 4h 校准命中率 + 15% 超额收益方向一致性 + 10% 样本新鲜度。每个方向至少 8 个成熟样本才进入主榜；否则标记为低样本。多空分别排名，避免总体偏空把样本少的多头隐藏。', '', '## 限制', '', '带单 fills 没有稳定的开仓/平仓配对时，风格识别只作为离线先验；异常价格、重复信号和未成熟结果必须继续过滤。AI 命中率按预测方向收益正负计算，与服务器配置页口径一致；做多和做空分别报告，避免方向样本不平衡掩盖差异。AI 命中率不等于跑赢市场：相对市场表现应另看服务器页的“跑赢均值”和“平均超额”列。带单信号命中率则使用原始币价方向相对 BTC 的超额收益。']
     out='\n'.join(lines)+'\n'
     if args.out=='-': print(out)
     else:
