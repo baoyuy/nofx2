@@ -186,6 +186,21 @@ export interface CoinSourceConfig {
   event_signal_require_bias?: boolean
   event_signal_exit_on_flip?: boolean
   event_signal_min_confidence?: number
+  // Program-stable (rule-based, no AI) trading off the 4h stable ranking.
+  program_stable?: boolean
+  program_sides?: 'both' | 'long' | 'short'
+  program_top_n?: number
+  program_min_stable?: number
+  program_position_pct?: number
+  program_leverage?: number
+  program_max_positions?: number
+  program_take_profit_pct?: number
+  program_stop_loss_pct?: number
+  program_exit_on_drop?: boolean
+  program_close_on_flip?: boolean
+  program_close_on_expire?: boolean
+  program_scan_minutes?: number
+  program_max_turnover?: number
   // Note: API URLs are now built automatically using nofxos_api_key from IndicatorConfig
 }
 

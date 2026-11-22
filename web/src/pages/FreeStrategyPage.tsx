@@ -1297,6 +1297,68 @@ export function FreeStrategyPage() {
               </fieldset>
               <fieldset>
                 <legend className="mb-2 text-sm font-medium text-nofx-text">
+                  {text(language, '程序化交易（四小时稳定分 · 无AI）', 'Programmatic trading (4h stable · no AI)')}
+                </legend>
+                <p className="mb-2 text-xs text-nofx-text-muted">
+                  {text(
+                    language,
+                    '启用后该策略不调用模型：每轮按"四小时稳定分"榜单选 TopN、按方向开多/开空，按固定止损止盈与仓位再平衡（仅纸面/模拟验证用）。',
+                    'When enabled the strategy calls NO model: each cycle it longs/shorts the top-N of the 4h stable ranking with fixed stop/take and sizing (paper validation only).'
+                  )}
+                </p>
+                <label className="flex items-start gap-2 rounded-md border border-[rgba(25,36,52,0.08)] p-2 text-sm text-nofx-text">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={Boolean(form.programStable)}
+                    onChange={(e) => patchForm({ programStable: e.target.checked })}
+                  />
+                  <span>{text(language, '启用程序化（四小时稳定分·无AI）', 'Enable programmatic (4h stable, no AI)')}</span>
+                </label>
+                {form.programStable ? (
+                  <div className="mt-3 grid gap-3 sm:grid-cols-4">
+                    <label className="text-xs text-nofx-text-muted">
+                      {text(language, '方向', 'Sides')}
+                      <select
+                        className="mt-1 w-full rounded border border-[rgba(25,36,52,0.15)] bg-transparent px-2 py-1 text-sm text-nofx-text"
+                        value={form.programSides || 'both'}
+                        onChange={(e) => patchForm({ programSides: e.target.value as 'both' | 'long' | 'short' })}
+                      >
+                        <option value="both">{text(language, '多空', 'both')}</option>
+                        <option value="long">{text(language, '只多', 'long only')}</option>
+                        <option value="short">{text(language, '只空', 'short only')}</option>
+                      </select>
+                    </label>
+                    {([
+                      ['programTopN', text(language, 'TopN', 'TopN'), 1, 50, form.programTopN ?? 5],
+                      ['programPositionPct', text(language, '单币仓位%', 'Size %'), 1, 100, form.programPositionPct ?? 10],
+                      ['programLeverage', text(language, '杠杆', 'Leverage'), 1, 125, form.programLeverage ?? 3],
+                      ['programMaxPositions', text(language, '最多持仓', 'Max pos'), 1, 50, form.programMaxPositions ?? 5],
+                      ['programTakeProfitPct', text(language, '止盈%', 'TP %'), 0, 1000, form.programTakeProfitPct ?? 10],
+                      ['programStopLossPct', text(language, '止损%', 'SL %'), 0, 1000, form.programStopLossPct ?? 5],
+                      ['programScanMinutes', text(language, '扫描(分钟)', 'Scan (min)'), 1, 1440, form.programScanMinutes ?? 5],
+                      ['programMaxTurnover', text(language, '每轮换手', 'Turnover/cycle'), 1, 50, form.programMaxTurnover ?? 2],
+                      ['programMinStable', text(language, '稳定分门槛', 'Min stable'), 0, 100, form.programMinStable ?? 0],
+                    ] as const).map(([key, label, min, max, val]) => (
+                      <label key={key} className="text-xs text-nofx-text-muted">
+                        {label}
+                        <input
+                          type="number"
+                          min={min}
+                          max={max}
+                          value={val}
+                          onChange={(e) =>
+                            patchForm({ [key]: e.target.value === '' ? 0 : Number(e.target.value) } as never)
+                          }
+                          className="mt-1 w-full rounded border border-[rgba(25,36,52,0.15)] bg-transparent px-2 py-1 text-sm text-nofx-text"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                ) : null}
+              </fieldset>
+              <fieldset>
+                <legend className="mb-2 text-sm font-medium text-nofx-text">
                   {text(
                     language,
                     '事件打标（信息打标 / 事件卡）',

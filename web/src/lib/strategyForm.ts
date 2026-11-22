@@ -206,6 +206,21 @@ export interface FreeForm {
   eventSignalRequireBias?: boolean
   eventSignalExitOnFlip?: boolean
   eventSignalMinConfidence?: number
+  // Program-stable (no AI) params
+  programStable?: boolean
+  programSides?: 'both' | 'long' | 'short'
+  programTopN?: number
+  programMinStable?: number
+  programPositionPct?: number
+  programLeverage?: number
+  programMaxPositions?: number
+  programTakeProfitPct?: number
+  programStopLossPct?: number
+  programExitOnDrop?: boolean
+  programCloseOnFlip?: boolean
+  programCloseOnExpire?: boolean
+  programScanMinutes?: number
+  programMaxTurnover?: number
 }
 
 export const DEFAULT_COINS = 'BTCUSDT, ETHUSDT, SOLUSDT'
@@ -431,6 +446,22 @@ export function formFromStrategy(strategy: Strategy): FreeForm {
       { min: 0, max: 100 },
       60
     ),
+    programStable: Boolean(src?.program_stable),
+    programSides: (['both', 'long', 'short'] as const).includes(src?.program_sides as never)
+      ? (src!.program_sides as 'both' | 'long' | 'short')
+      : 'both',
+    programTopN: clampNumber(src?.program_top_n, { min: 1, max: 50 }, 5),
+    programMinStable: clampNumber(src?.program_min_stable, { min: 0, max: 100 }, 0),
+    programPositionPct: clampNumber(src?.program_position_pct, { min: 1, max: 100 }, 10),
+    programLeverage: clampNumber(src?.program_leverage, { min: 1, max: 125 }, 3),
+    programMaxPositions: clampNumber(src?.program_max_positions, { min: 1, max: 50 }, 5),
+    programTakeProfitPct: clampNumber(src?.program_take_profit_pct, { min: 0, max: 1000 }, 10),
+    programStopLossPct: clampNumber(src?.program_stop_loss_pct, { min: 0, max: 1000 }, 5),
+    programExitOnDrop: src?.program_exit_on_drop !== false,
+    programCloseOnFlip: src?.program_close_on_flip !== false,
+    programCloseOnExpire: src?.program_close_on_expire !== false,
+    programScanMinutes: clampNumber(src?.program_scan_minutes, { min: 1, max: 1440 }, 5),
+    programMaxTurnover: clampNumber(src?.program_max_turnover, { min: 1, max: 50 }, 2),
     // Only a saved choice; unset takes the default of the source chosen
     // (follow for the copy source, free for context only).
     copyTradeFollow: (['follow', 'fade', 'free'] as const).includes(
@@ -613,6 +644,20 @@ export function configFromForm(
               event_signal_require_bias: Boolean(form.eventSignalRequireBias),
               event_signal_exit_on_flip: Boolean(form.eventSignalExitOnFlip),
               event_signal_min_confidence: form.eventSignalMinConfidence || 60,
+              program_stable: Boolean(form.programStable),
+              program_sides: form.programSides || 'both',
+              program_top_n: form.programTopN || 5,
+              program_min_stable: form.programMinStable || 0,
+              program_position_pct: form.programPositionPct || 10,
+              program_leverage: form.programLeverage || 3,
+              program_max_positions: form.programMaxPositions || 5,
+              program_take_profit_pct: form.programTakeProfitPct || 10,
+              program_stop_loss_pct: form.programStopLossPct || 5,
+              program_exit_on_drop: form.programExitOnDrop !== false,
+              program_close_on_flip: form.programCloseOnFlip !== false,
+              program_close_on_expire: form.programCloseOnExpire !== false,
+              program_scan_minutes: form.programScanMinutes || 5,
+              program_max_turnover: form.programMaxTurnover || 2,
               static_coins:
                 horn || copy
                   ? []
