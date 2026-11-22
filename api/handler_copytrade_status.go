@@ -91,6 +91,10 @@ func (s *Server) handleCoinStatus(c *gin.Context) {
 	for k, v := range s.coinScore.lastFail {
 		failing[k] = v
 	}
+	retry := make(map[string]int64, len(s.coinScore.retryAfter))
+	for k, v := range s.coinScore.retryAfter {
+		retry[k] = v
+	}
 	s.coinScore.mu.Unlock()
 
 	var counts coinStatusCounts
@@ -129,6 +133,10 @@ func (s *Server) handleCoinStatus(c *gin.Context) {
 		if inflight[x.Symbol] {
 			row.Status = "scoring"
 			counts.Scoring++
+		} else if ra, ok := retry[x.Symbol]; ok && ra > takenAt {
+			row.Status = "failed"
+			row.Reason = "retry_backoff"
+			counts.Failed++
 		} else if fa, ok := failing[x.Symbol]; ok && takenAt-fa < coinScoreFailTTLMs {
 			row.Status = "failed"
 			row.Reason = "last_attempt_failed"

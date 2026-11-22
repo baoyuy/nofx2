@@ -1002,13 +1002,25 @@ export function CoinsTab({
   )
   const [sort, setSort] = useState<CoinSort>('stable')
   const [bias, setBias] = useState<CoinBias>('all')
+  const { data: rankAI } = useSWR(
+    sort === 'ai' ? ['coin-ranking', 'ai'] : null,
+    () => api.getCoinRanking('ai'),
+    { refreshInterval: 60000 }
+  )
   const shown = useMemo(() => {
     let list = sortCoins(symbols, sort, bias, aiScore)
     if (sort === 'ai') {
-      list = list.filter((x) => statusMap.get(x.symbol)?.status === 'scored')
+      // AI ranking only lists valid (fresh, in-scope) scored coins and is ordered
+      // by the backend AI composite score (not the raw AI edge).
+      const items = ((rankAI?.items as { symbol: string }[] | undefined) ?? [])
+      const order = new Map<string, number>()
+      items.forEach((it, i) => order.set(it.symbol, i))
+      list = list
+        .filter((x) => order.has(x.symbol))
+        .sort((a, b) => (order.get(a.symbol) ?? 0) - (order.get(b.symbol) ?? 0))
     }
     return list
-  }, [symbols, sort, bias, aiScore, statusMap])
+  }, [symbols, sort, bias, aiScore, statusMap, rankAI])
   // Freeze the default detail coin once, so a ranking reshuffle does not swap
   // the chart under the user; an explicit selection still wins.
   const [pinned, setPinned] = useState('')

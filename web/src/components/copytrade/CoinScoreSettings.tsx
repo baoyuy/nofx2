@@ -4,7 +4,7 @@ import { Play, Save, Loader2 } from 'lucide-react'
 import { api } from '../../lib/api'
 import type {
   CoinPoolInfo,
-  OutcomeStat,
+  CoinAccuracyResp,
   CoinScoreModelInfo,
   CoinScoreSettings as Settings,
 } from '../../lib/api/copyTrade'
@@ -30,9 +30,9 @@ export function CoinScoreSettings({ language }: { language: string }) {
     () => api.getCoinPool(),
     { refreshInterval: 15000 }
   )
-  const { data: outcomes } = useSWR<{ rows: OutcomeStat[] }>(
-    'copytrade/coin-score/outcomes',
-    () => api.getCoinScoreOutcomes(),
+  const { data: accuracy } = useSWR<CoinAccuracyResp>(
+    'copytrade/coin-accuracy',
+    () => api.getCoinAccuracy(),
     { refreshInterval: 120000 }
   )
   const [enabled, setEnabled] = useState(false)
@@ -374,42 +374,51 @@ export function CoinScoreSettings({ language }: { language: string }) {
 
       <div className="border-t border-[rgba(25,36,52,0.08)] pt-3">
         <div className="mb-1 text-sm font-medium text-nofx-text">
-          {tr(language, '前向验证（高分是否真的更准 / 空头是否赚钱）', 'Forward check (do high scores and shorts really work)')}
+          {tr(language, '4 小时前向验证（仅统计有效样本，中性/无效不计错）', '4h forward check (valid samples only; neutral/invalid not counted as errors)')}
         </div>
-        {outcomes && outcomes.rows.some((r) => r.samples > 0) ? (
+        {accuracy?.overall ? (
           <div className="overflow-x-auto">
             <table className="w-full text-xs tabular-nums">
               <thead>
                 <tr className={ui.muted}>
-                  <th className="py-1 pr-2 text-left">{tr(language, '周期', 'H')}</th>
                   <th className="py-1 pr-2 text-left">{tr(language, '方向', 'Side')}</th>
-                  <th className="py-1 pr-2 text-left">{tr(language, '分数档', 'Band')}</th>
-                  <th className="py-1 pr-2 text-right">{tr(language, '样本', 'N')}</th>
-                  <th className="py-1 pr-2 text-right">{tr(language, '胜率', 'Hit')}</th>
-                  <th className="py-1 pr-2 text-right">{tr(language, '跑赢均值', 'Beat mkt')}</th>
-                  <th className="py-1 text-right">{tr(language, '平均超额', 'Excess')}</th>
+                  <th className="py-1 pr-2 text-right">{tr(language, '有效评分', 'Scored')}</th>
+                  <th className="py-1 pr-2 text-right">{tr(language, '已验证', 'Valid')}</th>
+                  <th className="py-1 pr-2 text-right">{tr(language, '命中', 'Hit')}</th>
+                  <th className="py-1 pr-2 text-right">{tr(language, '未命中', 'Miss')}</th>
+                  <th className="py-1 pr-2 text-right">{tr(language, '无效', 'Invalid')}</th>
+                  <th className="py-1 text-right">{tr(language, '命中率', 'Hit rate')}</th>
                 </tr>
               </thead>
               <tbody>
-                {outcomes.rows
-                  .filter((r) => r.samples > 0)
-                  .map((r, i) => (
-                    <tr key={i} className="border-t border-[rgba(25,36,52,0.06)]">
-                      <td className="py-1 pr-2">{r.horizon}</td>
-                      <td className="py-1 pr-2">{r.side}</td>
-                      <td className="py-1 pr-2">{r.band}</td>
-                      <td className="py-1 pr-2 text-right">{r.samples}</td>
-                      <td className="py-1 pr-2 text-right">{r.hit_rate.toFixed(1)}%</td>
-                      <td className="py-1 pr-2 text-right">{r.beat_market.toFixed(1)}%</td>
-                      <td className="py-1 text-right">{r.avg_excess >= 0 ? '+' : ''}{r.avg_excess.toFixed(2)}%</td>
+                {[
+                  ['all', tr(language, '全部', 'All'), accuracy.overall],
+                  ['long', tr(language, '多', 'Long'), accuracy.by_side?.long],
+                  ['short', tr(language, '空', 'Short'), accuracy.by_side?.short],
+                ].map(([k, label, b]) => {
+                  const row = b as typeof accuracy.overall | undefined
+                  if (!row) return null
+                  return (
+                    <tr key={String(k)} className="border-t border-[rgba(25,36,52,0.06)]">
+                      <td className="py-1 pr-2">{label as string}</td>
+                      <td className="py-1 pr-2 text-right">{row.scored}</td>
+                      <td className="py-1 pr-2 text-right">{row.valid}</td>
+                      <td className="py-1 pr-2 text-right text-nofx-success">{row.hit}</td>
+                      <td className="py-1 pr-2 text-right text-nofx-danger">{row.miss}</td>
+                      <td className="py-1 pr-2 text-right">{row.invalid}</td>
+                      <td className="py-1 text-right">{row.hit_rate.toFixed(2)}%</td>
                     </tr>
-                  ))}
+                  )
+                })}
               </tbody>
             </table>
+            <p className={`${ui.muted} mt-1 text-[11px]`}>
+              {tr(language, `门槛 ${accuracy.snapshot.min_volume} USDT · 中性阈值 ${accuracy.snapshot.neutral_pct}% · ${accuracy.snapshot.config_version}`, `Min vol ${accuracy.snapshot.min_volume} USDT · neutral ${accuracy.snapshot.neutral_pct}% · ${accuracy.snapshot.config_version}`)}
+            </p>
           </div>
         ) : (
           <p className={`${ui.muted} text-xs`}>
-            {tr(language, '还没有到期样本（分析后 4/24/72 小时才会回填）', 'No matured samples yet (filled at 4/24/72h after analysis)')}
+            {tr(language, '暂无有效样本（需评分后 4 小时窗口完成）', 'No valid samples yet (needs a completed 4h window)')}
           </p>
         )}
       </div>

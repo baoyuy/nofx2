@@ -41,6 +41,8 @@ type coinScoreAuto struct {
 	manualRunning bool
 	lastDiagMs    int64
 	lastFail      map[string]int64
+	failCount     map[string]int
+	retryAfter    map[string]int64
 }
 
 
@@ -437,7 +439,22 @@ func (s *Server) coinScoreMarkFail(sym string) {
 	if s.coinScore.lastFail == nil {
 		s.coinScore.lastFail = map[string]int64{}
 	}
-	s.coinScore.lastFail[sym] = time.Now().UnixMilli()
+	if s.coinScore.failCount == nil {
+		s.coinScore.failCount = map[string]int{}
+	}
+	if s.coinScore.retryAfter == nil {
+		s.coinScore.retryAfter = map[string]int64{}
+	}
+	n := s.coinScore.failCount[sym] + 1
+	s.coinScore.failCount[sym] = n
+	// exponential backoff: 1,2,4,8,16,32,60,60... minutes.
+	backoff := time.Minute << uint(min(n-1, 6))
+	if backoff > 60*time.Minute {
+		backoff = 60 * time.Minute
+	}
+	now := time.Now()
+	s.coinScore.lastFail[sym] = now.UnixMilli()
+	s.coinScore.retryAfter[sym] = now.Add(backoff).UnixMilli()
 	s.coinScore.mu.Unlock()
 }
 
@@ -445,6 +462,12 @@ func (s *Server) coinScoreClearFail(sym string) {
 	s.coinScore.mu.Lock()
 	if s.coinScore.lastFail != nil {
 		delete(s.coinScore.lastFail, sym)
+	}
+	if s.coinScore.failCount != nil {
+		delete(s.coinScore.failCount, sym)
+	}
+	if s.coinScore.retryAfter != nil {
+		delete(s.coinScore.retryAfter, sym)
 	}
 	s.coinScore.mu.Unlock()
 }
@@ -640,9 +663,13 @@ func (s *Server) tickCoinScoreAuto(ctx context.Context) {
 		}
 		s.coinScore.mu.Lock()
 		busy := s.coinScore.inflight[sym]
+		retryAt := s.coinScore.retryAfter[sym]
 		s.coinScore.mu.Unlock()
 		if busy {
 			continue
+		}
+		if retryAt > now {
+			continue // still in failure backoff window
 		}
 		due = append(due, dueCoin{sym, last})
 	}
