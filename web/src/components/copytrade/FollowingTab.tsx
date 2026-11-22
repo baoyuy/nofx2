@@ -770,7 +770,7 @@ function TraderCard({
                         <span
                           className={`font-medium ${actionClass(e.action, e.side)}`}
                         >
-                          {actionLabel(language, e.action, e.side)}
+                          {actionLabel(language, e.action, e.side, e.signal_type)}
                         </span>
                         <button
                           type="button"

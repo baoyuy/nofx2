@@ -129,6 +129,7 @@ export interface TradeEvent {
   symbol: string
   side: TradeSide
   action: TradeAction
+  signal_type?: 'directional_open' | 'trend_add' | 'adverse_add' | 'reduce' | 'exit'
   qty: number
   price: number
   value: number
@@ -568,6 +569,20 @@ export interface SymbolSummary {
   volume_24h?: number
   /** the cross-coin score (see Rank); absent on old servers */
   rank?: Rank
+  style_reading?: Confidence
+  stable_direction?: {
+    direction: 'long' | 'short' | 'neutral'
+    score: number
+    accuracy: number
+    ai_accuracy: number
+    trader_accuracy: number
+    ai_samples: number
+    trader_samples: number
+    traders: number
+    risk: number
+    fresh: boolean
+    eligible: boolean
+  }
 }
 
 export interface Holder extends TraderPosition, TraderBrief {

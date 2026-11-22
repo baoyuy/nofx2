@@ -253,7 +253,7 @@ export function FeedTab({
                   <td
                     className={`font-medium ${actionClass(e.action, e.side)}`}
                   >
-                    {actionLabel(language, e.action, e.side)}
+                    {actionLabel(language, e.action, e.side, e.signal_type)}
                     {e.untracked ? (
                       <span
                         className="ml-1 text-[10px] font-normal text-nofx-text-muted"

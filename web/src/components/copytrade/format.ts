@@ -75,9 +75,12 @@ export function sideClass(side: TradeSide): string {
 export function actionLabel(
   language: string,
   action: TradeAction,
-  side: TradeSide
+  side: TradeSide,
+  signalType?: string
 ): string {
   const s = sideLabel(language, side)
+  if (signalType === 'adverse_add') return tr(language, `逆势加${s}`, `Adverse add ${s}`)
+  if (signalType === 'trend_add') return tr(language, `顺势加${s}`, `Trend add ${s}`)
   switch (action) {
     case 'open':
       return tr(language, `开${s}`, `Open ${s}`)

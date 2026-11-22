@@ -54,6 +54,7 @@ export type CoinSort =
   | 'rank'
   | 'confidence'
   | 'ai'
+  | 'stable'
   | 'traders'
   | 'long'
   | 'short'
@@ -74,6 +75,7 @@ export function sortCoins(
 ): SymbolSummary[] {
   const key: Record<CoinSort, (s: SymbolSummary) => number> = {
     rank: (s) => s.rank?.score || 0,
+    stable: (s) => s.stable_direction?.score || 0,
     confidence: (s) => s.confidence?.score || 0,
     ai: (s) => aiScore(s.symbol),
     traders: traderCount,
@@ -524,6 +526,12 @@ function CoinDetail({
               <CrowdingTag r={summary.rank} language={language} />
             </span>
           ) : null}
+          {summary?.stable_direction ? (
+            <span className={`rounded px-2 py-1 text-xs tabular-nums ${summary.stable_direction.direction === 'long' ? 'bg-nofx-success/10 text-nofx-success' : summary.stable_direction.direction === 'short' ? 'bg-nofx-danger/10 text-nofx-danger' : 'bg-nofx-bg-deeper text-nofx-text-muted'}`} title={tr(language, `4h 稳定分 ${summary.stable_direction.score.toFixed(1)} · 校准准确率 ${Math.round(summary.stable_direction.accuracy * 100)}% · AI ${summary.stable_direction.ai_samples} 样本 · 带单 ${summary.stable_direction.trader_samples} 样本 · 风险 ${Math.round(summary.stable_direction.risk * 100)}%`, `4h stable score ${summary.stable_direction.score.toFixed(1)} · calibrated accuracy ${Math.round(summary.stable_direction.accuracy * 100)}% · AI ${summary.stable_direction.ai_samples} samples · traders ${summary.stable_direction.trader_samples} samples · risk ${Math.round(summary.stable_direction.risk * 100)}%`)}>
+              4h {summary.stable_direction.direction === 'long' ? tr(language, '偏多', 'Long') : summary.stable_direction.direction === 'short' ? tr(language, '偏空', 'Short') : tr(language, '观望', 'Neutral')} · {summary.stable_direction.score.toFixed(0)}
+              {!summary.stable_direction.eligible ? ` · ${tr(language, '低样本', 'low sample')}` : ''}
+            </span>
+          ) : null}
           {summary ? (
             <span className={ui.muted}>
               <span className="text-nofx-success">
@@ -618,6 +626,21 @@ function CoinDetail({
               expected={expected}
               language={language}
             />
+          </div>
+        ) : null}
+        {summary?.stable_direction ? (
+          <div className="mb-2 rounded border border-nofx-border bg-nofx-bg-deeper px-3 py-2 text-xs">
+            <div className="font-semibold text-nofx-text">{tr(language, '4 小时稳定方向排名', '4-hour stable direction ranking')}</div>
+            <div className="mt-1 text-nofx-text-muted">{tr(language, `风格带单方向：${summary.style_reading?.direction || 'neutral'} · 有效交易员 ${summary.style_reading?.traders || 0}`, `Style-adjusted trader direction: ${summary.style_reading?.direction || 'neutral'} · effective traders ${summary.style_reading?.traders || 0}`)}</div>
+            <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-nofx-text-muted">
+              <span>{tr(language, '方向', 'Direction')}: {summary.stable_direction.direction}</span>
+              <span>{tr(language, '稳定分', 'Stable score')}: {summary.stable_direction.score.toFixed(1)}</span>
+              <span>{tr(language, '校准命中', 'Calibrated hit rate')}: {Math.round(summary.stable_direction.accuracy * 100)}%</span>
+              <span>{tr(language, 'AI 样本', 'AI samples')}: {summary.stable_direction.ai_samples}</span>
+              <span>{tr(language, '带单样本', 'Trader samples')}: {summary.stable_direction.trader_samples}</span>
+              <span>{tr(language, '风险折扣', 'Risk adjustment')}: {Math.round(summary.stable_direction.risk * 100)}%</span>
+              {!summary.stable_direction.eligible ? <span className="text-nofx-gold">{tr(language, '样本不足，仅供观察', 'Insufficient samples; observe only')}</span> : null}
+            </div>
           </div>
         ) : null}
         <CoinAiScore language={language} symbol={symbol} />
@@ -908,7 +931,7 @@ export function CoinsTab({
     },
     [scoreMap]
   )
-  const [sort, setSort] = useState<CoinSort>('rank')
+  const [sort, setSort] = useState<CoinSort>('stable')
   const [bias, setBias] = useState<CoinBias>('all')
   const shown = useMemo(
     () => sortCoins(symbols, sort, bias, aiScore),
@@ -954,8 +977,11 @@ export function CoinsTab({
               onChange={(e) => setSort(e.target.value as CoinSort)}
               aria-label={tr(language, '排序', 'Sort')}
             >
+              <option value="stable">
+                {tr(language, '4 小时稳定分', '4h stable score')}
+              </option>
               <option value="rank">
-                {tr(language, '综合评分最高', 'Best cross-coin score')}
+                {tr(language, '带单综合评分', 'Copy-trader rank')}
               </option>
               <option value="confidence">
                 {tr(language, '置信度最高', 'Highest confidence')}
@@ -1047,12 +1073,10 @@ export function CoinsTab({
                         />
                       </span>
                     </div>
-                    {s.rank && s.rank.direction !== 'neutral' ? (
-                      <div className="mt-1 flex items-center justify-between gap-1">
-                        <RankBadge r={s.rank} language={language} compact />
-                        <CrowdingTag r={s.rank} language={language} />
-                      </div>
-                    ) : null}
+                    <div className="mt-1 flex items-center justify-between gap-1">
+                      {s.stable_direction ? <span className="text-[11px] tabular-nums text-nofx-gold">4h {s.stable_direction.score.toFixed(0)} · {s.stable_direction.direction}</span> : <span />}
+                      {s.rank && s.rank.direction !== 'neutral' ? <><RankBadge r={s.rank} language={language} compact /><CrowdingTag r={s.rank} language={language} /></> : null}
+                    </div>
                   </button>
                 </li>
               ))}

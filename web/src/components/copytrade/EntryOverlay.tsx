@@ -119,7 +119,7 @@ function Card({
           <span
             className={`font-semibold ${mark.side === 'long' ? 'text-nofx-success' : 'text-nofx-danger'}`}
           >
-            {actionLabel(language, e.action, e.side)}
+            {actionLabel(language, e.action, e.side, e.signal_type)}
           </span>{' '}
           {usd(e.value)} @{' '}
           <span className="font-semibold">{price(e.price)}</span>
@@ -294,7 +294,7 @@ export function EntryOverlay({
           <span
             key={x.key}
             className="pointer-events-auto absolute"
-            title={`${name(e.portfolio_id)} ${actionLabel(language, e.action, e.side)} ${usd(e.value)} @ ${price(e.price)}${e.realized_pnl ? ` · ${signedUsd(e.realized_pnl)}` : ''}`}
+            title={`${name(e.portfolio_id)} ${actionLabel(language, e.action, e.side, e.signal_type)} ${usd(e.value)} @ ${price(e.price)}${e.realized_pnl ? ` · ${signedUsd(e.realized_pnl)}` : ''}`}
             style={{
               left: cx - 5,
               top: cy - 5,

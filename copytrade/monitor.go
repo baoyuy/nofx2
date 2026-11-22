@@ -602,10 +602,9 @@ func (m *Monitor) view(s *Snapshot, marks map[string]float64, now time.Time, pee
 			}
 		}
 	}
-	snap.Positions, snap.Events = stampMarketClass(
-		assessHealth(positions, marks, snap.Follow.MarginBalance, now),
-		snap.Events,
-	)
+	positions = assessHealth(positions, marks, snap.Follow.MarginBalance, now)
+	events := classifyEvents(snap.Events, positions)
+	snap.Positions, snap.Events = stampMarketClass(positions, events)
 	snap.Accuracy, snap.AccuracyBy = m.accuracyOf(s.Follow.PortfolioID)
 	snap.StyleAccuracy = m.styleAccuracyOf(s.Follow.PortfolioID)
 	snap.Review = DropReasonsIn(snap, now, peers)

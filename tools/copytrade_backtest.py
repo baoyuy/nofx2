@@ -54,14 +54,15 @@ def main():
         if d not in ('long','short'): continue
         hit=(excess>0) if d=='long' else (excess<0)
         g=by[d]; g[0]+=1; g[1]+=int(hit); g[2]+=excess; g[3]+=abs(excess)
-    scores=rows(con, '''select bias,ret_4h,bench_4h,done_4h,bull,bear,analyzed_at
+    scores=rows(con, '''select symbol,bias,ret_4h,bench_4h,done_4h,bull,bear,analyzed_at
                         from copytrade_score_outcomes where done_4h=1 and ret_4h is not null''')
-    ai=defaultdict(lambda:[0,0,0.0]); bands=defaultdict(lambda:[0,0])
+    ai=defaultdict(lambda:[0,0,0.0]); bands=defaultdict(lambda:[0,0]); style_ai=defaultdict(lambda:[0,0])
     for r in scores:
         b=(r['bias'] or '').lower(); ex=(r['ret_4h'] or 0)-(r['bench_4h'] or 0)
         if b not in ('long','short'): continue
         hit=(ex>0) if b=='long' else (ex<0)
         ai[b][0]+=1; ai[b][1]+=int(hit); ai[b][2]+=ex
+        style_ai[(b, r['symbol'])][0]+=1; style_ai[(b, r['symbol'])][1]+=int(hit)
         edge=abs((r['bull'] or 0)-(r['bear'] or 0)); band=min(4,int(edge//10))
         bands[(b,band)][0]+=1; bands[(b,band)][1]+=int(hit)
     style_counts=defaultdict(lambda:[0,0])
@@ -72,6 +73,9 @@ def main():
     lines += ['', '## AI 4h 方向结果','', '|方向|样本|命中率|校准命中率|平均超额收益|','|---|---:|---:|---:|---:|']
     for d in ('long','short'):
         n,h,total=ai[d]; lines.append(f'|{d}|{n}|{pct(h/n if n else 0)}|{pct(smooth(h,n))}|{pct(total/n if n else 0)}|')
+    lines += ['', '## 方向融合验证（按币种/方向分层）','', '|方向|成熟 AI 样本|经验命中率|Beta 平滑准确率|','|---|---:|---:|---:|']
+    for d in ('long','short'):
+        n,h,_=ai[d]; lines.append(f'|{d}|{n}|{pct(h/n if n else 0)}|{pct(smooth(h,n))}|')
     lines += ['', '## 带单员风格分布','', '|风格|带单员数|处理方式|','|---|---:|---|']
     desc={'high_freq':'保留，4h 评价并降权','martingale':'保留，4h 评价并作为风险提示','scalp':'4h 评价','swing':'24h 评价','long':'72h 评价','few_samples':'只展示，不参与方向投票'}
     for k in sorted(style_counts): lines.append(f'|{k}|{style_counts[k][0]}|{desc.get(k,"按自身周期评价")}|')

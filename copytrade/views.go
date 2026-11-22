@@ -122,7 +122,10 @@ type SymbolSummary struct {
 	Volume24h float64 `json:"volume_24h"`
 	// Rank is the cross-coin score: which coin is worth trading now, weighing
 	// fresh calls, independent voices, crowding, depth and entry (see rank.go).
-	Rank Rank `json:"rank"`
+	Rank         Rank       `json:"rank"`
+	StyleReading Confidence `json:"style_reading"`
+	// Stable is the calibrated four-hour AI + trader direction reading.
+	Stable StableDirection `json:"stable_direction"`
 }
 
 // Holder is one followed trader's position in a coin, with the trader's
@@ -188,6 +191,7 @@ func Symbols(snaps []Snapshot) []SymbolSummary { return SymbolsAt(snaps, time.No
 
 // SymbolsAt is Symbols as of now, for replaying past hours.
 func SymbolsAt(snaps []Snapshot, now time.Time) []SymbolSummary {
+	styleReadings := StyleReadings(snaps, now)
 	by := map[string]*SymbolSummary{}
 	calls := map[string][]shadowCall{}
 	exits := map[string][]shadowExit{}
@@ -346,6 +350,9 @@ func SymbolsAt(snaps []Snapshot, now time.Time) []SymbolSummary {
 		s.Long.HoldHours, s.Short.HoldHours = mean(ages[s.Symbol+"long"]), mean(ages[s.Symbol+"short"])
 		s.Shadow = shadowOf(calls[s.Symbol], exits[s.Symbol])
 		s.Rank = RankOf(*s)
+		if r, ok := styleReadings[s.Symbol]; ok {
+			s.StyleReading = r
+		}
 		out = append(out, *s)
 	}
 	sort.Slice(out, func(a, b int) bool {

@@ -62,8 +62,9 @@ type Position struct {
 type Event struct {
 	Time        int64   `json:"time"`
 	Symbol      string  `json:"symbol"`
-	Side        string  `json:"side"`   // long | short
-	Action      string  `json:"action"` // open | add | reduce | close
+	Side        string  `json:"side"`                  // long | short
+	Action      string  `json:"action"`                // open | add | reduce | close
+	SignalType  string  `json:"signal_type,omitempty"` // directional_open | trend_add | adverse_add | reduce | exit
 	Qty         float64 `json:"qty"`
 	Price       float64 `json:"price"`
 	Value       float64 `json:"value"`

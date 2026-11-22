@@ -256,6 +256,13 @@ func (s *CopyTradeStore) SignalsSince(sinceHour int64) ([]CopyTradeSignal, error
 	return out, err
 }
 
+// RecentMatureSignals returns bounded 4h outcomes for per-coin calibration.
+func (s *CopyTradeStore) RecentMatureSignals(symbol string, sinceHour int64) ([]CopyTradeSignal, error) {
+	var out []CopyTradeSignal
+	err := s.db.Where("symbol = ? AND hour >= ? AND done_4h = ? AND ret_4h IS NOT NULL", symbol, sinceHour, true).Order("hour DESC").Limit(500).Find(&out).Error
+	return out, err
+}
+
 // SignalsAt returns the signals of one hour.
 func (s *CopyTradeStore) SignalsAt(hour int64) ([]CopyTradeSignal, error) {
 	var out []CopyTradeSignal
@@ -675,6 +682,12 @@ func (s *CopyTradeStore) UpdateScoreOutcome(o *CopyTradeScoreOutcome) error {
 func (s *CopyTradeStore) ListScoreOutcomes(userID string) ([]CopyTradeScoreOutcome, error) {
 	var out []CopyTradeScoreOutcome
 	err := s.db.Where("user_id = ?", userID).Order("analyzed_at DESC").Limit(20000).Find(&out).Error
+	return out, err
+}
+
+func (s *CopyTradeStore) RecentMatureScoreOutcomes(userID, symbol string, sinceMs int64) ([]CopyTradeScoreOutcome, error) {
+	var out []CopyTradeScoreOutcome
+	err := s.db.Where("user_id = ? AND symbol = ? AND analyzed_at >= ? AND done_4h = ? AND ret_4h IS NOT NULL", userID, symbol, sinceMs, true).Order("analyzed_at DESC").Limit(500).Find(&out).Error
 	return out, err
 }
 

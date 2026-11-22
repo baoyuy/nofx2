@@ -476,6 +476,61 @@ func (s *Server) handleCopyTradeSymbols(c *gin.Context) {
 	if volumes, err := binance.PublicQuoteVolumes(context.Background()); err == nil {
 		copytrade.AttachRanks(sums, volumes)
 	}
+	// Calibrate each coin's live 4h direction against mature AI and trader outcomes.
+	userID := c.GetString("user_id")
+	now := time.Now()
+	currentScores, _ := s.store.CopyTrade().ListCoinScores(userID)
+	scoreAtBySymbol := make(map[string]int64, len(currentScores))
+	for _, score := range currentScores {
+		if _, exists := scoreAtBySymbol[score.Symbol]; !exists {
+			scoreAtBySymbol[score.Symbol] = score.AnalyzedAt
+		}
+	}
+	for i := range sums {
+		sum := &sums[i]
+		aiRows, _ := s.store.CopyTrade().RecentMatureScoreOutcomes(userID, sum.Symbol, now.Add(-30*24*time.Hour).UnixMilli())
+		tradeRows, _ := s.store.CopyTrade().RecentMatureSignals(sum.Symbol, now.Add(-30*24*time.Hour).Unix())
+		var ah, an, th, tn int
+		for _, o := range aiRows {
+			if o.Bias != "long" && o.Bias != "short" {
+				continue
+			}
+			ex := *o.Ret4h
+			if o.Bench4h != nil {
+				ex -= *o.Bench4h
+			}
+			hit := (o.Bias == "long" && ex > 0) || (o.Bias == "short" && ex < 0)
+			an++
+			if hit {
+				ah++
+			}
+		}
+		for _, sig := range tradeRows {
+			if sig.Direction != "long" && sig.Direction != "short" {
+				continue
+			}
+			ex := *sig.Ret4h
+			if sig.Bench4h != nil {
+				ex -= *sig.Bench4h
+			}
+			hit := (sig.Direction == "long" && ex > 0) || (sig.Direction == "short" && ex < 0)
+			tn++
+			if hit {
+				th++
+			}
+		}
+		dir := sum.StyleReading.Direction
+		if dir == "neutral" {
+			dir = sum.Rank.Direction
+		}
+		if dir == "neutral" {
+			dir = sum.Shadow.Direction
+		}
+		risk := float64(sum.Liquidated+sum.Long.Trapped+sum.Short.Trapped) / float64(max(1, sum.Long.Traders+sum.Short.Traders))
+		fresh := len(copytrade.Fresh(snaps, copyTradeFreshness, now)) > 0 || copytrade.StableFresh(scoreAtBySymbol[sum.Symbol], now)
+		sum.Stable = copytrade.StableScore(ah, an, th, tn, dir, risk, fresh)
+		sum.Stable.Traders = sum.Long.Traders + sum.Short.Traders
+	}
 	c.JSON(http.StatusOK, gin.H{"symbols": sums, "fresh_traders": fresh, "total_traders": total})
 }
 
