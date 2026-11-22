@@ -90,6 +90,8 @@ func (s *Server) registerCopyTradeScoreRoutes(protected *gin.RouterGroup) {
 	s.route(protected, "GET", "/copytrade/coin-pool", "Current AI coin pool for this user", s.handleCoinPoolGet)
 	s.route(protected, "POST", "/copytrade/coin-pool/generate", "Rebuild the AI coin pool (<=10, long/short) from current scores", s.handleCoinPoolGenerate)
 	s.route(protected, "GET", "/copytrade/coin-status", "Unified AI scoring scope/status counts per coin (single volume snapshot)", s.handleCoinStatus)
+	s.route(protected, "GET", "/copytrade/coin-accuracy", "Forward-4h accuracy over valid AI samples only (overall + long/short)", s.handleCoinAccuracy)
+	s.route(protected, "GET", "/copytrade/coin-ranking", "Ranked coins (?mode=stable|ai): stable=all coins calibrated 4h; ai=scored+fresh only", s.handleCoinRanking)
 	s.route(protected, "GET", "/copytrade/coin-score/settings", "Scheduled analyze-all settings and latest run status", s.handleCoinScoreSettingsGet)
 	s.route(protected, "PUT", "/copytrade/coin-score/settings", "Save scheduled analyze-all settings (body: enabled, interval_minutes)", s.handleCoinScoreSettingsPut)
 	s.route(protected, "POST", "/copytrade/coin-score/run-all", "Analyze every coin on the by-coin page now (async; poll settings for progress)", s.handleCoinScoreRunAll)
@@ -347,6 +349,9 @@ const (
 	coinScoreDefaultMins   = 60
 	coinScoreConfigVersion = "copytrade-ai-v12"
 	coinScoreDefaultMinVolume = 100_000_000 // 1e8 USDT (Binance USDT-M 24h quote volume)
+	// coinScoreNeutralMovePct: a 4h move smaller than this (%) is a neutral /
+	// invalid sample — it must NOT count as a hit or a miss.
+	coinScoreNeutralMovePct = 0.5
 )
 
 type coinScoreAutoConfig struct {

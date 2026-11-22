@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"math"
 	"errors"
 	"fmt"
 	"net/http"
@@ -492,14 +493,18 @@ func (s *Server) handleCopyTradeSymbols(c *gin.Context) {
 		tradeRows, _ := s.store.CopyTrade().RecentMatureSignals(sum.Symbol, now.Add(-30*24*time.Hour).Unix())
 		var ah, an, th, tn int
 		for _, o := range aiRows {
-			if o.Bias != "long" && o.Bias != "short" {
+			if o.Bias != "long" && o.Bias != "short" || o.Ret4h == nil {
 				continue
 			}
 			// Score outcomes store returns in the called direction: positive
-			// means the AI call was right for both long and short.
-			hit := *o.Ret4h > 0
+			// means the AI call was right for both long and short. A move smaller
+			// than the neutral threshold is an invalid sample (not hit, not miss).
+			r := *o.Ret4h
+			if math.Abs(r) < coinScoreNeutralMovePct/100.0 {
+				continue
+			}
 			an++
-			if hit {
+			if r > 0 {
 				ah++
 			}
 		}
