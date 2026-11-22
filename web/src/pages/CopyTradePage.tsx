@@ -230,15 +230,18 @@ export function CopyTradePage() {
     [snaps]
   )
   const openCoin = (symbol: string) => changeCoin(symbol)
+  // Keep the primary workflow first: review followed traders, inspect the
+  // resulting coin exposure, then drill into events. Discovery and paper
+  // tracking are secondary actions and stay at the end of the tab strip.
   const tabs: { id: Tab; zh: string; en: string }[] = [
-    { id: 'discover', zh: '发现交易员', en: 'Discover' },
     {
       id: 'following',
       zh: `我的关注 (${snaps.length})`,
       en: `Following (${snaps.length})`,
     },
-    { id: 'feed', zh: '实时动态', en: 'Live feed' },
     { id: 'coins', zh: '按币种', en: 'By coin' },
+    { id: 'feed', zh: '实时动态', en: 'Live feed' },
+    { id: 'discover', zh: '发现交易员', en: 'Discover' },
     { id: 'paper', zh: '模拟跟单（仅记录）', en: 'Paper copy (record only)' },
   ]
 
