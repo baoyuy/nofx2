@@ -40,6 +40,7 @@ type coinScoreAuto struct {
 	inflight      map[string]bool
 	manualRunning bool
 	lastDiagMs    int64
+	lastFail      map[string]int64
 }
 
 
@@ -88,6 +89,7 @@ func (s *Server) registerCopyTradeScoreRoutes(protected *gin.RouterGroup) {
 	s.route(protected, "GET", "/copytrade/coin-score/outcomes", "Forward-return hit rate of past scores (by side, band, horizon)", s.handleCoinScoreOutcomes)
 	s.route(protected, "GET", "/copytrade/coin-pool", "Current AI coin pool for this user", s.handleCoinPoolGet)
 	s.route(protected, "POST", "/copytrade/coin-pool/generate", "Rebuild the AI coin pool (<=10, long/short) from current scores", s.handleCoinPoolGenerate)
+	s.route(protected, "GET", "/copytrade/coin-status", "Unified AI scoring scope/status counts per coin (single volume snapshot)", s.handleCoinStatus)
 	s.route(protected, "GET", "/copytrade/coin-score/settings", "Scheduled analyze-all settings and latest run status", s.handleCoinScoreSettingsGet)
 	s.route(protected, "PUT", "/copytrade/coin-score/settings", "Save scheduled analyze-all settings (body: enabled, interval_minutes)", s.handleCoinScoreSettingsPut)
 	s.route(protected, "POST", "/copytrade/coin-score/run-all", "Analyze every coin on the by-coin page now (async; poll settings for progress)", s.handleCoinScoreRunAll)
@@ -315,8 +317,9 @@ func (s *Server) analyzeCoinCore(ctx context.Context, userID string, model *stor
 	}
 	_ = primary
 	if data, merr := json.Marshal(res); merr == nil {
+		scfg := s.loadCoinScoreAuto()
 		row := store.CopyTradeCoinScore{UserID: userID, Symbol: symbol, ModelID: model.ID, Interval: "15m+1h+4h",
-			Payload: string(data), AnalyzedAt: res.AnalyzedAt}
+			Payload: string(data), AnalyzedAt: res.AnalyzedAt, ConfigVersion: coinScoreConfigVersion, MinVolume: scfg.MinQuoteVolume}
 		if serr := s.store.CopyTrade().SaveCoinScore(&row); serr != nil {
 			logger.Warnf("copy-trade coin score: save %s: %v", symbol, serr)
 			res.ParseError = strings.TrimSpace(res.ParseError + " (result not saved)")
@@ -342,6 +345,8 @@ const (
 	coinScoreAutoKey       = "copytrade_coin_score_auto"
 	coinScoreMinInterval   = 5
 	coinScoreDefaultMins   = 60
+	coinScoreConfigVersion = "copytrade-ai-v12"
+	coinScoreDefaultMinVolume = 100_000_000 // 1e8 USDT (Binance USDT-M 24h quote volume)
 )
 
 type coinScoreAutoConfig struct {
@@ -422,6 +427,23 @@ func (s *Server) coinScoreBegin() bool {
 }
 func (s *Server) coinScoreSetTotal(n int) { s.coinScore.mu.Lock(); s.coinScore.total = n; s.coinScore.mu.Unlock() }
 func (s *Server) coinScoreInc()         { s.coinScore.mu.Lock(); s.coinScore.done++; s.coinScore.mu.Unlock() }
+func (s *Server) coinScoreMarkFail(sym string) {
+	s.coinScore.mu.Lock()
+	if s.coinScore.lastFail == nil {
+		s.coinScore.lastFail = map[string]int64{}
+	}
+	s.coinScore.lastFail[sym] = time.Now().UnixMilli()
+	s.coinScore.mu.Unlock()
+}
+
+func (s *Server) coinScoreClearFail(sym string) {
+	s.coinScore.mu.Lock()
+	if s.coinScore.lastFail != nil {
+		delete(s.coinScore.lastFail, sym)
+	}
+	s.coinScore.mu.Unlock()
+}
+
 func (s *Server) coinScoreSetErr(msg string) {
 	if msg == "" {
 		return
@@ -513,7 +535,9 @@ func (s *Server) runCoinScoreAll(ctx context.Context, userID string, topN, skipF
 					mu.Lock()
 					lastErr = sym + ": " + e.Error()
 					mu.Unlock()
+					s.coinScoreMarkFail(sym)
 				} else {
+					s.coinScoreClearFail(sym)
 					mu.Lock()
 					ok++
 					mu.Unlock()
@@ -637,6 +661,9 @@ func (s *Server) tickCoinScoreAuto(ctx context.Context) {
 			defer cancel()
 			if _, e := s.analyzeCoinCore(cctx, uid, model, sym, "1h", ""); e != nil {
 				s.coinScoreSetErr(sym + ": " + e.Error())
+				s.coinScoreMarkFail(sym)
+			} else {
+				s.coinScoreClearFail(sym)
 			}
 			s.coinScore.mu.Lock()
 			delete(s.coinScore.inflight, sym)

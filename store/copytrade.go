@@ -560,8 +560,10 @@ type CopyTradeCoinScore struct {
 	Symbol     string `gorm:"column:symbol;primaryKey;uniqueIndex:idx_coin_score,priority:2" json:"symbol"`
 	ModelID    string `gorm:"column:model_id" json:"model_id"`
 	Interval   string `gorm:"column:interval" json:"interval"`
-	Payload    string `gorm:"column:payload" json:"payload"`
-	AnalyzedAt int64  `gorm:"column:analyzed_at" json:"analyzed_at"`
+	Payload       string  `gorm:"column:payload" json:"payload"`
+	AnalyzedAt    int64   `gorm:"column:analyzed_at" json:"analyzed_at"`
+	ConfigVersion string  `gorm:"column:config_version" json:"config_version"`
+	MinVolume     float64 `gorm:"column:min_volume" json:"min_volume"`
 }
 
 func (CopyTradeCoinScore) TableName() string { return "copytrade_coin_scores" }
