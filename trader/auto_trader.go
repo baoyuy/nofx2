@@ -585,6 +585,15 @@ func (at *AutoTrader) Run() error {
 	// Start drawdown monitoring
 	at.startDrawdownMonitor()
 
+	// Paper accounts have no order-sync loop, so local OPEN rows were never
+	// reconciled against the account: a position the venue closed without a
+	// matching local close (an emergency close after a failed post-fill check)
+	// stayed OPEN on the dashboard for good.
+	if at.exchange == binance.PaperExchangeType {
+		at.startPaperReconcile(at.stopMonitorCh)
+		at.logInfof("🔄 Paper position reconcile enabled (every %v)", paperReconcileInterval)
+	}
+
 	// Start Lighter order sync if using Lighter exchange
 	if at.exchange == "lighter" {
 		if lighterTrader, ok := at.trader.(*lighter.LighterTraderV2); ok && at.store != nil {
