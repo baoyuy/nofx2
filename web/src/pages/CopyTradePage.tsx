@@ -12,6 +12,7 @@ import { DiscoverTab } from '../components/copytrade/DiscoverTab'
 import { FollowingTab } from '../components/copytrade/FollowingTab'
 import { FeedTab } from '../components/copytrade/FeedTab'
 import { CoinsTab } from '../components/copytrade/CoinsTab'
+import { DirectionShortlistPanel } from '../components/copytrade/DirectionShortlistPanel'
 import { CoinPoolPanel } from '../components/copytrade/CoinPoolPanel'
 import { PaperTab } from '../components/copytrade/PaperTab'
 import { ago, staleness } from '../components/copytrade/format'
@@ -344,7 +345,8 @@ export function CopyTradePage() {
           role="tabpanel"
           aria-labelledby="copytrade-tab-coins"
         >
-          <CoinPoolPanel language={language} />
+          <DirectionShortlistPanel language={language} onSelect={changeCoin} />
+          <details className="mb-3"><summary className="cursor-pointer text-sm text-nofx-text-muted">{tr(language, '原 AI 交易币池', 'Existing AI trading pool')}</summary><CoinPoolPanel language={language} /></details>
           <CoinsTab language={language} selected={coin} onSelect={changeCoin} />
         </div>
       ) : null}
