@@ -60,6 +60,13 @@ func (at *AutoTrader) startDrawdownMonitor() {
 // protection never adds a second market feed or a faster polling loop.
 func (at *AutoTrader) checkPositionDrawdown() {
 	snapshotStarted := time.Now().UnixMilli()
+	if !at.usesSignalManagedExit() {
+		if balance, e := at.trader.GetBalance(); e == nil {
+			if _, e = at.observeAccountRisk(extractInitialBalance(balance)); e != nil {
+				at.logWarnf("Account risk monitor: %v", e)
+			}
+		}
+	}
 	positions, err := at.trader.GetPositions()
 	if err != nil {
 		logger.Infof("❌ Drawdown monitoring: failed to get positions: %v", err)

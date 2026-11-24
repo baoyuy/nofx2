@@ -55,6 +55,14 @@ func (e *StrategyEngine) BuildSystemPrompt(accountEquity float64, variant string
 		return e.buildVergexSystemPrompt(accountEquity, variant, lang, zh, singleSymbol, primarySymbol, rules)
 	}
 
+	sb.WriteString(`EXECUTION CONTRACT (hard constraints override editable rules):
+Review existing positions before considering new exposure. Close a position when its thesis is invalidated; do not wait for a new entry signal to manage it. Never widen a stop or add to a losing position to rescue it.
+Supported actions only: open_long, open_short, close_long, close_short, hold, wait. There is no partial-close or modify-stop action. Programmatic protection runs independently; do not claim to have moved a stop.
+Confidence is an evidence score, not a calibrated win probability. If evidence is stale, contradictory, or insufficient, wait. Pool membership permits analysis, not mandatory entry. Respect the configured pool direction and asset universe.
+Sizing, confidence threshold, leverage, margin, stop-risk budgets and reward/risk AFTER round-trip costs are checked by code against execution prices. Never bypass a rejection. R is initial fill-to-stop price risk, not leveraged ROI. Distinguish underlying price return from margin ROI.
+
+`)
+	fmt.Fprintf(&sb, "Entry risk budgets: trade %.2f%%, portfolio %.2f%%, UTC daily loss pause %.2f%%, peak equity drawdown pause %.2f%%, round-trip cost budget %.3f%%. Zero saved budgets use backend defaults 1/4/3/10/0.15 respectively.\nPool policy: direction=%s, asset_scope=%s; empty values mean follow and crypto.\n\n", riskControl.MaxTradeRiskPct, riskControl.MaxPortfolioRiskPct, riskControl.MaxDailyLossPct, riskControl.MaxAccountDrawdownPct, riskControl.TradingCostPct, e.config.CoinSource.PoolDirectionMode, e.config.CoinSource.AssetScope)
 	// 0. Data Dictionary & Schema (ensure AI understands all fields)
 	sb.WriteString(GetSchemaPrompt(lang))
 	sb.WriteString("\n\n")
@@ -572,11 +580,11 @@ func writeHardConstraints(sb *strings.Builder, accountEquity float64, riskContro
 	if zh {
 		sb.WriteString(fmt.Sprintf("- Max Margin Usage: ≤%.0f%%\n", riskControl.MaxMarginUsage*100))
 		sb.WriteString(fmt.Sprintf("- Min Position Size: ≥%.0f USDT\n\n", riskControl.MinPositionSize))
-		sb.WriteString("## AI GUIDED (recommended):\n")
+		sb.WriteString("## EXECUTION CHECKED:\n")
 	} else {
 		sb.WriteString(fmt.Sprintf("- Max Margin Usage: ≤%.0f%%\n", riskControl.MaxMarginUsage*100))
 		sb.WriteString(fmt.Sprintf("- Min Position Size: ≥%.0f USDT\n\n", riskControl.MinPositionSize))
-		sb.WriteString("## AI GUIDED (recommended):\n")
+		sb.WriteString("## EXECUTION CHECKED:\n")
 	}
 
 	if singleSymbol {
@@ -597,14 +605,14 @@ func writeHardConstraints(sb *strings.Builder, accountEquity float64, riskContro
 		}
 	}
 	if zh {
-		sb.WriteString(fmt.Sprintf("- Risk-Reward Ratio: ≥1:%.1f (take_profit / stop_loss)\n", riskControl.MinRiskRewardRatio))
+		sb.WriteString(fmt.Sprintf("- Risk-Reward Ratio: ≥1:%.1f (net target distance / stop distance including round-trip costs)\n", riskControl.MinRiskRewardRatio))
 		sb.WriteString(fmt.Sprintf("- Min Confidence: ≥%d to open position\n\n", riskControl.MinConfidence))
 	} else if riskControl.MinStopATR > 0 {
-		sb.WriteString(fmt.Sprintf("- Risk-Reward Ratio: ≥1:%.1f (take_profit / stop_loss)\n", riskControl.MinRiskRewardRatio))
+		sb.WriteString(fmt.Sprintf("- Risk-Reward Ratio: ≥1:%.1f (net target distance / stop distance including round-trip costs)\n", riskControl.MinRiskRewardRatio))
 		sb.WriteString(fmt.Sprintf("- Stop Distance: stop_loss at least %.1f × ATR14 (primary timeframe) away from the current price; closer stops are rejected by the program\n", riskControl.MinStopATR))
 		sb.WriteString(fmt.Sprintf("- Min Confidence: ≥%d to open position\n\n", riskControl.MinConfidence))
 	} else {
-		sb.WriteString(fmt.Sprintf("- Risk-Reward Ratio: ≥1:%.1f (take_profit / stop_loss)\n", riskControl.MinRiskRewardRatio))
+		sb.WriteString(fmt.Sprintf("- Risk-Reward Ratio: ≥1:%.1f (net target distance / stop distance including round-trip costs)\n", riskControl.MinRiskRewardRatio))
 		sb.WriteString(fmt.Sprintf("- Min Confidence: ≥%d to open position\n\n", riskControl.MinConfidence))
 	}
 
@@ -654,6 +662,7 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, btcEthPosValueRatio f
 		sb.WriteString("**Must use XML tags <reasoning> and <decision> to separate a concise analysis from the decision JSON, avoiding parsing errors**\n\n")
 	}
 	sb.WriteString("## Format Requirements\n\n")
+	sb.WriteString("Keep the analysis under 120 words. Return one decision per held position and actionable candidate only; for other candidates use one ALL/wait entry with a brief reason. Do not repeat market data or calculations in prose.\n\n")
 	sb.WriteString("<reasoning>\n")
 	if zh {
 		sb.WriteString("Concise analysis of positions and candidates (key reasons only)\n")
@@ -693,7 +702,7 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, btcEthPosValueRatio f
 	if zh {
 		sb.WriteString("## Field Description\n\n")
 		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
-		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 (opening recommended ≥ %d)\n", riskControl.MinConfidence))
+		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 (opening requires ≥ %d)\n", riskControl.MinConfidence))
 		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
 		sb.WriteString("- **IMPORTANT**: all numeric values must be calculated numbers, NOT formulas/expressions (e.g. use `27.76`, not `3000 * 0.01`)\n")
 		if singleSymbol {
@@ -703,7 +712,7 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, btcEthPosValueRatio f
 	} else {
 		sb.WriteString("## Field Description\n\n")
 		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
-		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 (opening recommended ≥ %d)\n", riskControl.MinConfidence))
+		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 (opening requires ≥ %d)\n", riskControl.MinConfidence))
 		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
 		sb.WriteString("- **IMPORTANT**: all numeric values must be calculated numbers, NOT formulas/expressions (e.g. use `27.76`, not `3000 * 0.01`)\n")
 		if singleSymbol {
@@ -930,6 +939,9 @@ func (e *StrategyEngine) BuildUserPrompt(ctx *Context) string {
 
 		sourceTags := e.formatCoinSourceTag(coin.Sources)
 		sb.WriteString(fmt.Sprintf("### %d. %s%s\n\n", displayedCount, coin.Symbol, sourceTags))
+		if reason := ctx.OpeningBlocks[coin.Symbol]; reason != "" {
+			sb.WriteString(fmt.Sprintf("ENTRY BLOCKED this cycle: %s. Return wait; existing position exits remain allowed.\n", reason))
+		}
 		sb.WriteString(e.formatMarketData(marketData))
 
 		if ctx.QuantDataMap != nil {
@@ -1213,7 +1225,8 @@ func (e *StrategyEngine) formatEventContext(items []EventContextItem) string {
 	return sb.String()
 }
 
-func (e *StrategyEngine) formatPositionInfo(index int, pos PositionInfo, ctx *Context) string {	var sb strings.Builder
+func (e *StrategyEngine) formatPositionInfo(index int, pos PositionInfo, ctx *Context) string {
+	var sb strings.Builder
 
 	holdingDuration := ""
 	if pos.UpdateTime > 0 {
@@ -1237,6 +1250,13 @@ func (e *StrategyEngine) formatPositionInfo(index int, pos PositionInfo, ctx *Co
 		index, pos.Symbol, strings.ToUpper(pos.Side),
 		pos.EntryPrice, pos.MarkPrice, pos.Quantity, positionValue, pos.UnrealizedPnLPct, pos.UnrealizedPnL, pos.PeakPnLPct,
 		pos.Leverage, pos.MarginUsed, pos.LiquidationPrice, holdingDuration))
+
+	sb.WriteString("PnL% and Peak PnL% both use entry-cost margin; price-move protection thresholds are unleveraged.\n")
+	if pos.InitialRiskPct > 0 {
+		sb.WriteString(fmt.Sprintf("Initial stop risk %.3f%% price | Current %.2fR | Peak %.2fR | Protection stop %.6f | Breakeven armed %t | Trailing armed %t\n", pos.InitialRiskPct, pos.CurrentR, pos.PeakR, pos.ProtectionStop, pos.BreakevenArmed, pos.TrailingArmed))
+	} else {
+		sb.WriteString("Initial R unavailable: do not infer it from current or tightened stops.\n")
+	}
 
 	if marketData, ok := ctx.MarketDataMap[pos.Symbol]; ok {
 		sb.WriteString(e.formatMarketData(marketData))
@@ -1476,8 +1496,20 @@ func (e *StrategyEngine) formatMarketData(data *market.Data) string {
 }
 
 func (e *StrategyEngine) formatTimeframeSeriesData(sb *strings.Builder, data *market.TimeframeSeriesData, indicators store.IndicatorConfig) {
+	// Preserve every configured OHLCV bar. Derived indicators are calculated
+	// from the full history; only their displayed tail is bounded to avoid
+	// repeating the same history through many parallel indicator arrays.
+	if indicators.EnableEMA || indicators.EnableMACD || indicators.EnableRSI || indicators.EnableBOLL {
+		sb.WriteString("Indicator series: latest up to 8 values, calculated from full candle history.\n")
+	}
+	series := func(values []float64) string {
+		if len(values) > 8 {
+			values = values[len(values)-8:]
+		}
+		return formatFloatSlice(values)
+	}
 	if len(data.Klines) > 0 {
-		sb.WriteString("Time(UTC)      Open      High      Low       Close     Volume\n")
+		sb.WriteString("Time(UTC),Open,High,Low,Close,Volume\n")
 		for i, k := range data.Klines {
 			t := time.Unix(k.Time/1000, 0).UTC()
 			timeStr := t.Format("01-02 15:04")
@@ -1485,7 +1517,7 @@ func (e *StrategyEngine) formatTimeframeSeriesData(sb *strings.Builder, data *ma
 			if i == len(data.Klines)-1 {
 				marker = "  <- current"
 			}
-			sb.WriteString(fmt.Sprintf("%-14s %-9.4f %-9.4f %-9.4f %-9.4f %-12.2f%s\n",
+			sb.WriteString(fmt.Sprintf("%s,%.4f,%.4f,%.4f,%.4f,%.2f%s\n",
 				timeStr, k.Open, k.High, k.Low, k.Close, k.Volume, marker))
 		}
 		sb.WriteString("\n")
@@ -1498,23 +1530,23 @@ func (e *StrategyEngine) formatTimeframeSeriesData(sb *strings.Builder, data *ma
 
 	if indicators.EnableEMA {
 		if len(data.EMA20Values) > 0 {
-			sb.WriteString(fmt.Sprintf("EMA20: %s\n", formatFloatSlice(data.EMA20Values)))
+			sb.WriteString(fmt.Sprintf("EMA20: %s\n", series(data.EMA20Values)))
 		}
 		if len(data.EMA50Values) > 0 {
-			sb.WriteString(fmt.Sprintf("EMA50: %s\n", formatFloatSlice(data.EMA50Values)))
+			sb.WriteString(fmt.Sprintf("EMA50: %s\n", series(data.EMA50Values)))
 		}
 	}
 
 	if indicators.EnableMACD && len(data.MACDValues) > 0 {
-		sb.WriteString(fmt.Sprintf("MACD: %s\n", formatFloatSlice(data.MACDValues)))
+		sb.WriteString(fmt.Sprintf("MACD: %s\n", series(data.MACDValues)))
 	}
 
 	if indicators.EnableRSI {
 		if len(data.RSI7Values) > 0 {
-			sb.WriteString(fmt.Sprintf("RSI7: %s\n", formatFloatSlice(data.RSI7Values)))
+			sb.WriteString(fmt.Sprintf("RSI7: %s\n", series(data.RSI7Values)))
 		}
 		if len(data.RSI14Values) > 0 {
-			sb.WriteString(fmt.Sprintf("RSI14: %s\n", formatFloatSlice(data.RSI14Values)))
+			sb.WriteString(fmt.Sprintf("RSI14: %s\n", series(data.RSI14Values)))
 		}
 	}
 
@@ -1523,9 +1555,9 @@ func (e *StrategyEngine) formatTimeframeSeriesData(sb *strings.Builder, data *ma
 	}
 
 	if indicators.EnableBOLL && len(data.BOLLUpper) > 0 {
-		sb.WriteString(fmt.Sprintf("BOLL Upper: %s\n", formatFloatSlice(data.BOLLUpper)))
-		sb.WriteString(fmt.Sprintf("BOLL Middle: %s\n", formatFloatSlice(data.BOLLMiddle)))
-		sb.WriteString(fmt.Sprintf("BOLL Lower: %s\n", formatFloatSlice(data.BOLLLower)))
+		sb.WriteString(fmt.Sprintf("BOLL Upper: %s\n", series(data.BOLLUpper)))
+		sb.WriteString(fmt.Sprintf("BOLL Middle: %s\n", series(data.BOLLMiddle)))
+		sb.WriteString(fmt.Sprintf("BOLL Lower: %s\n", series(data.BOLLLower)))
 	}
 
 	sb.WriteString("\n")

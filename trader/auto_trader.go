@@ -205,6 +205,7 @@ type AutoTrader struct {
 	claw402WalletAddr     string             // Claw402 wallet address (derived from private key at start)
 	consecutiveAIFailures int                // Consecutive AI call failures
 	runtimeHealthMu       sync.RWMutex       // Guards safe mode + AI wallet health (loop writes, API reads)
+	accountRiskStatus     map[string]interface{}
 	tradingBlocked        bool
 	tradingError          string
 	tradingCheckedAt      time.Time
@@ -293,6 +294,11 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 	}
 	if mcpClient == nil {
 		mcpClient = mcp.New()
+	}
+	// Real-time decisions must not inherit V4's default high
+	// reasoning. Risk validation and protection remain deterministic.
+	if base, ok := mcpClient.(mcp.ClientEmbedder); ok {
+		base.BaseClient().Cfg.ReasoningEffort = "low"
 	}
 
 	// Payment providers (claw402) ignore customURL

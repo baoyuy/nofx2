@@ -791,6 +791,13 @@ func (s *Server) handleStrategyTestRun(c *gin.Context) {
 
 // runRealAITest Execute real AI test call
 func (s *Server) runRealAITest(userID, modelID, systemPrompt, userPrompt string, opts ...mcp.ClientOption) (string, error) {
+	return s.runRealAITestContext(context.Background(), userID, modelID, systemPrompt, userPrompt, opts...)
+}
+
+func (s *Server) runRealAITestContext(ctx context.Context, userID, modelID, systemPrompt, userPrompt string, opts ...mcp.ClientOption) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	// Get AI model configuration
 	model, err := s.store.AIModel().Get(userID, modelID)
 	if err != nil {
@@ -823,7 +830,13 @@ func (s *Server) runRealAITest(userID, modelID, systemPrompt, userPrompt string,
 	}
 
 	// Call AI API
-	response, err := aiClient.CallWithMessages(systemPrompt, userPrompt)
+	var response string
+	if provider == "claw402" {
+		// Preserve the provider's signed payment call path.
+		response, err = aiClient.CallWithMessages(systemPrompt, userPrompt)
+	} else {
+		response, err = aiClient.CallWithRequest(&mcp.Request{Ctx: ctx, Messages: []mcp.Message{mcp.NewSystemMessage(systemPrompt), mcp.NewUserMessage(userPrompt)}})
+	}
 	if err != nil {
 		return "", fmt.Errorf("AI API call failed: %w", err)
 	}

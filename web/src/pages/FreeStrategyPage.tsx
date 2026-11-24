@@ -1437,7 +1437,7 @@ export function FreeStrategyPage() {
               <div className="grid gap-4 md:grid-cols-2">
                 <Field
                   language={language}
-                  enforced="ai"
+                  enforced="code"
                   label={text(
                     language,
                     'BTC / ETH 最大杠杆',
@@ -1458,7 +1458,7 @@ export function FreeStrategyPage() {
                 </Field>
                 <Field
                   language={language}
-                  enforced="ai"
+                  enforced="code"
                   label={text(
                     language,
                     '山寨币最大杠杆',
@@ -1608,9 +1608,36 @@ export function FreeStrategyPage() {
                     suffix="M USD"
                   />
                 </Field>
+                {([
+                  ['maxTradeRiskPct', '单笔止损风险 / 权益', 'Trade stop risk / equity', 1, 10],
+                  ['maxPortfolioRiskPct', '组合止损风险 / 权益', 'Portfolio stop risk / equity', 4, 30],
+                  ['maxDailyLossPct', 'UTC 日亏损暂停开仓', 'UTC daily loss entry pause', 3, 30],
+                  ['maxAccountDrawdownPct', '峰值回撤暂停开仓', 'Peak drawdown entry pause', 10, 80],
+                  ['tradingCostPct', '往返手续费和滑点预算', 'Round-trip cost budget', 0.15, 5],
+                ] as const).map(([key, zhLabel, enLabel, fallback, max]) => (
+                  <Field key={key} language={language} enforced="code" label={text(language, zhLabel, enLabel)}
+                    hint={text(language, '百分比。达到亏损/回撤上限后暂停开仓。', 'Percent. Loss/drawdown limits pause entries.')}>
+                    <NumberInput value={form[key] ?? fallback} range={{min: 0.01, max}} step={0.1} suffix="%" onChange={(value) => patchForm({[key]: value})} />
+                  </Field>
+                ))}
+                {form.coinSource === 'pool' && <>
+                  <label>{text(language, '币池方向权限', 'Pool direction permission')}
+                    <select value={form.poolDirectionMode || 'follow'} onChange={(e) => patchForm({poolDirectionMode: e.target.value as 'follow' | 'free'})}>
+                      <option value="follow">Follow</option><option value="free">Free</option>
+                    </select>
+                  </label>
+                  <label>{text(language, '资产范围', 'Asset universe')}
+                    <select value={form.assetScope || 'crypto'} onChange={(e) => patchForm({assetScope: e.target.value as 'crypto' | 'tradfi' | 'all'})}>
+                      <option value="crypto">Crypto</option><option value="tradfi">TradFi</option><option value="all">All</option>
+                    </select>
+                  </label>
+                  <label>{text(language, '允许币种（逗号分隔，空为全部）', 'Allowed symbols (comma separated; empty = all)')}
+                    <input value={form.allowedSymbols || ''} onChange={(e) => patchForm({allowedSymbols: e.target.value})} />
+                  </label>
+                </>}
                 <Field
                   language={language}
-                  enforced="ai"
+                  enforced="code"
                   label={text(language, 'AI 最低把握度', 'Min AI confidence')}
                   hint={text(
                     language,
@@ -1627,11 +1654,11 @@ export function FreeStrategyPage() {
                 </Field>
                 <Field
                   language={language}
-                  enforced="ai"
+                  enforced="code"
                   label={text(language, '最低盈亏比', 'Min reward / risk')}
                   hint={text(
                     language,
-                    '止盈距离 ÷ 止损距离至少多少。2 表示赚 2 份才愿意冒 1 份的风险。',
+                    '扣除往返成本后的收益 ÷ 含成本止损风险；按报价和成交价校验。',
                     'Target distance ÷ stop distance. 2 means risking 1 to make at least 2.'
                   )}
                 >

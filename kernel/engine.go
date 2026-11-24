@@ -27,6 +27,12 @@ import (
 
 // PositionInfo position information
 type PositionInfo struct {
+	InitialRiskPct   float64 `json:"initial_risk_pct,omitempty"`
+	CurrentR         float64 `json:"current_r,omitempty"`
+	PeakR            float64 `json:"peak_r,omitempty"`
+	ProtectionStop   float64 `json:"protection_stop,omitempty"`
+	BreakevenArmed   bool    `json:"breakeven_armed"`
+	TrailingArmed    bool    `json:"trailing_armed"`
 	Symbol           string  `json:"symbol"`
 	Side             string  `json:"side"` // "long" or "short"
 	EntryPrice       float64 `json:"entry_price"`
@@ -103,6 +109,7 @@ type Context struct {
 	Account            AccountInfo                        `json:"account"`
 	Positions          []PositionInfo                     `json:"positions"`
 	CandidateCoins     []CandidateCoin                    `json:"candidate_coins"`
+	OpeningBlocks      map[string]string                  `json:"-"` // Preflight restrictions, shown before requesting AI.
 	PromptVariant      string                             `json:"prompt_variant,omitempty"`
 	TradingStats       *TradingStats                      `json:"trading_stats,omitempty"`
 	RecentOrders       []RecentOrder                      `json:"recent_orders,omitempty"`
@@ -138,39 +145,39 @@ type Context struct {
 // Titles, summaries and implied probabilities come from public sources and are
 // explicitly unverified: they are context, not facts or trade instructions.
 type EventContextItem struct {
-	ID                string                 `json:"id"`
-	Title             string                 `json:"title"`
-	Source            string                 `json:"source"`
-	Kind              string                 `json:"kind"` // prediction | news | community
-	Publisher         string                 `json:"publisher,omitempty"`
-	Summary           string                 `json:"summary,omitempty"`
-	PublishedAt       time.Time              `json:"published_at"`
-	EndAt             *time.Time             `json:"end_at,omitempty"`
-	Markets           []EventContextMarket   `json:"markets,omitempty"`
-	SignificantChange bool                   `json:"significant_change,omitempty"`
-	EndingSoon        bool                   `json:"ending_soon,omitempty"`
+	ID                string               `json:"id"`
+	Title             string               `json:"title"`
+	Source            string               `json:"source"`
+	Kind              string               `json:"kind"` // prediction | news | community
+	Publisher         string               `json:"publisher,omitempty"`
+	Summary           string               `json:"summary,omitempty"`
+	PublishedAt       time.Time            `json:"published_at"`
+	EndAt             *time.Time           `json:"end_at,omitempty"`
+	Markets           []EventContextMarket `json:"markets,omitempty"`
+	SignificantChange bool                 `json:"significant_change,omitempty"`
+	EndingSoon        bool                 `json:"ending_soon,omitempty"`
 }
 
 // EventCard is a tagged information event (catalyst) shown to the trading AI.
 // It is unverified intelligence: what happened, which coin it hits, direction,
 // whether it beat expectations, importance, and whether it is a scheduled node.
 type EventCard struct {
-	Coin       string     `json:"coin"`
-	Type       string     `json:"type"`
-	Title      string     `json:"title"`
-	Summary    string     `json:"summary"`
-	Direction  string     `json:"direction"` // bullish | bearish | neutral
-	Surprise   string     `json:"surprise"`  // above | below | inline | unknown
-	Importance int        `json:"importance"`
-	IsNode     bool       `json:"is_node"`
-	NodeAt     *time.Time `json:"node_at,omitempty"`
-	ValidUntil *time.Time `json:"valid_until,omitempty"`
-	Source     string     `json:"source"`
-	EvidenceIDs []string  `json:"evidence_ids"`
-	Reason     string     `json:"reason"`
-	Horizon    string     `json:"horizon,omitempty"` // near|far|unknown
-	Global     bool       `json:"global,omitempty"`  // market-wide, not a single coin
-	TaggedAt   time.Time  `json:"tagged_at,omitempty"`
+	Coin        string     `json:"coin"`
+	Type        string     `json:"type"`
+	Title       string     `json:"title"`
+	Summary     string     `json:"summary"`
+	Direction   string     `json:"direction"` // bullish | bearish | neutral
+	Surprise    string     `json:"surprise"`  // above | below | inline | unknown
+	Importance  int        `json:"importance"`
+	IsNode      bool       `json:"is_node"`
+	NodeAt      *time.Time `json:"node_at,omitempty"`
+	ValidUntil  *time.Time `json:"valid_until,omitempty"`
+	Source      string     `json:"source"`
+	EvidenceIDs []string   `json:"evidence_ids"`
+	Reason      string     `json:"reason"`
+	Horizon     string     `json:"horizon,omitempty"` // near|far|unknown
+	Global      bool       `json:"global,omitempty"`  // market-wide, not a single coin
+	TaggedAt    time.Time  `json:"tagged_at,omitempty"`
 }
 
 // EventContextMarket is a bounded prediction-market view inside one event.
@@ -364,6 +371,29 @@ func (e *StrategyEngine) GetConfig() *store.StrategyConfig {
 // SNDKUSDT instead of Hyperliquid's xyz:SNDK.
 func (e *StrategyEngine) GetCandidateCoins() ([]CandidateCoin, error) {
 	coins, err := e.candidateCoins()
+	if err == nil && e.config.CoinSource.SourceType == "coin_pool" {
+		// Exclude symbols prohibited by the saved universe before fetching data
+		// and prompting. Holdings are fetched and managed independently.
+		source := e.config.CoinSource
+		filtered := make([]CandidateCoin, 0, len(coins))
+		for _, coin := range coins {
+			tradfi := market.IsTradFiAsset(coin.Symbol)
+			if ((source.AssetScope == "" || source.AssetScope == "crypto") && tradfi) || (source.AssetScope == "tradfi" && !tradfi) {
+				continue
+			}
+			allowed := len(source.AllowedSymbols) == 0
+			for _, sym := range source.AllowedSymbols {
+				if market.NormalizeFor(sym, e.exchange) == market.NormalizeFor(coin.Symbol, e.exchange) {
+					allowed = true
+					break
+				}
+			}
+			if allowed {
+				filtered = append(filtered, coin)
+			}
+		}
+		coins = filtered
+	}
 	if err != nil || e.exchange == "" {
 		return coins, err
 	}

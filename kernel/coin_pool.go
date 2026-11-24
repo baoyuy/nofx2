@@ -17,20 +17,16 @@ var CoinPoolResolver func(poolID string) ([]string, error)
 // CoinPoolDetailResolver returns the pool coins with their indicated direction.
 var CoinPoolDetailResolver func(poolID string) ([]store.CoinPoolCoin, error)
 
-// coinPoolCandidates reads the pool fresh each cycle, so edits on the coin
-// pool page (and every rebuild of the copy-trade AI pool) reach running
-// strategies. Only a missing/unreadable pool falls back to the snapshot saved
-// with the strategy. A pool that exists but is empty, or whose picks have all
-// expired, means "nothing to open now": no candidates (open positions are
-// still managed by the trader loop).
+// coinPoolCandidates reads live membership and expiry. Unavailable pools disable
+// new entries; existing positions remain managed independently.
 func coinPoolCandidates(source store.CoinSourceConfig) []CandidateCoin {
 	if CoinPoolResolver == nil || source.CoinPoolID == "" {
-		return toCandidates(source.StaticCoins, "coin_pool_snapshot")
+		return nil
 	}
 	live, err := CoinPoolResolver(source.CoinPoolID)
 	if err != nil {
-		logger.Warnf("⚠️  Coin pool %s unavailable (%v), using the saved snapshot", source.CoinPoolID, err)
-		return toCandidates(source.StaticCoins, "coin_pool_snapshot")
+		logger.Warnf("⚠️ Coin pool %s unavailable (%v); new entries disabled", source.CoinPoolID, err)
+		return nil
 	}
 	if len(live) == 0 {
 		logger.Infof("ℹ️  Coin pool %s is empty this cycle; no new candidates", source.CoinPoolID)
@@ -55,7 +51,8 @@ func coinPoolCandidates(source store.CoinSourceConfig) []CandidateCoin {
 			return toCandidatesDir(fresh, "coin_pool", dirs)
 		}
 	}
-	return toCandidatesDir(live, "coin_pool", dirs)
+	// Missing details cannot prove signal freshness.
+	return nil
 }
 
 func toCandidates(symbols []string, origin string) []CandidateCoin {

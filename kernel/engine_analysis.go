@@ -135,7 +135,7 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 	aiResponse, err := mcpClient.CallWithMessages(systemPrompt, userPrompt)
 	aiCallDuration := time.Since(aiCallStart)
 	if err != nil {
-		return nil, fmt.Errorf("AI API call failed: %w", err)
+		return &FullDecision{Timestamp: time.Now(), SystemPrompt: systemPrompt, UserPrompt: userPrompt, AIRequestDurationMs: aiCallDuration.Milliseconds()}, fmt.Errorf("AI API call failed: %w", err)
 	}
 
 	// 5. Parse AI response
@@ -150,6 +150,7 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 	)
 
 	if decision != nil {
+		refreshOpeningQuotes(decision.Decisions, ctx, engine.Exchange())
 		blockUnsafeOpenings(decision.Decisions, ctx, engine.Exchange(), time.Now())
 		blockAgainstPoolDirection(decision.Decisions, ctx)
 	}
@@ -483,20 +484,7 @@ func extractDecisions(response string) ([]Decision, error) {
 
 	jsonContent := strings.TrimSpace(reJSONArray.FindString(jsonPart))
 	if jsonContent == "" {
-		logger.Infof("⚠️  [SafeFallback] AI didn't output JSON decision, entering safe wait mode")
-
-		cotSummary := jsonPart
-		if len(cotSummary) > 240 {
-			cotSummary = cotSummary[:240] + "..."
-		}
-
-		fallbackDecision := Decision{
-			Symbol:    "ALL",
-			Action:    "wait",
-			Reasoning: fmt.Sprintf("Model didn't output structured JSON decision, entering safe wait; summary: %s", cotSummary),
-		}
-
-		return []Decision{fallbackDecision}, nil
+		return nil, fmt.Errorf("AI response contains no structured decision array")
 	}
 
 	jsonContent = compactArrayOpen(jsonContent)
@@ -578,4 +566,33 @@ func removeInvisibleRunes(s string) string {
 
 func compactArrayOpen(s string) string {
 	return reArrayOpenSpace.ReplaceAllString(strings.TrimSpace(s), "[{")
+}
+
+// Model latency must not turn a valid signal into a stale reference; refresh only
+// requested entries and leave held-position valuation snapshots untouched.
+func refreshOpeningQuotes(decisions []Decision, ctx *Context, exchange string) {
+	seen := map[string]bool{}
+	for _, d := range decisions {
+		if (d.Action != "open_long" && d.Action != "open_short") || seen[d.Symbol] {
+			continue
+		}
+		seen[d.Symbol] = true
+		key := d.Symbol
+		data := ctx.MarketDataMap[key]
+		if data == nil {
+			key = market.NormalizeFor(d.Symbol, exchange)
+			data = ctx.MarketDataMap[key]
+		}
+		if data == nil {
+			continue
+		}
+		copyData := *data
+		quote, err := fetchStrategyQuote(d.Symbol, exchange)
+		if err != nil {
+			copyData.SetQuote(nil)
+		} else {
+			copyData.SetQuote(quote)
+		}
+		ctx.MarketDataMap[key] = &copyData
+	}
 }

@@ -116,6 +116,7 @@ func (at *AutoTrader) GetStatus() map[string]interface{} {
 	safeMode, safeModeReason := at.safeModeState()
 	result["safe_mode"] = safeMode
 	at.runtimeHealthMu.RLock()
+	result["account_risk"] = at.accountRiskStatus
 	result["trading_blocked"] = at.tradingBlocked
 	result["trading_error"] = at.tradingError
 	if !at.tradingCheckedAt.IsZero() {
@@ -237,7 +238,34 @@ func (at *AutoTrader) GetPositions() ([]map[string]interface{}, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get positions: %w", err)
 	}
-	return FormatPositions(positions), nil
+	formatted := FormatPositions(positions)
+	if at.store == nil {
+		return formatted, nil
+	}
+	for i, pos := range positions {
+		peak, e := at.ObservePositionPeak(pos)
+		if e == nil {
+			formatted[i]["peak_pnl_pct"] = peak
+		}
+		if ps, e := at.store.ProfitState(); e == nil {
+			symbol, _ := pos["symbol"].(string)
+			side, _ := pos["side"].(string)
+			if state, e := ps.Get(at.id, symbol, side); e == nil && state != nil {
+				formatted[i]["protection_eligible"] = state.Eligible
+				formatted[i]["protection_stop"] = state.StopPrice
+				formatted[i]["breakeven_armed"] = state.BreakevenArmed
+				formatted[i]["trailing_armed"] = state.TrailingArmed
+				formatted[i]["initial_risk_pct"] = state.InitialRiskPct
+				if state.InitialRiskPct > 0 {
+					entry, _ := pos["entryPrice"].(float64)
+					mark, _ := pos["markPrice"].(float64)
+					formatted[i]["current_r"] = priceProfitPct(entry, mark, side) / state.InitialRiskPct
+					formatted[i]["peak_r"] = state.PeakPricePct / state.InitialRiskPct
+				}
+			}
+		}
+	}
+	return formatted, nil
 }
 
 // FormatPositions converts raw exchange positions (entryPrice, positionAmt,
@@ -266,7 +294,7 @@ func FormatPositions(positions []map[string]interface{}) []map[string]interface{
 		marginUsed := (quantity * markPrice) / float64(leverage)
 
 		// Calculate P&L percentage (based on margin)
-		pnlPct := calculatePnLPercentage(unrealizedPnl, marginUsed)
+		pnlPct := calculatePnLPercentage(unrealizedPnl, quantity*entryPrice/float64(leverage))
 
 		result = append(result, map[string]interface{}{
 			"symbol":             symbol,

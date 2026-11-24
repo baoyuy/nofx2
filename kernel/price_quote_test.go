@@ -1,6 +1,7 @@
 package kernel
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -52,5 +53,32 @@ func TestCandleFailureRetainsExistingPositionPrompt(t *testing.T) {
 	prompt := NewStrategyEngine(&cfg).BuildUserPrompt(ctx)
 	if !strings.Contains(prompt, "Entry 90.0000 Current 95.8700") || !strings.Contains(prompt, "candles unavailable") {
 		t.Fatalf("position disappeared without candles: %s", prompt)
+	}
+}
+
+func TestRefreshAfterModelLatencyPreservesIndicatorsAndCloseSnapshot(t *testing.T) {
+	old := fetchStrategyQuote
+	defer func() { fetchStrategyQuote = old }()
+	now := time.Now()
+	fetchStrategyQuote = func(string, string) (*market.Quote, error) {
+		return &market.Quote{Price: 102, Source: "test", AsOf: now, ObservedAt: now}, nil
+	}
+	original := &market.Data{CurrentPrice: 100, IndicatorPrice: 99, IndicatorAsOf: now, IndicatorTimeframe: "1m", Quote: &market.Quote{Price: 100, AsOf: now.Add(-time.Minute), ObservedAt: now.Add(-time.Minute)}}
+	closeOnly := &market.Data{CurrentPrice: 88}
+	ctx := &Context{MarketDataMap: map[string]*market.Data{"SOLUSDT": original, "ETHUSDT": closeOnly}}
+	decisions := []Decision{{Symbol: "SOLUSDT", Action: "open_long"}, {Symbol: "ETHUSDT", Action: "close_long"}}
+	refreshOpeningQuotes(decisions, ctx, "binance_paper")
+	blockUnsafeOpenings(decisions, ctx, "binance_paper", now)
+	if decisions[0].Action != "open_long" || ctx.MarketDataMap["SOLUSDT"].CurrentPrice != 102 {
+		t.Fatal("fresh entry blocked")
+	}
+	if original.CurrentPrice != 100 || ctx.MarketDataMap["SOLUSDT"].IndicatorPrice != 99 || ctx.MarketDataMap["ETHUSDT"] != closeOnly {
+		t.Fatal("refresh mutated analysis/exit snapshots")
+	}
+	fetchStrategyQuote = func(string, string) (*market.Quote, error) { return nil, fmt.Errorf("offline") }
+	refreshOpeningQuotes(decisions, ctx, "binance_paper")
+	blockUnsafeOpenings(decisions, ctx, "binance_paper", now)
+	if decisions[0].Action != "wait" || decisions[1].Action != "close_long" {
+		t.Fatal("failed quote did not fail closed")
 	}
 }

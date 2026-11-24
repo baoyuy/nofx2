@@ -13,9 +13,11 @@ import (
 
 // Store unified data storage interface
 type Store struct {
-	gdb    *gorm.DB  // GORM database connection
-	db     *sql.DB   // Legacy sql.DB for backward compatibility
-	driver *DBDriver // Database driver for abstraction (legacy)
+	accountRiskInit    sync.Once
+	accountRiskInitErr error
+	gdb                *gorm.DB  // GORM database connection
+	db                 *sql.DB   // Legacy sql.DB for backward compatibility
+	driver             *DBDriver // Database driver for abstraction (legacy)
 
 	// Sub-stores (lazy initialization)
 	user               *UserStore

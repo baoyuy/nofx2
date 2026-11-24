@@ -25,3 +25,14 @@ func TestExtractInitialBalanceSupportsLegacyExchangeFields(t *testing.T) {
 		t.Fatalf("expected legacy wallet balance fallback, got %.6f", got)
 	}
 }
+
+func TestPositionROIUsesEntryCostWithoutChangingCurrentMargin(t *testing.T) {
+	positions := []map[string]interface{}{{"symbol": "SOLUSDT", "side": "long", "entryPrice": 100.0, "markPrice": 110.0, "positionAmt": 2.0, "leverage": 10.0, "unRealizedProfit": 20.0}}
+	row := FormatPositions(positions)[0]
+	if row["unrealized_pnl_pct"] != 100.0 {
+		t.Fatalf("ROI should be 100%%: %v", row)
+	}
+	if row["margin_used"] != 22.0 {
+		t.Fatalf("current margin must remain 22: %v", row)
+	}
+}

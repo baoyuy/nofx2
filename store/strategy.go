@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -88,6 +89,35 @@ func isLegacyAutopilotPositionRatio(value float64) bool {
 // ClampLimits enforces product-level limits on strategy config to prevent token overflow.
 func (c *StrategyConfig) ClampLimits() {
 	c.NormalizeProductSchema()
+	positive := func(v, fallback, upper float64) float64 {
+		if v == 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+			return fallback
+		}
+		return math.Max(0.01, math.Min(upper, v))
+	}
+	r := &c.RiskControl
+	for _, v := range []*float64{&r.MinStopATR, &r.MaxStopATR, &r.MinRiskRewardRatio, &r.MaxMarginUsage} {
+		if math.IsNaN(*v) || math.IsInf(*v, 0) {
+			*v = 0
+		}
+	}
+
+	r.MaxTradeRiskPct = positive(r.MaxTradeRiskPct, 1, 10)
+	r.MaxPortfolioRiskPct = positive(r.MaxPortfolioRiskPct, 4, 30)
+	r.MaxDailyLossPct = positive(r.MaxDailyLossPct, 3, 30)
+	r.MaxAccountDrawdownPct = positive(r.MaxAccountDrawdownPct, 10, 80)
+	r.TradingCostPct = positive(r.TradingCostPct, 0.15, 5)
+	if c.CoinSource.PoolDirectionMode != "free" {
+		c.CoinSource.PoolDirectionMode = "follow"
+	}
+	switch c.CoinSource.AssetScope {
+	case "all", "tradfi", "crypto":
+	default:
+		c.CoinSource.AssetScope = "crypto"
+	}
+	if len(c.CoinSource.AllowedSymbols) > MaxCandidateCoins {
+		c.CoinSource.AllowedSymbols = c.CoinSource.AllowedSymbols[:MaxCandidateCoins]
+	}
 
 	// Clamp coin source limits
 	if c.CoinSource.AI500Limit > MaxCandidateCoins {
@@ -937,6 +967,11 @@ type PromptSectionsConfig struct {
 
 // CoinSourceConfig coin source configuration
 type CoinSourceConfig struct {
+	// Dynamic pools are an entry universe, never an exit instruction.
+	PoolDirectionMode string   `json:"pool_direction_mode,omitempty"` // follow(default), free
+	AssetScope        string   `json:"asset_scope,omitempty"`         // crypto(default), tradfi, all
+	AllowedSymbols    []string `json:"allowed_symbols,omitempty"`
+
 	// source type shown in the product editor: "static" | "coin_pool" | "ai500" | "oi_top" | "oi_low"
 	SourceType string `json:"source_type"`
 	// saved coin pool traded when source_type = "coin_pool"; StaticCoins
@@ -1053,7 +1088,7 @@ type CoinSourceConfig struct {
 	EventSignalModelID string `json:"event_signal_model_id,omitempty"`
 	// EventSignalGate blocks opens that contradict the tagged stance. With
 	// EventSignalRequireBias, opens also require a clear (non-neutral) stance.
-	EventSignalGate bool `json:"event_signal_gate,omitempty"`
+	EventSignalGate        bool `json:"event_signal_gate,omitempty"`
 	EventSignalRequireBias bool `json:"event_signal_require_bias,omitempty"`
 	// EventSignalExitOnFlip closes a held position when the stance flips against
 	// it. Off by default: a stance is a weak, unverified signal.
@@ -1167,6 +1202,15 @@ type ExternalDataSource struct {
 
 // RiskControlConfig risk control configuration
 type RiskControlConfig struct {
+	// Account risk budgets are percentages of current equity. Zero selects
+	// conservative defaults in the ordinary-AI execution gate.
+	MaxTradeRiskPct       float64 `json:"max_trade_risk_pct,omitempty"`
+	MaxPortfolioRiskPct   float64 `json:"max_portfolio_risk_pct,omitempty"`
+	MaxDailyLossPct       float64 `json:"max_daily_loss_pct,omitempty"`
+	MaxAccountDrawdownPct float64 `json:"max_account_drawdown_pct,omitempty"`
+	// Estimated round-trip fees and slippage, as a percent of notional.
+	TradingCostPct float64 `json:"trading_cost_pct,omitempty"`
+
 	// Max number of coins held simultaneously (CODE ENFORCED)
 	MaxPositions int `json:"max_positions"`
 
@@ -1185,9 +1229,9 @@ type RiskControlConfig struct {
 	// Min position size in USDT (CODE ENFORCED)
 	MinPositionSize float64 `json:"min_position_size"`
 
-	// Min take_profit / stop_loss ratio (AI guided)
+	// Minimum net reward/risk after estimated costs (CODE ENFORCED).
 	MinRiskRewardRatio float64 `json:"min_risk_reward_ratio"`
-	// Min AI confidence to open position (AI guided)
+	// Minimum AI confidence to open a position (CODE ENFORCED).
 	MinConfidence int `json:"min_confidence"`
 
 	// Candidates whose open-interest value is below this many million USD are

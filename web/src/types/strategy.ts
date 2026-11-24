@@ -105,6 +105,9 @@ export interface GridStrategyConfig {
 }
 
 export interface CoinSourceConfig {
+  pool_direction_mode?: 'follow' | 'free'
+  asset_scope?: 'crypto' | 'tradfi' | 'all'
+  allowed_symbols?: string[]
   source_type:
     | 'static'
     | 'coin_pool'
@@ -272,6 +275,9 @@ export interface ExternalDataSource {
 
 // Percentages are underlying price moves, not leveraged ROI. Paper accounts only.
 export interface ProfitProtectionConfig {
+  mode?: 'price' | 'r'
+  breakeven_activation_r?: number
+  trailing_activation_r?: number
   enabled: boolean
   breakeven_activation_pct: number
   breakeven_lock_pct: number
@@ -280,6 +286,11 @@ export interface ProfitProtectionConfig {
 }
 
 export interface RiskControlConfig {
+  max_trade_risk_pct?: number
+  max_portfolio_risk_pct?: number
+  max_daily_loss_pct?: number
+  max_account_drawdown_pct?: number
+  trading_cost_pct?: number
   // Max number of coins held simultaneously (CODE ENFORCED)
   max_positions: number
 

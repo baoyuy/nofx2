@@ -781,6 +781,55 @@ func (e *StrategyEngine) OpenBlockReason(d Decision, ctx *Context) string {
 	if e == nil || ctx == nil || (d.Action != "open_long" && d.Action != "open_short") {
 		return ""
 	}
+	source := e.config.CoinSource
+	if source.SourceType == "coin_pool" {
+		member := false
+		for _, coin := range ctx.CandidateCoins {
+			if market.NormalizeFor(coin.Symbol, e.exchange) == market.NormalizeFor(d.Symbol, e.exchange) {
+				member = true
+				break
+			}
+		}
+		if !member {
+			return "symbol no longer in live coin pool"
+		}
+
+		tradfi := market.IsTradFiAsset(d.Symbol)
+		if (source.AssetScope == "" || source.AssetScope == "crypto") && tradfi {
+			return "coin pool asset scope: crypto only"
+		}
+		if source.AssetScope == "tradfi" && !tradfi {
+			return "coin pool asset scope: tradfi only"
+		}
+		if len(source.AllowedSymbols) > 0 {
+			allowed := false
+			for _, sym := range source.AllowedSymbols {
+				if market.NormalizeFor(sym, e.exchange) == market.NormalizeFor(d.Symbol, e.exchange) {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				return "symbol outside configured trading universe"
+			}
+		}
+		if source.PoolDirectionMode != "free" {
+			want := ""
+			for _, coin := range ctx.CandidateCoins {
+				if coin.Symbol == d.Symbol {
+					want = coin.Direction
+					break
+				}
+			}
+			if want != "long" && want != "short" {
+				return "coin pool direction missing"
+			}
+			if (want == "long" && d.Action != "open_long") || (want == "short" && d.Action != "open_short") {
+				return "opening conflicts with coin pool direction"
+			}
+		}
+	}
+
 	side := "long"
 	if d.Action == "open_short" {
 		side = "short"
@@ -830,6 +879,7 @@ func (e *StrategyEngine) OpenBlockReason(d Decision, ctx *Context) string {
 			}
 		}
 	}
+
 	return ""
 }
 
@@ -842,11 +892,6 @@ func (e *StrategyEngine) primaryATR(ctx *Context, symbol string) (float64, float
 	tf := e.config.Indicators.Klines.PrimaryTimeframe
 	if s := data.TimeframeData[tf]; s != nil && s.ATR14 > 0 {
 		return s.ATR14, data.CurrentPrice
-	}
-	for _, s := range data.TimeframeData {
-		if s != nil && s.ATR14 > 0 {
-			return s.ATR14, data.CurrentPrice
-		}
 	}
 	return 0, data.CurrentPrice
 }

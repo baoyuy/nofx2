@@ -15,6 +15,7 @@ export interface SystemStatus {
   strategy_type?: 'ai_trading' | 'grid_trading'
   grid_symbol?: string
   /** Runtime health: true when AI failed repeatedly and no new positions open. */
+  account_risk?: {entry_paused: boolean; reason: string; daily_loss_pct?: number; drawdown_pct?: number; checked_at?: string}
   safe_mode?: boolean
   safe_mode_reason?: string
   trading_blocked?: boolean
@@ -41,6 +42,14 @@ export interface AccountInfo {
 }
 
 export interface Position {
+  peak_pnl_pct?: number
+  initial_risk_pct?: number
+  current_r?: number
+  peak_r?: number
+  protection_stop?: number
+  protection_eligible?: boolean
+  breakeven_armed?: boolean
+  trailing_armed?: boolean
   symbol: string
   side: string
   entry_price: number

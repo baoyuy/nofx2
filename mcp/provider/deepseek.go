@@ -2,6 +2,7 @@ package provider
 
 import (
 	"net/http"
+	"strings"
 
 	"nofx/mcp"
 )
@@ -66,4 +67,26 @@ func (dsClient *DeepSeekClient) SetAPIKey(apiKey string, customURL string, custo
 
 func (dsClient *DeepSeekClient) SetAuthHeader(reqHeaders http.Header) {
 	dsClient.Client.SetAuthHeader(reqHeaders)
+}
+
+func (dsClient *DeepSeekClient) applyReasoningBudget(body map[string]any) map[string]any {
+	model := strings.ToLower(dsClient.Model)
+	if strings.HasPrefix(model, "deepseek-v4") || model == "deepseek-flash" {
+		switch dsClient.Cfg.ReasoningEffort {
+		case "none":
+			body["thinking"] = map[string]any{"type": "disabled"}
+		case "low", "high", "max":
+			body["thinking"] = map[string]any{"type": "enabled"}
+			body["reasoning_effort"] = dsClient.Cfg.ReasoningEffort
+		}
+	}
+	return body
+}
+
+func (dsClient *DeepSeekClient) BuildMCPRequestBody(systemPrompt, userPrompt string) map[string]any {
+	return dsClient.applyReasoningBudget(dsClient.Client.BuildMCPRequestBody(systemPrompt, userPrompt))
+}
+
+func (dsClient *DeepSeekClient) BuildRequestBodyFromRequest(req *mcp.Request) map[string]any {
+	return dsClient.applyReasoningBudget(dsClient.Client.BuildRequestBodyFromRequest(req))
 }

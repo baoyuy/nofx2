@@ -13,19 +13,21 @@ import (
 // One active row per slot; Lifecycle + EntryPrice validate every observation.
 // Config is captured ONLY by the confirmed-open hook, never by discovery.
 type PositionProfitState struct {
-	TraderID       string `gorm:"primaryKey;size:191"`
-	Symbol         string `gorm:"primaryKey;size:100"`
-	Side           string `gorm:"primaryKey;size:10"`
-	Lifecycle      string `gorm:"not null"`
-	EntryPrice     float64
-	PeakPricePct   float64
-	LegacyArmed    bool
-	Eligible       bool
-	BreakevenArmed bool
-	TrailingArmed  bool
-	StopPrice      float64
-	ConfigJSON     string
-	UpdatedAt      int64 `gorm:"autoUpdateTime:false"`
+	TraderID         string `gorm:"primaryKey;size:191"`
+	Symbol           string `gorm:"primaryKey;size:100"`
+	Side             string `gorm:"primaryKey;size:10"`
+	Lifecycle        string `gorm:"not null"`
+	EntryPrice       float64
+	InitialRiskPct   float64
+	InitialStopPrice float64
+	PeakPricePct     float64
+	LegacyArmed      bool
+	Eligible         bool
+	BreakevenArmed   bool
+	TrailingArmed    bool
+	StopPrice        float64
+	ConfigJSON       string
+	UpdatedAt        int64 `gorm:"autoUpdateTime:false"`
 }
 
 func (PositionProfitState) TableName() string { return "position_profit_states" }

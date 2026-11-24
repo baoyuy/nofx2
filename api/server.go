@@ -424,7 +424,12 @@ StrategyConfig fields:
   risk_control.max_margin_usage: 0.5-0.95 (default 0.9 = use up to 90% margin)
   risk_control.min_position_size: minimum USDT per trade (default 12)
   risk_control.min_oi_value_millions: skip candidates whose open-interest value is below this many million USD (default 15, 0 = off, max 1000)
-  risk_control.min_risk_reward_ratio: minimum profit/loss ratio required (default 3 = 3:1)
+  risk_control.min_risk_reward_ratio: minimum net reward/stop-risk after round-trip costs, checked at quote and fill
+  risk_control.max_trade_risk_pct / max_portfolio_risk_pct: stop-risk as percent of equity (defaults 1/4; maxima 10/30)
+  risk_control.max_daily_loss_pct / max_account_drawdown_pct: pause new exposure after UTC daily loss / persistent peak drawdown (defaults 3/10; maxima 30/80)
+  risk_control.trading_cost_pct: round-trip fees/slippage budget in percent (default 0.15)
+  risk_control.profit_protection: paper-only optional protection; enabled, mode "price"|"r", breakeven_activation_r (default 1), trailing_activation_r (default 2), trailing_giveback_pct (default 40). New positions only; R is immutable initial stop distance.
+  coin_source pool_direction_mode "follow"|"free" (default follow), asset_scope "crypto"|"tradfi"|"all" (default crypto), allowed_symbols optional allowlist. Unavailable/expired pools disable new entries.
   risk_control.min_confidence: minimum AI confidence to open position (default 75, range 60-90)
   prompt_sections.role_definition: describe the AI's trading persona and goal
   prompt_sections.trading_frequency: guidelines on how often to trade
@@ -731,8 +736,8 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 
 // Start Start server
 func (s *Server) Start() error {
-	addr := fmt.Sprintf(":%d", s.port)
-	logger.Infof("🌐 API server starting at http://localhost%s", addr)
+	addr := net.JoinHostPort(os.Getenv("API_SERVER_HOST"), fmt.Sprint(s.port))
+	logger.Infof("🌐 API server starting at http://%s", addr)
 	logger.Infof("📊 API Documentation:")
 	logger.Infof("  • GET  /api/health           - Health check")
 	logger.Infof("  • GET  /api/traders          - Public AI trader leaderboard top 50 (no auth required)")

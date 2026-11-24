@@ -164,6 +164,14 @@ export interface FreeForm {
   // Show followed lead traders' positions to the AI with any source.
   copyTradeContext?: boolean
   copyTradeFollow?: CopyFollow
+  poolDirectionMode?: 'follow' | 'free'
+  assetScope?: 'crypto' | 'tradfi' | 'all'
+  allowedSymbols?: string
+  maxTradeRiskPct?: number
+  maxPortfolioRiskPct?: number
+  maxDailyLossPct?: number
+  maxAccountDrawdownPct?: number
+  tradingCostPct?: number
   coinPoolID?: string
   hornInterval?: HornInterval
   // Snapshot of the pool's coins, sent with the strategy.
@@ -298,6 +306,9 @@ export function normalizeProfitProtection(
   const activation = positive(value?.breakeven_activation_pct, 2, 0.1, 100)
   return {
     enabled: value?.enabled === true,
+    mode: value?.mode === 'r' ? 'r' : 'price',
+    breakeven_activation_r: positive(value?.breakeven_activation_r, 1, 0.1, 20),
+    trailing_activation_r: positive(value?.trailing_activation_r, 2, 0.1, 50),
     breakeven_activation_pct: activation,
     breakeven_lock_pct: clampNumber(
       value?.breakeven_lock_pct,
@@ -522,6 +533,14 @@ export function formFromStrategy(strategy: Strategy): FreeForm {
     minStopATR: clampNumber(risk?.min_stop_atr, LIMITS.minStopATR, 0),
     maxStopATR: clampNumber(risk?.max_stop_atr, LIMITS.maxStopATR, 0),
     profitProtection: normalizeProfitProtection(risk?.profit_protection),
+    maxTradeRiskPct: risk?.max_trade_risk_pct || 1,
+    maxPortfolioRiskPct: risk?.max_portfolio_risk_pct || 4,
+    maxDailyLossPct: risk?.max_daily_loss_pct || 3,
+    maxAccountDrawdownPct: risk?.max_account_drawdown_pct || 10,
+    tradingCostPct: risk?.trading_cost_pct || 0.15,
+    poolDirectionMode: src?.pool_direction_mode === 'free' ? 'free' : 'follow',
+    assetScope: src?.asset_scope || 'crypto',
+    allowedSymbols: (src?.allowed_symbols || []).join(','),
     minRiskReward: clampNumber(
       risk?.min_risk_reward_ratio,
       LIMITS.riskReward,
@@ -597,6 +616,9 @@ export function configFromForm(
                       : pool
                         ? 'coin_pool'
                         : 'static',
+              pool_direction_mode: form.poolDirectionMode ?? ai?.coin_source.pool_direction_mode ?? 'follow',
+              asset_scope: form.assetScope ?? ai?.coin_source.asset_scope ?? 'crypto',
+              allowed_symbols: (form.allowedSymbols ?? (ai?.coin_source.allowed_symbols || []).join(',')).split(/[\s,]+/).filter(Boolean),
               coin_pool_id: pool ? form.coinPoolID : '',
               horn_interval: horn
                 ? toHornInterval(form.hornInterval)
@@ -696,6 +718,11 @@ export function configFromForm(
         enable_price_ranking: false,
       },
       risk_control: {
+        max_trade_risk_pct: form.maxTradeRiskPct ?? ai?.risk_control.max_trade_risk_pct ?? 1,
+        max_portfolio_risk_pct: form.maxPortfolioRiskPct ?? ai?.risk_control.max_portfolio_risk_pct ?? 4,
+        max_daily_loss_pct: form.maxDailyLossPct ?? ai?.risk_control.max_daily_loss_pct ?? 3,
+        max_account_drawdown_pct: form.maxAccountDrawdownPct ?? ai?.risk_control.max_account_drawdown_pct ?? 10,
+        trading_cost_pct: form.tradingCostPct ?? ai?.risk_control.trading_cost_pct ?? 0.15,
         max_positions: form.maxPositions,
         btc_eth_max_leverage: leverage,
         altcoin_max_leverage: form.altLeverage ?? leverage,

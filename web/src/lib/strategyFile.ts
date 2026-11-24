@@ -6,6 +6,7 @@ import {
   type HornInterval,
   clampNumber,
   indicatorOptions,
+  normalizeProfitProtection,
   parseCoins,
   ruleSections,
   timeframeOptions,
@@ -73,7 +74,10 @@ export function strategyToJsonc(form: FreeForm, language: 'zh' | 'en'): string {
     `    "source": ${s(form.coinSource || 'static')}, // ${t('"static" = 固定列表；"pool" = 每轮读取「币池」页保存的币池；"horn" = 每轮实时筛选布林喇叭口，取前 10 个', '"static" = fixed list; "pool" = read a saved coin pool each cycle; "horn" = re-screen the Bollinger horn every cycle, top 10')}`,
     `    "horn_interval": ${s(form.hornInterval || DEFAULT_HORN_INTERVAL)}, // ${t(`source 为 horn 时用哪个周期的布林线筛选。可选 ${hornIntervals.join(' ')}`, `Bollinger interval used when source is horn. Options ${hornIntervals.join(' ')}`)}`,
     `    "list": ${s(coins)}, // ${t(`币安 U 本位永续合约代码，最多 ${LIMITS.maxCoins} 个。source 为 pool 时这是保存时的快照`, `Binance USDT-M perpetual symbols, at most ${LIMITS.maxCoins}. For a pool this is the snapshot at save time`)}`,
-    `    "pool_id": ${s(form.coinSource === 'pool' ? form.coinPoolID || '' : '')} // ${t('币池 ID，只在本账户有效；在别的账户导入时会改用上面的 list', 'Coin pool ID, valid only in this account; elsewhere the list above is used')}`,
+    `    "pool_id": ${s(form.coinSource === 'pool' ? form.coinPoolID || '' : '')}, // ${t('币池 ID，只在本账户有效；在别的账户导入时会改用上面的 list', 'Coin pool ID, valid only in this account; elsewhere the list above is used')}`,
+    `    "direction_mode": ${s(form.poolDirectionMode || 'follow')},`,
+    `    "asset_scope": ${s(form.assetScope || 'crypto')},`,
+    `    "allowed_symbols": ${s(parseCoins(form.allowedSymbols || ''))}`,
     '  },',
     '',
     `  // ${t('—— AI 看哪些数据 ——', '—— What the AI looks at ——')}`,
@@ -93,16 +97,24 @@ export function strategyToJsonc(form: FreeForm, language: 'zh' | 'en'): string {
     '',
     `  // ${t('—— 风险控制 ——', '—— Risk control ——')}`,
     '  "risk": {',
-    `    "btc_eth_leverage": ${form.leverage}, // ${t(`BTC/ETH 最大杠杆，${LIMITS.leverage.min}-${LIMITS.leverage.max}（AI 参考）。10 倍时价格反向约 10% 就会爆仓`, `Max BTC/ETH leverage, ${LIMITS.leverage.min}-${LIMITS.leverage.max} (AI guided). At 10x a ~10% adverse move liquidates`)}`,
-    `    "altcoin_leverage": ${form.altLeverage ?? form.leverage}, // ${t('山寨币最大杠杆，范围同上（AI 参考）。山寨币波动大，通常应低于 BTC/ETH', 'Max altcoin leverage, same range (AI guided). Altcoins swing more, so usually lower than BTC/ETH')}`,
+    `    "btc_eth_leverage": ${form.leverage}, // ${t(`BTC/ETH 最大杠杆，${LIMITS.leverage.min}-${LIMITS.leverage.max}（代码强制）。10 倍时价格反向约 10% 就会爆仓`, `Max BTC/ETH leverage, ${LIMITS.leverage.min}-${LIMITS.leverage.max} (code enforced). At 10x a ~10% adverse move liquidates`)}`,
+    `    "altcoin_leverage": ${form.altLeverage ?? form.leverage}, // ${t('山寨币最大杠杆，范围同上（代码强制）。山寨币波动大，通常应低于 BTC/ETH', 'Max altcoin leverage, same range (code enforced). Altcoins swing more, so usually lower than BTC/ETH')}`,
     `    "btc_eth_max_position_ratio": ${form.btcEthPositionRatio ?? 5}, // ${t(`BTC/ETH 单笔仓位价值上限 = 账户权益 × 这个倍数，${LIMITS.positionRatio.min}-${LIMITS.positionRatio.max}（代码强制）`, `Max BTC/ETH position value = equity × this, ${LIMITS.positionRatio.min}-${LIMITS.positionRatio.max} (code enforced)`)}`,
     `    "altcoin_max_position_ratio": ${form.altPositionRatio ?? 5}, // ${t('山寨币单笔仓位价值上限倍数，范围同上（代码强制）', 'Max altcoin position value multiple, same range (code enforced)')}`,
     `    "max_positions": ${form.maxPositions}, // ${t(`最多同时持有几个仓位，${LIMITS.maxPositions.min}-${LIMITS.maxPositions.max}（代码强制）`, `Max open positions at once, ${LIMITS.maxPositions.min}-${LIMITS.maxPositions.max} (code enforced)`)}`,
     `    "max_margin_usage": ${form.marginUsage}, // ${t(`最多占用账户多少保证金，${LIMITS.marginUsage.min}-${LIMITS.marginUsage.max}，0.5 = 50%（代码强制）`, `Max share of the account used as margin, ${LIMITS.marginUsage.min}-${LIMITS.marginUsage.max}; 0.5 = 50% (code enforced)`)}`,
     `    "min_position_usdt": ${form.minPositionSize ?? 12}, // ${t(`单笔最小开仓金额（USDT），${LIMITS.minPositionSize.min}-${LIMITS.minPositionSize.max}（代码强制）。太小会低于交易所最小下单额`, `Min position size in USDT, ${LIMITS.minPositionSize.min}-${LIMITS.minPositionSize.max} (code enforced). Too small falls below the exchange minimum`)}`,
     `    "min_oi_value_millions": ${form.minOIValue ?? DEFAULT_MIN_OI_VALUE}, // ${t(`候选币最低持仓量（百万美元），${LIMITS.minOIValue.min}-${LIMITS.minOIValue.max}，0 = 不过滤（代码强制）。低于它的币不交给 AI`, `Min candidate open interest in million USD, ${LIMITS.minOIValue.min}-${LIMITS.minOIValue.max}, 0 = off (code enforced). Coins below it are not sent to the AI`)}`,
-    `    "min_confidence": ${form.minConfidence}, // ${t(`AI 把握度达到多少才开仓，${LIMITS.confidence.min}-${LIMITS.confidence.max}（AI 参考）。越高开仓越少`, `AI confidence needed to open, ${LIMITS.confidence.min}-${LIMITS.confidence.max} (AI guided). Higher means fewer trades`)}`,
-    `    "min_risk_reward": ${form.minRiskReward} // ${t(`最低盈亏比（止盈距离 / 止损距离），${LIMITS.riskReward.min}-${LIMITS.riskReward.max}（AI 参考）`, `Min reward/risk (target distance / stop distance), ${LIMITS.riskReward.min}-${LIMITS.riskReward.max} (AI guided)`)}`,
+    `    "min_confidence": ${form.minConfidence}, // ${t(`AI 把握度达到多少才开仓，${LIMITS.confidence.min}-${LIMITS.confidence.max}（代码强制）。越高开仓越少`, `AI confidence needed to open, ${LIMITS.confidence.min}-${LIMITS.confidence.max} (code enforced). Higher means fewer trades`)}`,
+    `    "min_risk_reward": ${form.minRiskReward}, // ${t(`最低盈亏比（止盈距离 / 止损距离），${LIMITS.riskReward.min}-${LIMITS.riskReward.max}（代码强制）`, `Min reward/risk (target distance / stop distance), ${LIMITS.riskReward.min}-${LIMITS.riskReward.max} (code enforced)`)}`,
+    `    "max_trade_risk_pct": ${form.maxTradeRiskPct ?? 1},`,
+    `    "max_portfolio_risk_pct": ${form.maxPortfolioRiskPct ?? 4},`,
+    `    "max_daily_loss_pct": ${form.maxDailyLossPct ?? 3},`,
+    `    "max_account_drawdown_pct": ${form.maxAccountDrawdownPct ?? 10},`,
+    `    "trading_cost_pct": ${form.tradingCostPct ?? 0.15},`,
+    `    "min_stop_atr": ${form.minStopATR || 0},`,
+    `    "max_stop_atr": ${form.maxStopATR || 0},`,
+    `    "profit_protection": ${s(normalizeProfitProtection(form.profitProtection))}`,
     '  },',
     '',
     `  // ${t('—— AI 交易规则（写进提示词，可用中文或英文；留空 = 使用内置默认规则）——', '—— AI trading rules (written into the prompt, any language; empty = built-in default) ——')}`,
@@ -258,6 +270,9 @@ export function parseStrategyFile(
       )
     )
   }
+  if (coins.direction_mode === 'follow' || coins.direction_mode === 'free') patch.poolDirectionMode = coins.direction_mode
+  if (['crypto', 'tradfi', 'all'].includes(String(coins.asset_scope))) patch.assetScope = coins.asset_scope as 'crypto' | 'tradfi' | 'all'
+  if (Array.isArray(coins.allowed_symbols)) patch.allowedSymbols = parseCoins(coins.allowed_symbols.map(String).join(',')).join(',')
   const pool = availablePools.find((p) => p.id === coins.pool_id)
   if (coins.source === 'horn') {
     patch.coinSource = 'horn'
@@ -421,6 +436,22 @@ export function parseStrategyFile(
       t('最低盈亏比', 'min risk/reward')
     )
   )
+
+  const riskFields = [
+    ['maxTradeRiskPct', 'max_trade_risk_pct', 10],
+    ['maxPortfolioRiskPct', 'max_portfolio_risk_pct', 30],
+    ['maxDailyLossPct', 'max_daily_loss_pct', 30],
+    ['maxAccountDrawdownPct', 'max_account_drawdown_pct', 80],
+    ['tradingCostPct', 'trading_cost_pct', 5],
+    ['minStopATR', 'min_stop_atr', 20],
+    ['maxStopATR', 'max_stop_atr', 20],
+  ] as const
+  for (const [field, key, max] of riskFields) {
+    const value = num(risk[key], {min: field.includes('ATR') ? 0 : 0.01, max}, key)
+    if (value !== undefined) patch[field] = value
+  }
+  if (risk.profit_protection && typeof risk.profit_protection === 'object')
+    patch.profitProtection = normalizeProfitProtection(risk.profit_protection as Parameters<typeof normalizeProfitProtection>[0])
 
   const rules = obj(root.rules)
   if (Object.keys(rules).length) {

@@ -402,6 +402,11 @@ export function TerminalDashboard({
         <span>{isZh ? '实时账户概览' : 'Live account overview'}</span>
       </div>
       <div className="tm-box nofx-dashboard-body" style={{ maxWidth: 1280, margin: '0 auto', border: 'none' }}>
+        {!on && status?.account_risk?.entry_paused && (
+          <div className="my-2 rounded border border-amber-500 p-3 text-amber-400">
+            {'Risk protection: entries paused'} — {status.account_risk.reason}
+          </div>
+        )}
         {!on && status?.trading_blocked && (
           <div role="alert" className="tm-mono" style={{ margin: '8px 14px 0', padding: '12px', fontSize: 12, border: '1px solid var(--tm-dn)', color: 'var(--tm-dn)', background: 'rgba(200,60,40,0.06)' }}>
             <strong>{isZh ? '交易已阻断' : 'Trading blocked'}</strong>

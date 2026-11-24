@@ -59,6 +59,14 @@ func (at *AutoTrader) promptRules() kernel.TraderPromptRules {
 
 // requestAIDecision is shared by the live AI loop and final-message tests.
 func (at *AutoTrader) requestAIDecision(ctx *kernel.Context) (*kernel.FullDecision, error) {
+	if ctx != nil {
+		ctx.OpeningBlocks = make(map[string]string)
+		for _, coin := range ctx.CandidateCoins {
+			if reason := at.tradeThrottleReason(kernel.Decision{Symbol: coin.Symbol, Action: "open_long"}, ctx); reason != "" {
+				ctx.OpeningBlocks[coin.Symbol] = reason
+			}
+		}
+	}
 	at.strategyMu.RLock()
 	engine := at.strategyEngine
 	at.strategyMu.RUnlock()

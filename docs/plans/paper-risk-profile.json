@@ -1,0 +1,118 @@
+{
+  "name": "本地验收-收益保护模拟策略",
+  "description": "仅供模拟账户验证风险保护，未启用交易员。",
+  "config": {
+    "strategy_type": "ai_trading",
+    "language": "en",
+    "ai_config": {
+      "coin_source": {
+        "source_type": "static",
+        "static_coins": [
+          "BTCUSDT",
+          "ETHUSDT",
+          "SOLUSDT"
+        ],
+        "use_ai500": false,
+        "ai500_limit": 3,
+        "use_oi_top": false,
+        "oi_top_limit": 3,
+        "use_oi_low": false,
+        "oi_low_limit": 3,
+        "use_hyper_all": false,
+        "use_hyper_main": false,
+        "hyper_main_limit": 30,
+        "hyper_rank_category": "all",
+        "vergex_limit": 10,
+        "vergex_market_type": "all",
+        "vergex_chain": "hyperliquid",
+        "pool_direction_mode": "follow",
+        "asset_scope": "crypto",
+        "allowed_symbols": [
+          "BTCUSDT",
+          "ETHUSDT",
+          "SOLUSDT"
+        ]
+      },
+      "indicators": {
+        "klines": {
+          "primary_timeframe": "15m",
+          "primary_count": 30,
+          "enable_multi_timeframe": false,
+          "selected_timeframes": [
+            "15m"
+          ]
+        },
+        "enable_raw_klines": true,
+        "enable_ema": false,
+        "enable_macd": false,
+        "enable_rsi": false,
+        "enable_atr": false,
+        "enable_boll": false,
+        "enable_volume": false,
+        "enable_oi": false,
+        "enable_funding_rate": false,
+        "ema_periods": [
+          20,
+          50
+        ],
+        "rsi_periods": [
+          7,
+          14
+        ],
+        "atr_periods": [
+          14
+        ],
+        "boll_periods": [
+          20
+        ],
+        "enable_quant_data": false,
+        "enable_quant_oi": false,
+        "enable_quant_netflow": false,
+        "enable_oi_ranking": false,
+        "oi_ranking_duration": "1h",
+        "oi_ranking_limit": 10,
+        "enable_netflow_ranking": false,
+        "netflow_ranking_duration": "1h",
+        "netflow_ranking_limit": 10,
+        "enable_price_ranking": false,
+        "price_ranking_duration": "1h,4h,24h",
+        "price_ranking_limit": 10,
+        "enable_event_context": false
+      },
+      "risk_control": {
+        "max_positions": 3,
+        "btc_eth_max_leverage": 3,
+        "altcoin_max_leverage": 3,
+        "btc_eth_max_position_value_ratio": 5,
+        "altcoin_max_position_value_ratio": 5,
+        "max_margin_usage": 0.35,
+        "min_position_size": 12,
+        "min_risk_reward_ratio": 2,
+        "min_confidence": 75,
+        "profit_protection": {
+          "enabled": true,
+          "mode": "r",
+          "breakeven_activation_r": 1,
+          "trailing_activation_r": 2,
+          "breakeven_activation_pct": 2,
+          "breakeven_lock_pct": 0,
+          "trailing_activation_pct": 5,
+          "trailing_giveback_pct": 30
+        },
+        "max_trade_risk_pct": 0.7,
+        "max_portfolio_risk_pct": 2.5,
+        "max_daily_loss_pct": 2,
+        "max_account_drawdown_pct": 8,
+        "trading_cost_pct": 0.2,
+        "min_stop_atr": 1.5,
+        "max_stop_atr": 4
+      },
+      "prompt_sections": {
+        "role_definition": "# Role\n\n\tYou are a disciplined crypto perpetual futures trader. Trade only symbols in the candidate list and decide from candles and the enabled indicators.",
+        "trading_frequency": "# Trading Frequency\n\n\t- Stay flat when there is no clear signal; never trade for its own sake.\n\t- Hold positions while the original thesis is intact; avoid churning.",
+        "entry_standards": "# Entry Standards\n\n\t- Enter only when trend, momentum and price structure agree.\n\t- Every trade must have a stop loss and take profit that meet the minimum risk/reward.",
+        "decision_process": "# Decision Process\n\n\t1. Review open positions: close on stop, target, or a broken thesis.\n\t2. Analyze each candidate's candles and indicators.\n\t3. Open only the highest-conviction setups; otherwise wait.\n\t4. Output strict JSON."
+      }
+    }
+  }
+}

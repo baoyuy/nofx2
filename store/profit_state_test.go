@@ -15,7 +15,7 @@ func TestProfitStateLifecycleReopenAndPrune(t *testing.T) {
 		t.Fatal(err)
 	}
 	ps := &ProfitStateStore{db: db}
-	seed := PositionProfitState{TraderID: "t", Symbol: "BTCUSDT", Side: "long", Lifecycle: "entry-1", EntryPrice: 100, PeakPricePct: 5, Eligible: true, BreakevenArmed: true, StopPrice: 101}
+	seed := PositionProfitState{TraderID: "t", Symbol: "BTCUSDT", Side: "long", Lifecycle: "entry-1", EntryPrice: 100, InitialRiskPct: 2, InitialStopPrice: 98, PeakPricePct: 5, Eligible: true, BreakevenArmed: true, StopPrice: 101}
 	state, fresh, err := ps.Observe(seed, true)
 	if err != nil || !fresh {
 		t.Fatalf("first open: fresh=%v err=%v", fresh, err)
@@ -25,7 +25,7 @@ func TestProfitStateLifecycleReopenAndPrune(t *testing.T) {
 		t.Fatal(err)
 	}
 	same, fresh, err := ps.Observe(PositionProfitState{TraderID: "t", Symbol: "BTCUSDT", Side: "long", Lifecycle: "entry-1", EntryPrice: 100}, false)
-	if err != nil || fresh || same.PeakPricePct != 10 || !same.BreakevenArmed {
+	if err != nil || fresh || same.PeakPricePct != 10 || same.InitialRiskPct != 2 || same.InitialStopPrice != 98 || !same.BreakevenArmed {
 		t.Fatalf("restart persistence lost: %+v fresh=%v err=%v", same, fresh, err)
 	}
 	reopened, fresh, err := ps.Observe(PositionProfitState{TraderID: "t", Symbol: "BTCUSDT", Side: "long", Lifecycle: "entry-2", EntryPrice: 101}, true)

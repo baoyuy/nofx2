@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"nofx/kernel"
 	"nofx/logger"
-	"nofx/market"
 	"nofx/store"
 	"nofx/trader/binance"
 	"time"
@@ -75,78 +74,14 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 		}
 	}
 
-	// Get current price and reject invalid protection before opening exposure.
-	marketData, err := market.GetWithExchange(decision.Symbol, at.exchange)
+	marketData, err := at.prepareOpening(decision, positions)
 	if err != nil {
-		return fmt.Errorf("failed to get market data for %s: %w", decision.Symbol, err)
-	}
-	if err := validateProtectionPrices(decision.Action, marketData.CurrentPrice, decision.StopLoss, decision.TakeProfit, at.usesSignalManagedExit()); err != nil {
 		return err
 	}
-	// [CODE ENFORCED] Keep the stop inside the ATR band from config (short).
-	if cfg := at.GetStrategyConfig(); cfg != nil {
-		atr := primaryATR(marketData, cfg)
-		if ns := clampStopToATR(false, marketData.CurrentPrice, atr, decision.StopLoss, cfg.RiskControl.MinStopATR, cfg.RiskControl.MaxStopATR); ns != decision.StopLoss {
-			logger.Infof("  ⚙️ Stop adjusted (short) for %s: %.6f → %.6f (ATR14 %.6f)", decision.Symbol, decision.StopLoss, ns, atr)
-			decision.StopLoss = ns
-		}
-	}
-	// [CODE ENFORCED] Keep the stop inside the ATR band from config, whatever
-	// the AI proposed. A fast coin can gap several percent in one candle; this
-	// caps the damage without relying on the model to size the stop.
-	if cfg := at.GetStrategyConfig(); cfg != nil {
-		atr := primaryATR(marketData, cfg)
-		if ns := clampStopToATR(true, marketData.CurrentPrice, atr, decision.StopLoss, cfg.RiskControl.MinStopATR, cfg.RiskControl.MaxStopATR); ns != decision.StopLoss {
-			logger.Infof("  ⚙️ Stop adjusted (long) for %s: %.6f → %.6f (ATR14 %.6f)", decision.Symbol, decision.StopLoss, ns, atr)
-			decision.StopLoss = ns
-		}
-	}
-
-	// Get balance (needed for multiple checks)
-	balance, err := at.trader.GetBalance()
-	if err != nil {
-		return fmt.Errorf("failed to get account balance: %w", err)
-	}
-	availableBalance := 0.0
-	if avail, ok := balance["availableBalance"].(float64); ok {
-		availableBalance = avail
-	}
-
-	// Get equity for position value ratio check
-	equity := 0.0
-	if eq, ok := balance["totalEquity"].(float64); ok && eq > 0 {
-		equity = eq
-	} else if eq, ok := balance["totalWalletBalance"].(float64); ok && eq > 0 {
-		equity = eq
-	} else {
-		equity = availableBalance // Fallback to available balance
-	}
-
-	at.applyAutopilotFullSizeOpen(decision, equity)
-
-	// [CODE ENFORCED] Position Value Ratio Check: position_value <= equity × ratio
-	adjustedPositionSize, wasCapped := at.enforcePositionValueRatio(decision.PositionSizeUSD, equity, decision.Symbol)
-	if wasCapped {
-		decision.PositionSizeUSD = adjustedPositionSize
-	}
-
-	// ⚠️ Auto-adjust position size if insufficient margin
-	marginFactor := marginOverheadFactor/float64(decision.Leverage) + takerFeeRate
-	maxAffordablePositionSize := availableBalance / marginFactor
-
 	actualPositionSize := decision.PositionSizeUSD
-	if actualPositionSize > maxAffordablePositionSize {
-		adjustedSize := maxAffordablePositionSize * positionSizeSafetyFactor
-		logger.Infof("  ⚠️ Position size %.2f exceeds max affordable %.2f, auto-reducing to %.2f",
-			actualPositionSize, maxAffordablePositionSize, adjustedSize)
-		actualPositionSize = adjustedSize
-		decision.PositionSizeUSD = actualPositionSize
-	}
-
-	// [CODE ENFORCED] Minimum position size check
-	if err := at.enforceMinPositionSize(decision.PositionSizeUSD); err != nil {
-		return err
-	}
+	actionRecord.StopLoss = decision.StopLoss
+	actionRecord.TakeProfit = decision.TakeProfit
+	actionRecord.Leverage = decision.Leverage
 
 	// Calculate quantity with adjusted position size
 	quantity := actualPositionSize / marketData.CurrentPrice
@@ -172,9 +107,6 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 
 	logger.Infof("  ✓ Position opened successfully, order ID: %v, quantity: %.4f", order["orderId"], quantity)
 
-	// Record order to database and poll for confirmation
-	at.recordAndConfirmOrder(order, decision.Symbol, "open_long", quantity, marketData.CurrentPrice, decision.Leverage, 0)
-
 	// Record position opening time
 	posKey := decision.Symbol + "_long"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
@@ -192,8 +124,14 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 		return at.closeUnprotectedPosition(decision.Symbol, "long", quantity, fmt.Errorf("failed to set mandatory take profit: %w", err))
 	}
 
+	at.recordAndConfirmOrder(order, decision.Symbol, "open_long", quantity, marketData.CurrentPrice, decision.Leverage, 0)
+
+	if err := at.verifyOpeningFill(decision); err != nil {
+		return at.closeUnprotectedPosition(decision.Symbol, "long", quantity, fmt.Errorf("post-fill risk verification: %w", err))
+	}
+
 	if at.exchange == binance.PaperExchangeType {
-		if err := at.ProfitProtectionOpened(decision.Symbol, "long"); err != nil {
+		if err := at.ProfitProtectionOpened(decision.Symbol, "long", decision.StopLoss); err != nil {
 			logger.Warnf("Paper profit protection lifecycle initialization failed: %v", err)
 		}
 	}
@@ -226,60 +164,14 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 		}
 	}
 
-	// Get current price and reject invalid protection before opening exposure.
-	marketData, err := market.GetWithExchange(decision.Symbol, at.exchange)
+	marketData, err := at.prepareOpening(decision, positions)
 	if err != nil {
-		return fmt.Errorf("failed to get market data for %s: %w", decision.Symbol, err)
-	}
-	if err := validateProtectionPrices(decision.Action, marketData.CurrentPrice, decision.StopLoss, decision.TakeProfit, at.usesSignalManagedExit()); err != nil {
 		return err
 	}
-
-	// Get balance (needed for multiple checks)
-	balance, err := at.trader.GetBalance()
-	if err != nil {
-		return fmt.Errorf("failed to get account balance: %w", err)
-	}
-	availableBalance := 0.0
-	if avail, ok := balance["availableBalance"].(float64); ok {
-		availableBalance = avail
-	}
-
-	// Get equity for position value ratio check
-	equity := 0.0
-	if eq, ok := balance["totalEquity"].(float64); ok && eq > 0 {
-		equity = eq
-	} else if eq, ok := balance["totalWalletBalance"].(float64); ok && eq > 0 {
-		equity = eq
-	} else {
-		equity = availableBalance // Fallback to available balance
-	}
-
-	at.applyAutopilotFullSizeOpen(decision, equity)
-
-	// [CODE ENFORCED] Position Value Ratio Check: position_value <= equity × ratio
-	adjustedPositionSize, wasCapped := at.enforcePositionValueRatio(decision.PositionSizeUSD, equity, decision.Symbol)
-	if wasCapped {
-		decision.PositionSizeUSD = adjustedPositionSize
-	}
-
-	// ⚠️ Auto-adjust position size if insufficient margin
-	marginFactor := marginOverheadFactor/float64(decision.Leverage) + takerFeeRate
-	maxAffordablePositionSize := availableBalance / marginFactor
-
 	actualPositionSize := decision.PositionSizeUSD
-	if actualPositionSize > maxAffordablePositionSize {
-		adjustedSize := maxAffordablePositionSize * positionSizeSafetyFactor
-		logger.Infof("  ⚠️ Position size %.2f exceeds max affordable %.2f, auto-reducing to %.2f",
-			actualPositionSize, maxAffordablePositionSize, adjustedSize)
-		actualPositionSize = adjustedSize
-		decision.PositionSizeUSD = actualPositionSize
-	}
-
-	// [CODE ENFORCED] Minimum position size check
-	if err := at.enforceMinPositionSize(decision.PositionSizeUSD); err != nil {
-		return err
-	}
+	actionRecord.StopLoss = decision.StopLoss
+	actionRecord.TakeProfit = decision.TakeProfit
+	actionRecord.Leverage = decision.Leverage
 
 	// Calculate quantity with adjusted position size
 	quantity := actualPositionSize / marketData.CurrentPrice
@@ -305,9 +197,6 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 
 	logger.Infof("  ✓ Position opened successfully, order ID: %v, quantity: %.4f", order["orderId"], quantity)
 
-	// Record order to database and poll for confirmation
-	at.recordAndConfirmOrder(order, decision.Symbol, "open_short", quantity, marketData.CurrentPrice, decision.Leverage, 0)
-
 	// Record position opening time
 	posKey := decision.Symbol + "_short"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
@@ -325,32 +214,16 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 		return at.closeUnprotectedPosition(decision.Symbol, "short", quantity, fmt.Errorf("failed to set mandatory take profit: %w", err))
 	}
 
+	at.recordAndConfirmOrder(order, decision.Symbol, "open_short", quantity, marketData.CurrentPrice, decision.Leverage, 0)
+
+	if err := at.verifyOpeningFill(decision); err != nil {
+		return at.closeUnprotectedPosition(decision.Symbol, "short", quantity, fmt.Errorf("post-fill risk verification: %w", err))
+	}
+
 	if at.exchange == binance.PaperExchangeType {
-		if err := at.ProfitProtectionOpened(decision.Symbol, "short"); err != nil {
+		if err := at.ProfitProtectionOpened(decision.Symbol, "short", decision.StopLoss); err != nil {
 			logger.Warnf("Paper profit protection lifecycle initialization failed: %v", err)
 		}
 	}
 	return nil
-}
-
-// primaryATR returns the ATR14 (in price units) of the strategy's primary
-// timeframe, falling back to the intraday / longer-term series when the
-// timeframe data is absent. 0 means unknown and disables the ATR stop band.
-func primaryATR(md *market.Data, cfg *store.StrategyConfig) float64 {
-	if md == nil {
-		return 0
-	}
-	if cfg != nil && md.TimeframeData != nil {
-		tf := cfg.Indicators.Klines.PrimaryTimeframe
-		if series := md.TimeframeData[tf]; series != nil && series.ATR14 > 0 {
-			return series.ATR14
-		}
-	}
-	if md.IntradaySeries != nil && md.IntradaySeries.ATR14 > 0 {
-		return md.IntradaySeries.ATR14
-	}
-	if md.LongerTermContext != nil && md.LongerTermContext.ATR14 > 0 {
-		return md.LongerTermContext.ATR14
-	}
-	return 0
 }

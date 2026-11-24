@@ -93,6 +93,11 @@ func (at *AutoTrader) runCycle() error {
 	// Save equity snapshot independently (decoupled from AI decision, used for drawing profit curve)
 	// NOTE: Must be called BEFORE candidate coins check to ensure equity is always recorded
 	at.saveEquitySnapshot(ctx)
+	if !at.usesSignalManagedExit() {
+		if _, riskErr := at.observeAccountRisk(ctx.Account.TotalEquity); riskErr != nil {
+			at.logWarnf("Account risk observation failed; new openings will require a successful observation: %v", riskErr)
+		}
+	}
 
 	// If no candidate coins available, log but do not error. Open positions
 	// still need the AI to manage them (a live screen can be empty while a
@@ -179,7 +184,7 @@ func (at *AutoTrader) runCycle() error {
 			} else {
 				at.logWarnf("AI payment outcome unverified; skipping estimated charge entry. Reconcile the original payment.")
 			}
-		} else {
+		} else if aiDecision.RawResponse != "" {
 			chargeErr = at.store.AICharge().Record(at.id, chargeModel, at.config.AIModel)
 		}
 		if chargeErr != nil {
@@ -597,7 +602,7 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 		totalMarginUsed += marginUsed
 
 		// Calculate P&L percentage (based on margin, considering leverage)
-		pnlPct := calculatePnLPercentage(unrealizedPnl, marginUsed)
+		pnlPct := calculatePnLPercentage(unrealizedPnl, quantity*entryPrice/float64(leverage))
 
 		// Get position open time from exchange (preferred) or fallback to local tracking
 		posKey := symbol + "_" + side
@@ -631,7 +636,24 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 		peakPnlPct := at.peakPnLCache[posKey]
 		at.peakPnLCacheMutex.RUnlock()
 
+		initialRisk, currentR, peakR, stop := 0.0, 0.0, 0.0, 0.0
+		beArmed, trailArmed := false, false
+		if peak, e := at.ObservePositionPeak(pos); e == nil {
+			peakPnlPct = peak
+		}
+		if ps, e := at.store.ProfitState(); e == nil {
+			if state, e := ps.Get(at.id, symbol, side); e == nil && state != nil {
+				initialRisk, stop = state.InitialRiskPct, state.StopPrice
+				beArmed, trailArmed = state.BreakevenArmed, state.TrailingArmed
+				if initialRisk > 0 {
+					currentR = priceProfitPct(entryPrice, markPrice, side) / initialRisk
+					peakR = state.PeakPricePct / initialRisk
+				}
+			}
+		}
+
 		positionInfos = append(positionInfos, kernel.PositionInfo{
+			InitialRiskPct: initialRisk, CurrentR: currentR, PeakR: peakR, ProtectionStop: stop, BreakevenArmed: beArmed, TrailingArmed: trailArmed,
 			Symbol:           symbol,
 			Side:             side,
 			EntryPrice:       entryPrice,

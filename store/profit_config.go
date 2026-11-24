@@ -10,6 +10,10 @@ import (
 // A zero lock means fee/slippage-adjusted breakeven; a positive lock adds a
 // gross price buffer, not a promise of net realized returns through gaps.
 type ProfitProtectionConfig struct {
+	// Mode "r" uses immutable initial stop risk; empty/"price" preserves price thresholds.
+	Mode                   string  `json:"mode,omitempty"`
+	BreakevenActivationR   float64 `json:"breakeven_activation_r,omitempty"`
+	TrailingActivationR    float64 `json:"trailing_activation_r,omitempty"`
 	Enabled                bool    `json:"enabled"`
 	BreakevenActivationPct float64 `json:"breakeven_activation_pct"`
 	BreakevenLockPct       float64 `json:"breakeven_lock_pct"`
@@ -24,6 +28,11 @@ func NormalizeProfitProtection(c ProfitProtectionConfig) ProfitProtectionConfig 
 		}
 		return math.Max(min, math.Min(max, v))
 	}
+	if c.Mode != "r" {
+		c.Mode = "price"
+	}
+	c.BreakevenActivationR = positive(c.BreakevenActivationR, 1, 0.1, 20)
+	c.TrailingActivationR = positive(c.TrailingActivationR, 2, 0.1, 50)
 	c.BreakevenActivationPct = positive(c.BreakevenActivationPct, 2, 0.1, 100)
 	if math.IsNaN(c.BreakevenLockPct) || math.IsInf(c.BreakevenLockPct, 0) {
 		c.BreakevenLockPct = 0

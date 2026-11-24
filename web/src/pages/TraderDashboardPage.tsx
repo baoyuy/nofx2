@@ -734,6 +734,12 @@ export function TraderDashboardPage({
                                                                 {pos.unrealized_pnl >= 0 ? '+' : ''}
                                                                 {pos.unrealized_pnl.toFixed(2)}
                                                             </span>
+                                                            <div className="text-[10px] text-nofx-text-muted" title={language === 'zh' ? '当前和峰值收益率均按开仓成本保证金计算' : 'Current and peak ROI use entry-cost margin'}>
+                                                                {pos.unrealized_pnl_pct.toFixed(2)}% · {language === 'zh' ? '峰值' : 'Peak'} {pos.peak_pnl_pct?.toFixed(2) ?? '—'}%
+                                                            </div>
+                                                            {pos.current_r !== undefined && <div className="text-[10px] text-nofx-text-muted">{pos.current_r.toFixed(2)}R / {language === 'zh' ? '峰值' : 'Peak'} {pos.peak_r?.toFixed(2)}R</div>}
+                                                            <div className="text-[10px] text-nofx-text-muted">{pos.trailing_armed ? (language === 'zh' ? '追踪已激活' : 'Trailing armed') : pos.breakeven_armed ? (language === 'zh' ? '保本已激活' : 'Breakeven armed') : pos.protection_eligible ? (language === 'zh' ? '等待保护激活' : 'Protection pending') : (language === 'zh' ? '基础止损/止盈' : 'Base SL/TP')}</div>
+                                                            {(pos.protection_stop ?? 0) > 0 && <div className="text-[10px] text-nofx-text-muted">SL {formatPrice(pos.protection_stop!)}</div>}
                                                         </td>
                                                         <td className="px-1 py-3 font-mono whitespace-nowrap text-right text-nofx-text-muted hidden md:table-cell">{formatPrice(pos.liquidation_price)}</td>
                                                     </tr>

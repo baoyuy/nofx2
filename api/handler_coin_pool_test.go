@@ -103,6 +103,9 @@ func TestStrategyTradesItsOwnCoinPool(t *testing.T) {
 	}
 
 	previous := kernel.CoinPoolResolver
+	previousDetail := kernel.CoinPoolDetailResolver
+	t.Cleanup(func() { kernel.CoinPoolDetailResolver = previousDetail })
+	kernel.CoinPoolDetailResolver = s.store.CoinPool().CoinsByID
 	t.Cleanup(func() { kernel.CoinPoolResolver = previous })
 	kernel.CoinPoolResolver = s.store.CoinPool().Symbols
 	alice.Coins = []store.CoinPoolCoin{{Symbol: "XRPUSDT"}}
@@ -117,7 +120,7 @@ func TestStrategyTradesItsOwnCoinPool(t *testing.T) {
 		t.Fatal(err)
 	}
 	coins, _ = kernel.NewStrategyEngine(cfg).GetCandidateCoins()
-	if len(coins) != 2 || coins[0].Symbol != "SOLUSDT" {
-		t.Fatalf("a deleted pool must fall back to the saved snapshot: %+v", coins)
+	if len(coins) != 0 {
+		t.Fatalf("a deleted pool must disable new entries: %+v", coins)
 	}
 }

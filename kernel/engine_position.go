@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"fmt"
+	"math"
 	"nofx/logger"
 	"nofx/market"
 )
@@ -24,6 +25,14 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 }
 
 func validateDecisionForMode(d *Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio float64, signalManagedExit bool) error {
+	for _, value := range []float64{d.PositionSizeUSD, d.StopLoss, d.TakeProfit, d.RiskUSD} {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("non-finite decision number")
+		}
+	}
+	if d.Confidence < 0 || d.Confidence > 100 {
+		return fmt.Errorf("confidence must be between 0 and 100")
+	}
 	validActions := map[string]bool{
 		"open_long":   true,
 		"open_short":  true,
@@ -114,32 +123,9 @@ func validateDecisionForMode(d *Decision, accountEquity float64, btcEthLeverage,
 			}
 		}
 
-		var entryPrice float64
-		if d.Action == "open_long" {
-			entryPrice = d.StopLoss + (d.TakeProfit-d.StopLoss)*0.2
-		} else {
-			entryPrice = d.StopLoss - (d.StopLoss-d.TakeProfit)*0.2
-		}
+		// Entry is unknown during parsing. The execution gate evaluates the real
+		// quote and actual fill after ATR adjustment; never invent an entry here.
 
-		var riskPercent, rewardPercent, riskRewardRatio float64
-		if d.Action == "open_long" {
-			riskPercent = (entryPrice - d.StopLoss) / entryPrice * 100
-			rewardPercent = (d.TakeProfit - entryPrice) / entryPrice * 100
-			if riskPercent > 0 {
-				riskRewardRatio = rewardPercent / riskPercent
-			}
-		} else {
-			riskPercent = (d.StopLoss - entryPrice) / entryPrice * 100
-			rewardPercent = (entryPrice - d.TakeProfit) / entryPrice * 100
-			if riskPercent > 0 {
-				riskRewardRatio = rewardPercent / riskPercent
-			}
-		}
-
-		if riskRewardRatio < 3.0 {
-			return fmt.Errorf("risk/reward ratio too low (%.2f:1), must be ≥3.0:1 [risk: %.2f%% reward: %.2f%%] [stop loss: %.2f take profit: %.2f]",
-				riskRewardRatio, riskPercent, rewardPercent, d.StopLoss, d.TakeProfit)
-		}
 	}
 
 	return nil

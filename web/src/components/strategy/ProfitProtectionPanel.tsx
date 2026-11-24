@@ -26,8 +26,24 @@ export function ProfitProtectionPanel({ value, onChange, language }: {
         <input type="checkbox" checked={config.enabled} onChange={(event) => onChange({ ...config, enabled: event.target.checked })} />
         {text(language, '启用新模拟仓位盈利保护', 'Enable protection for new paper positions')}
       </label>
+      <label className="my-3 flex items-center gap-2 text-sm">
+        {text(language, '激活依据', 'Activation basis')}
+        <select disabled={!config.enabled} className="rounded bg-zinc-800 p-2" value={config.mode ?? 'price'} onChange={(event) => onChange({ ...config, mode: event.target.value as 'price' | 'r' })}>
+          <option value="price">{text(language, '标的价格幅度', 'Underlying price move')}</option>
+          <option value="r">{text(language, '初始止损风险 R', 'Initial stop risk R')}</option>
+        </select>
+      </label>
+      {config.mode === 'r' && <fieldset disabled={!config.enabled} className="my-3 grid gap-4 sm:grid-cols-2">
+        <Field language={language} enforced="code" label={text(language, '保本激活 R', 'Breakeven activation R')}>
+          <NumberInput value={config.breakeven_activation_r ?? 1} range={{min:0.1,max:20}} step={0.1} suffix="R" onChange={(n) => onChange({...config,breakeven_activation_r:n})} />
+        </Field>
+        <Field language={language} enforced="code" label={text(language, '追踪激活 R', 'Trailing activation R')}>
+          <NumberInput value={config.trailing_activation_r ?? 2} range={{min:0.1,max:50}} step={0.1} suffix="R" onChange={(n) => onChange({...config,trailing_activation_r:n})} />
+        </Field>
+        <p className="text-xs text-zinc-400">{text(language,'R 为成交价到初始止损的价格距离，开仓后固定；缺失初始风险的旧仓不会推测 R。','R is the immutable fill-to-initial-stop distance. Unknown initial risk is never inferred for existing positions.')}</p>
+      </fieldset>}
       <fieldset disabled={!config.enabled} className="grid gap-4 sm:grid-cols-2 disabled:opacity-50">
-        {fields.map((field) => (
+        {fields.filter((field) => config.mode !== 'r' || !['breakeven_activation_pct', 'trailing_activation_pct'].includes(field.key)).map((field) => (
           <Field key={field.key} language={language} enforced="code" label={text(language, field.zh, field.en)}>
             <NumberInput value={config[field.key]} range={{ min: field.min, max: field.max }} step={0.1} suffix="%" onChange={(n) => onChange(normalizeProfitProtection({ ...config, [field.key]: n }))} />
           </Field>

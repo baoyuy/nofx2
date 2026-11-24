@@ -125,3 +125,16 @@ describe('strategy file', () => {
     expect(() => parseStrategyFile('not json', [], 'en')).toThrow('not valid')
   })
 })
+
+it('preserves risk budgets, pool boundaries and R protection in exported files', () => {
+ const configured = {...form, poolDirectionMode: 'free' as const, assetScope: 'all' as const,
+ allowedSymbols: 'BTCUSDT,ETHUSDT', maxTradeRiskPct: 0.7, maxPortfolioRiskPct: 2.5,
+ maxDailyLossPct: 2, maxAccountDrawdownPct: 8, tradingCostPct: 0.2,
+ minStopATR: 1.5, maxStopATR: 4,
+ profitProtection: {enabled: true, mode: 'r' as const, breakeven_activation_r: 0.8,
+ trailing_activation_r: 1.5, breakeven_activation_pct: 2, breakeven_lock_pct: 0,
+ trailing_activation_pct: 5, trailing_giveback_pct: 30}}
+ const {patch, warnings} = parseStrategyFile(strategyToJsonc(configured, 'zh'), [], 'zh')
+ expect(warnings).toEqual([])
+ expect(patch).toMatchObject({maxTradeRiskPct: 0.7, maxPortfolioRiskPct: 2.5, maxDailyLossPct: 2, maxAccountDrawdownPct: 8, tradingCostPct: 0.2, minStopATR: 1.5, maxStopATR: 4, poolDirectionMode: 'free', assetScope: 'all', allowedSymbols: 'BTCUSDT,ETHUSDT', profitProtection: configured.profitProtection})
+})

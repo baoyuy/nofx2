@@ -154,7 +154,7 @@ func (at *AutoTrader) ObservePositionPeak(pos map[string]interface{}) (float64, 
 // ProfitProtectionOpened must run after a CONFIRMED NEW open has been recorded
 // in trader_positions, and before releasing LockPositionLifecycle. Do not call
 // it at startup or for an addition to an existing position. No network requests.
-func (at *AutoTrader) ProfitProtectionOpened(symbol, side string) error {
+func (at *AutoTrader) ProfitProtectionOpened(symbol, side string, initialStop ...float64) error {
 	if at.store == nil {
 		return fmt.Errorf("profit lifecycle requires store")
 	}
@@ -191,7 +191,12 @@ func (at *AutoTrader) ProfitProtectionOpened(symbol, side string) error {
 	}
 	cfg := at.profitConfig()
 	encoded, _ := json.Marshal(cfg)
-	return ps.Open(store.PositionProfitState{TraderID: at.id, Symbol: symbol, Side: side, Lifecycle: lifecycle, EntryPrice: entry, Eligible: cfg.Enabled && at.exchange == binance.PaperExchangeType, ConfigJSON: string(encoded)})
+	riskPct, stop := 0.0, 0.0
+	if len(initialStop) > 0 && finitePositive(initialStop[0]) {
+		stop = initialStop[0]
+		riskPct = math.Abs(entry-stop) / entry * 100
+	}
+	return ps.Open(store.PositionProfitState{InitialRiskPct: riskPct, InitialStopPrice: stop, TraderID: at.id, Symbol: symbol, Side: side, Lifecycle: lifecycle, EntryPrice: entry, Eligible: cfg.Enabled && at.exchange == binance.PaperExchangeType, ConfigJSON: string(encoded)})
 }
 
 // ProfitProtectionClosed requires confirmed flat, while holding the shared
@@ -224,8 +229,17 @@ func advanceProfitProtection(state *store.PositionProfitState, current float64, 
 		return legacyClose
 	}
 	cfg = store.NormalizeProfitProtection(cfg)
-	state.BreakevenArmed = state.BreakevenArmed || state.PeakPricePct >= cfg.BreakevenActivationPct
-	state.TrailingArmed = state.TrailingArmed || state.PeakPricePct >= cfg.TrailingActivationPct
+	beThreshold, trailThreshold := cfg.BreakevenActivationPct, cfg.TrailingActivationPct
+	if cfg.Mode == "r" {
+		// Unknown initial risk must never be inferred from a tightened stop.
+		if !finitePositive(state.InitialRiskPct) {
+			return legacyClose
+		}
+		beThreshold = state.InitialRiskPct * cfg.BreakevenActivationR
+		trailThreshold = state.InitialRiskPct * cfg.TrailingActivationR
+	}
+	state.BreakevenArmed = state.BreakevenArmed || state.PeakPricePct >= beThreshold
+	state.TrailingArmed = state.TrailingArmed || state.PeakPricePct >= trailThreshold
 	candidate := 0.0
 	if state.BreakevenArmed {
 		candidate = binance.PaperBreakevenStop(state.EntryPrice, state.Side, cfg.BreakevenLockPct)

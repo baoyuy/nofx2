@@ -20,10 +20,11 @@ type Config struct {
 	Model    string
 
 	// Behavior configuration
-	MaxTokens   int
-	MaxContext  int // Model's max context window in tokens (0 = no limit)
-	Temperature float64
-	UseFullURL  bool
+	MaxTokens       int
+	MaxContext      int // Model's max context window in tokens (0 = no limit)
+	Temperature     float64
+	UseFullURL      bool
+	ReasoningEffort string // Optional provider-specific reasoning budget.
 
 	// Retry configuration
 	MaxRetries      int
