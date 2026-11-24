@@ -87,7 +87,7 @@ func (s *CopyTradeStore) initTables() error {
 	if err := s.db.AutoMigrate(&CopyTradeFollow{}, &CopyTradeFill{}, &CopyTradeSignal{},
 		&CopyTradeExclusion{}, &CopyTradeAutoLog{},
 		&CopyTradeBoardMember{}, &CopyTradePaperRoster{}, &CopyTradePaperFill{},
-		&CopyTradeCoinScore{}, &CopyTradeScoreMemory{}, &CopyTradeScoreOutcome{}); err != nil {
+		&CopyTradeCoinScore{}, &CopyTradeScoreMemory{}, &CopyTradeScoreOutcome{}, &DirectionResearch{}); err != nil {
 		return err
 	}
 	if old {
@@ -644,6 +644,14 @@ type CopyTradeScoreOutcome struct {
 	Done4h     bool     `gorm:"column:done_4h;index" json:"done_4h"`
 	Done24h    bool     `gorm:"column:done_24h;index" json:"done_24h"`
 	Done72h    bool     `gorm:"column:done_72h;index" json:"done_72h"`
+	// ConfigVersion is the scoring version that produced the reading, so
+	// results from different prompt versions can be compared rather than mixed.
+	// Empty on rows recorded before it was stored.
+	ConfigVersion string `gorm:"column:config_version" json:"config_version,omitempty"`
+	// Features is the JSON snapshot of the inputs the reading was made from
+	// (relative strength, derivatives, openers, ...). It exists so weights and
+	// rules can be tested offline against realised outcomes. Empty on older rows.
+	Features string `gorm:"column:features" json:"features,omitempty"`
 }
 
 func (CopyTradeScoreOutcome) TableName() string { return "copytrade_score_outcomes" }
@@ -681,10 +689,43 @@ func (s *CopyTradeStore) UpdateScoreOutcome(o *CopyTradeScoreOutcome) error {
 }
 
 // ListScoreOutcomes returns a user's evaluated outcomes, newest first.
+//
+// Capped at 20000 rows, which at the observed peak (~4000 readings a day) is
+// only about five days. Statistics that should cover a longer window must use
+// ListScoreOutcomesSince instead.
 func (s *CopyTradeStore) ListScoreOutcomes(userID string) ([]CopyTradeScoreOutcome, error) {
 	var out []CopyTradeScoreOutcome
 	err := s.db.Where("user_id = ?", userID).Order("analyzed_at DESC").Limit(20000).Find(&out).Error
 	return out, err
+}
+
+// MaxOutcomeWindowRows bounds one windowed read. At ~4000 readings a day this
+// covers about 50 days, which is more than any statistic here asks for. If the
+// bound is hit, ListScoreOutcomesSince reports it so the caller can say the
+// window was truncated instead of silently measuring a shorter one.
+const MaxOutcomeWindowRows = 200000
+
+// ListScoreOutcomesSince returns a user's outcomes analysed at or after
+// sinceMs, oldest first, and whether the row bound truncated the window. Only
+// the columns statistics need are read, which keeps a 30-day read small.
+func (s *CopyTradeStore) ListScoreOutcomesSince(userID string, sinceMs int64) ([]CopyTradeScoreOutcome, bool, error) {
+	var out []CopyTradeScoreOutcome
+	err := s.db.Select("id", "user_id", "symbol", "analyzed_at", "bias", "bull", "bear", "entry_price",
+		"ret_4h", "ret_24h", "ret_72h", "done_4h", "done_24h", "done_72h", "config_version", "features").
+		Where("user_id = ? AND analyzed_at >= ?", userID, sinceMs).
+		Order("analyzed_at DESC").Limit(MaxOutcomeWindowRows + 1).Find(&out).Error
+	if err != nil {
+		return nil, false, err
+	}
+	truncated := len(out) > MaxOutcomeWindowRows
+	if truncated {
+		out = out[:MaxOutcomeWindowRows]
+	}
+	// Oldest first: de-duplication keeps the earliest call of each window.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, truncated, nil
 }
 
 func (s *CopyTradeStore) RecentMatureScoreOutcomes(userID, symbol string, sinceMs int64) ([]CopyTradeScoreOutcome, error) {
@@ -694,7 +735,8 @@ func (s *CopyTradeStore) RecentMatureScoreOutcomes(userID, symbol string, sinceM
 }
 
 // PruneScoreOutcomes drops fully-evaluated outcomes older than beforeMs so the
-// table does not grow without bound.
+// table does not grow without bound. Rows whose 72h result is still pending
+// are kept regardless of age.
 func (s *CopyTradeStore) PruneScoreOutcomes(beforeMs int64) error {
 	return s.db.Where("analyzed_at < ? AND done_4h = ? AND done_24h = ? AND done_72h = ?",
 		beforeMs, true, true, true).Delete(&CopyTradeScoreOutcome{}).Error

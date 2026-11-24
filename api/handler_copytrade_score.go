@@ -14,6 +14,7 @@ import (
 
 	"nofx/copytrade"
 	"nofx/logger"
+	"nofx/mcp"
 	"nofx/store"
 	"nofx/trader/binance"
 )
@@ -30,11 +31,11 @@ const copytradeScoreOwnerKey = "copytrade_score_owner"
 
 // coinScoreAuto is the in-memory status of the analyze-all run.
 type coinScoreAuto struct {
-	mu        sync.Mutex
-	running   bool
-	lastRun   int64
-	lastCount int
-	lastErr   string
+	mu            sync.Mutex
+	running       bool
+	lastRun       int64
+	lastCount     int
+	lastErr       string
 	done          int
 	total         int
 	inflight      map[string]bool
@@ -45,30 +46,28 @@ type coinScoreAuto struct {
 	retryAfter    map[string]int64
 }
 
-
 type coinScoreAnalysis struct {
-	Bias        string  `json:"bias"` // long | short | neutral
-	BullScore   float64 `json:"bull_score"`
-	BearScore   float64 `json:"bear_score"`
-	Edge        float64 `json:"edge"`        // bull - bear
-	SmoothedEdge float64 `json:"smoothed_edge"` // EMA-smoothed edge
-	Conviction  float64 `json:"conviction"` // |edge|
-	Horizon     string  `json:"horizon"`    // short | swing
-	TFAlignment map[string]int `json:"tf_alignment,omitempty"`
-	LongCase    []string `json:"long_case"`
-	ShortCase   []string `json:"short_case"`
-	Invalidates string   `json:"invalidates"`
-	Changed     bool     `json:"changed,omitempty"`
-	ChangeReason string  `json:"change_reason,omitempty"`
-	MarketContext string `json:"market_context,omitempty"`
-	Sources     []string `json:"sources,omitempty"`
+	Bias          string         `json:"bias"` // long | short | neutral
+	BullScore     float64        `json:"bull_score"`
+	BearScore     float64        `json:"bear_score"`
+	Edge          float64        `json:"edge"`          // bull - bear
+	SmoothedEdge  float64        `json:"smoothed_edge"` // EMA-smoothed edge
+	Conviction    float64        `json:"conviction"`    // |edge|
+	Horizon       string         `json:"horizon"`       // short | swing
+	TFAlignment   map[string]int `json:"tf_alignment,omitempty"`
+	LongCase      []string       `json:"long_case"`
+	ShortCase     []string       `json:"short_case"`
+	Invalidates   string         `json:"invalidates"`
+	Changed       bool           `json:"changed,omitempty"`
+	ChangeReason  string         `json:"change_reason,omitempty"`
+	MarketContext string         `json:"market_context,omitempty"`
+	Sources       []string       `json:"sources,omitempty"`
 	// Legacy display fields, derived from the v2 fields above.
 	Score      float64  `json:"score"`
 	Confidence float64  `json:"confidence"`
 	Reasons    []string `json:"reasons"`
 	Risks      []string `json:"risks"`
 }
-
 
 type coinScoreResult struct {
 	Symbol     string             `json:"symbol"`
@@ -83,6 +82,7 @@ type coinScoreResult struct {
 }
 
 func (s *Server) registerCopyTradeScoreRoutes(protected *gin.RouterGroup) {
+	s.route(protected, "GET", "/copytrade/direction-shortlist", "Research-only top ten per direction; no trading side effects", s.handleDirectionShortlist)
 	s.route(protected, "GET", "/copytrade/coin-score", "Saved AI reading for one coin (?symbol=)", s.handleCoinScoreGet)
 	s.route(protected, "POST", "/copytrade/coin-score", "Run the AI reading for one coin now (body: symbol, interval?, model_id?, lang?)", s.handleCoinScoreAnalyze)
 	s.route(protected, "GET", "/copytrade/coin-score/models", "Enabled models and the saved coin-score model", s.handleCoinScoreModels)
@@ -289,7 +289,8 @@ func (s *Server) analyzeCoinCore(ctx context.Context, userID string, model *stor
 	}
 	holders := copytrade.Holders(snaps, symbol)
 	prev := s.loadScoreMemory(userID, symbol)
-	system, user := buildCoinScorePrompt(lang, symbol, tfs, ticker, deriv, regime, sum, holders, prev, coin24, btc24)
+	rel := relativeStrength(ctx, tfs, coin24, btc24)
+	system, user := buildCoinScorePrompt(lang, symbol, tfs, ticker, deriv, regime, sum, holders, prev, rel)
 
 	primary := "1h"
 	if interval != "" {
@@ -301,7 +302,16 @@ func (s *Server) analyzeCoinCore(ctx context.Context, userID string, model *stor
 			price = tf.Klines[len(tf.Klines)-1].Close
 		}
 	}
-	raw, err := s.runRealAITest(userID, model.ID, system, user)
+	if err := ctx.Err(); err != nil {
+		return coinScoreResult{}, err
+	}
+	// Background scoring must release the shared model channel when its task
+	// expires, rather than continuing requests/retries for several minutes.
+	timeout := 45 * time.Second
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout = time.Until(deadline)
+	}
+	raw, err := s.runRealAITestContext(ctx, userID, model.ID, system, user, mcp.WithMaxRetries(1), mcp.WithTimeout(timeout), mcp.WithReasoningEffort("low"))
 	if err != nil {
 		return coinScoreResult{}, err
 	}
@@ -310,13 +320,12 @@ func (s *Server) analyzeCoinCore(ctx context.Context, userID string, model *stor
 	if a, perr := parseCoinScore(raw); perr != nil {
 		res.ParseError = "The AI reply was not valid JSON; showing the raw text."
 	} else {
-		// EMA smoothing: rank on a smoothed edge so a coin does not jump on a
-		// single noisy reading; still grounded in the newest data.
-		sm := a.Edge
-		if prev != nil {
-			sm = 0.3*a.Edge + 0.7*prev.SmoothedEdge
-		}
-		a.SmoothedEdge = sm
+		// Light smoothing only. The previous 0.3-new/0.7-old weighting, on
+		// top of a prompt that told the model to keep its last call, made a
+		// 4h signal follow readings from hours earlier. Now the newest reading
+		// dominates, and a previous reading older than one 4h horizon is
+		// ignored entirely rather than dragging the new one.
+		a.SmoothedEdge = smoothEdge(a.Edge, prev, res.AnalyzedAt)
 		res.Analysis = a
 	}
 	_ = primary
@@ -334,7 +343,9 @@ func (s *Server) analyzeCoinCore(ctx context.Context, userID string, model *stor
 		// Count this coin+direction at most once per 4h for the forward check.
 		if exists, _ := s.store.CopyTrade().HasRecentOutcome(userID, symbol, res.Analysis.Bias, res.AnalyzedAt-outcomeDedupMs); !exists {
 			o := &store.CopyTradeScoreOutcome{UserID: userID, Symbol: symbol, AnalyzedAt: res.AnalyzedAt,
-				Bias: res.Analysis.Bias, Bull: res.Analysis.BullScore, Bear: res.Analysis.BearScore, EntryPrice: res.Price}
+				Bias: res.Analysis.Bias, Bull: res.Analysis.BullScore, Bear: res.Analysis.BearScore, EntryPrice: res.Price,
+				ConfigVersion: coinScoreConfigVersion,
+				Features:      scoreFeaturesJSON(ticker, deriv, sum, rel, tfs)}
 			if err := s.store.CopyTrade().SaveScoreOutcome(o); err != nil {
 				logger.Warnf("copy-trade outcomes: enqueue %s: %v", symbol, err)
 			}
@@ -346,10 +357,10 @@ func (s *Server) analyzeCoinCore(ctx context.Context, userID string, model *stor
 // ---- scheduled / manual analyze-all ----
 
 const (
-	coinScoreAutoKey       = "copytrade_coin_score_auto"
-	coinScoreMinInterval   = 5
-	coinScoreDefaultMins   = 60
-	coinScoreConfigVersion = "copytrade-ai-v12"
+	coinScoreAutoKey          = "copytrade_coin_score_auto"
+	coinScoreMinInterval      = 5
+	coinScoreDefaultMins      = 60
+	coinScoreConfigVersion    = "copytrade-ai-v13"
 	coinScoreDefaultMinVolume = 100_000_000 // 1e8 USDT (Binance USDT-M 24h quote volume)
 	// coinScoreNeutralMovePct: a 4h move smaller than this (%) is a neutral /
 	// invalid sample — it must NOT count as a hit or a miss.
@@ -357,14 +368,26 @@ const (
 )
 
 type coinScoreAutoConfig struct {
-	Enabled         bool `json:"enabled"`
-	IntervalMinutes int  `json:"interval_minutes"`
-	PoolAuto        bool `json:"pool_auto"`
-	TopN            int     `json:"top_n"`
+	Enabled            bool    `json:"enabled"`
+	IntervalMinutes    int     `json:"interval_minutes"`
+	PoolAuto           bool    `json:"pool_auto"`
+	TopN               int     `json:"top_n"`
 	Concurrency        int     `json:"concurrency"`
 	MinQuoteVolume     float64 `json:"min_quote_volume"`
 	PoolRefreshMinutes int     `json:"pool_refresh_minutes"`
 	PoolTTLMinutes     int     `json:"pool_ttl_minutes"`
+	// PoolRankMode: "measured" (default) or "conviction" (previous behaviour).
+	PoolRankMode string `json:"pool_rank_mode,omitempty"`
+}
+
+// rankMode returns the effective pool ranking mode; anything unrecognised,
+// including an unset value from settings saved before this option existed,
+// means the measured-history ranking.
+func (c coinScoreAutoConfig) rankMode() string {
+	if c.PoolRankMode == poolRankConviction {
+		return poolRankConviction
+	}
+	return poolRankMeasured
 }
 
 func (s *Server) loadCoinScoreAuto() coinScoreAutoConfig {
@@ -432,8 +455,12 @@ func (s *Server) coinScoreBegin() bool {
 	s.coinScore.lastErr = ""
 	return true
 }
-func (s *Server) coinScoreSetTotal(n int) { s.coinScore.mu.Lock(); s.coinScore.total = n; s.coinScore.mu.Unlock() }
-func (s *Server) coinScoreInc()         { s.coinScore.mu.Lock(); s.coinScore.done++; s.coinScore.mu.Unlock() }
+func (s *Server) coinScoreSetTotal(n int) {
+	s.coinScore.mu.Lock()
+	s.coinScore.total = n
+	s.coinScore.mu.Unlock()
+}
+func (s *Server) coinScoreInc() { s.coinScore.mu.Lock(); s.coinScore.done++; s.coinScore.mu.Unlock() }
 func (s *Server) coinScoreMarkFail(sym string) {
 	s.coinScore.mu.Lock()
 	if s.coinScore.lastFail == nil {
@@ -741,7 +768,7 @@ func (s *Server) handleCoinScoreSettingsGet(c *gin.Context) {
 		coins = len(copytrade.Symbols(s.copyTrade.Snapshots()))
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes, "pool_auto": cfg.PoolAuto, "top_n": cfg.TopN, "concurrency": cfg.Concurrency, "min_quote_volume": cfg.MinQuoteVolume, "pool_refresh_minutes": cfg.PoolRefreshMinutes, "pool_ttl_minutes": cfg.PoolTTLMinutes, "min_interval": coinScoreMinInterval,
+		"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes, "pool_auto": cfg.PoolAuto, "top_n": cfg.TopN, "concurrency": cfg.Concurrency, "min_quote_volume": cfg.MinQuoteVolume, "pool_refresh_minutes": cfg.PoolRefreshMinutes, "pool_ttl_minutes": cfg.PoolTTLMinutes, "pool_rank_mode": cfg.rankMode(), "min_interval": coinScoreMinInterval,
 		"running": running, "done": done, "total": total, "last_run": lastRun, "last_count": lastCount,
 		"last_error": lastErr, "model": modelName, "coin_count": coins,
 	})
@@ -751,14 +778,15 @@ func (s *Server) handleCoinScoreSettingsPut(c *gin.Context) {
 	// Merge-style: only fields present in the body are changed, so a partial
 	// update never wipes the others (e.g. min volume when toggling pool_auto).
 	var req struct {
-		Enabled         *bool    `json:"enabled"`
-		IntervalMinutes *int     `json:"interval_minutes"`
-		PoolAuto        *bool    `json:"pool_auto"`
-		TopN            *int     `json:"top_n"`
+		Enabled            *bool    `json:"enabled"`
+		IntervalMinutes    *int     `json:"interval_minutes"`
+		PoolAuto           *bool    `json:"pool_auto"`
+		TopN               *int     `json:"top_n"`
 		Concurrency        *int     `json:"concurrency"`
 		MinQuoteVolume     *float64 `json:"min_quote_volume"`
 		PoolRefreshMinutes *int     `json:"pool_refresh_minutes"`
 		PoolTTLMinutes     *int     `json:"pool_ttl_minutes"`
+		PoolRankMode       *string  `json:"pool_rank_mode"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		SafeBadRequest(c, "invalid settings body")
@@ -789,6 +817,15 @@ func (s *Server) handleCoinScoreSettingsPut(c *gin.Context) {
 	if req.PoolTTLMinutes != nil {
 		cfg.PoolTTLMinutes = *req.PoolTTLMinutes
 	}
+	if req.PoolRankMode != nil {
+		switch *req.PoolRankMode {
+		case poolRankMeasured, poolRankConviction:
+			cfg.PoolRankMode = *req.PoolRankMode
+		default:
+			SafeBadRequest(c, "pool_rank_mode must be measured or conviction")
+			return
+		}
+	}
 	if cfg.IntervalMinutes < coinScoreMinInterval {
 		cfg.IntervalMinutes = coinScoreMinInterval
 	}
@@ -816,7 +853,7 @@ func (s *Server) handleCoinScoreSettingsPut(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes,
-		"pool_auto": cfg.PoolAuto, "top_n": cfg.TopN, "concurrency": cfg.Concurrency, "min_quote_volume": cfg.MinQuoteVolume, "pool_refresh_minutes": cfg.PoolRefreshMinutes, "pool_ttl_minutes": cfg.PoolTTLMinutes})
+		"pool_auto": cfg.PoolAuto, "top_n": cfg.TopN, "concurrency": cfg.Concurrency, "min_quote_volume": cfg.MinQuoteVolume, "pool_refresh_minutes": cfg.PoolRefreshMinutes, "pool_ttl_minutes": cfg.PoolTTLMinutes, "pool_rank_mode": cfg.rankMode()})
 }
 
 func (s *Server) handleCoinScoreRunAll(c *gin.Context) {
@@ -933,7 +970,6 @@ type scoreTF struct {
 	Ind      indicatorSnapshot
 }
 
-
 func sideExtra(s copytrade.SideSummary) string {
 	extra := ""
 	if s.Openers > 0 {
@@ -950,20 +986,20 @@ func sideExtra(s copytrade.SideSummary) string {
 
 // coinScoreBrief is the compact reading shown as a list column.
 type coinScoreBrief struct {
-	Symbol     string  `json:"symbol"`
-	Bias       string  `json:"bias"`
-	Horizon    string  `json:"horizon"`
-	BullScore  float64 `json:"bull_score"`
-	BearScore  float64 `json:"bear_score"`
-	Edge       float64 `json:"edge"`
+	Symbol       string  `json:"symbol"`
+	Bias         string  `json:"bias"`
+	Horizon      string  `json:"horizon"`
+	BullScore    float64 `json:"bull_score"`
+	BearScore    float64 `json:"bear_score"`
+	Edge         float64 `json:"edge"`
 	SmoothedEdge float64 `json:"smoothed_edge"`
-	Conviction float64 `json:"conviction"`
-	Score      float64 `json:"score"`
-	Confidence float64 `json:"confidence"`
-	AnalyzedAt int64   `json:"analyzed_at"`
-	AgeMs      int64   `json:"age_ms"`
-	Stale      bool    `json:"stale"`
-	ModelID    string  `json:"model_id"`
+	Conviction   float64 `json:"conviction"`
+	Score        float64 `json:"score"`
+	Confidence   float64 `json:"confidence"`
+	AnalyzedAt   int64   `json:"analyzed_at"`
+	AgeMs        int64   `json:"age_ms"`
+	Stale        bool    `json:"stale"`
+	ModelID      string  `json:"model_id"`
 }
 
 func (s *Server) handleCoinScoresList(c *gin.Context) {
@@ -1009,23 +1045,160 @@ func tfChg(tf scoreTF, lookback int) float64 {
 	return (k[len(k)-1].Close/k[i].Close - 1) * 100
 }
 
-func buildCoinScorePrompt(lang, symbol string, tfs []scoreTF, t *binance.MarketTicker, deriv binance.DerivativeInfo, regime string, sum *copytrade.SymbolSummary, holders []copytrade.Holder, prev *store.CopyTradeScoreMemory, coin24, btc24 float64) (string, string) {
+// scoreFeatures is the snapshot of inputs one reading was made from, stored
+// with its outcome so rules and weights can be tested offline against what
+// actually happened. Values are raw observations, not model output. Fields
+// that could not be measured are omitted rather than written as zero.
+type scoreFeatures struct {
+	Rel1h        *float64 `json:"rel_1h,omitempty"` // coin minus BTC, pct points
+	Rel4h        *float64 `json:"rel_4h,omitempty"`
+	Rel24h       float64  `json:"rel_24h"`
+	Coin4h       *float64 `json:"coin_4h,omitempty"` // coin's own 4h change, %
+	Funding      *float64 `json:"funding,omitempty"` // %, per period
+	OIChg1h      *float64 `json:"oi_chg_1h,omitempty"`
+	LSRatio      *float64 `json:"ls_ratio,omitempty"`
+	TakerBS      *float64 `json:"taker_bs,omitempty"`
+	BasisPct     *float64 `json:"basis_pct,omitempty"`
+	QuoteVol24h  *float64 `json:"quote_vol_24h,omitempty"`
+	RSI14_1h     *float64 `json:"rsi14_1h,omitempty"`
+	OpenersLong  int      `json:"openers_long"`
+	OpenersShort int      `json:"openers_short"`
+	TradersLong  int      `json:"traders_long"`
+	TradersShort int      `json:"traders_short"`
+}
+
+func scoreFeaturesJSON(t *binance.MarketTicker, deriv binance.DerivativeInfo, sum *copytrade.SymbolSummary, rel relStrength, tfs []scoreTF) string {
+	f := scoreFeatures{Rel24h: rel.Coin24h - rel.BTC24h}
+	p := func(v float64) *float64 { return &v }
+	if rel.Has1h {
+		f.Rel1h = p(rel.Coin1h - rel.BTC1h)
+	}
+	if rel.Has4h {
+		f.Rel4h, f.Coin4h = p(rel.Coin4h-rel.BTC4h), p(rel.Coin4h)
+	}
+	if t != nil {
+		f.Funding = p(t.FundingRate * 100)
+		if t.QuoteVolume24h > 0 {
+			f.QuoteVol24h = p(t.QuoteVolume24h)
+		}
+	}
+	if deriv.OpenInterest > 0 {
+		f.OIChg1h = p(deriv.OIChangePct1h)
+	}
+	if deriv.LongShortRatio > 0 {
+		f.LSRatio = p(deriv.LongShortRatio)
+	}
+	if deriv.TakerBuySellRatio > 0 {
+		f.TakerBS = p(deriv.TakerBuySellRatio)
+	}
+	if deriv.OpenInterest > 0 || deriv.BasisPct != 0 {
+		f.BasisPct = p(deriv.BasisPct)
+	}
+	for _, tf := range tfs {
+		if tf.Interval == "1h" && tf.Ind.RSI14 > 0 {
+			f.RSI14_1h = p(tf.Ind.RSI14)
+		}
+	}
+	if sum != nil {
+		f.OpenersLong, f.OpenersShort = sum.Long.Openers, sum.Short.Openers
+		f.TradersLong, f.TradersShort = sum.Long.Traders, sum.Short.Traders
+	}
+	raw, err := json.Marshal(f)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+// relStrength is the coin's return minus BTC's over several windows, in
+// percentage points. Positive = stronger than BTC over that window.
+type relStrength struct {
+	Coin1h, Coin4h, Coin24h float64
+	BTC1h, BTC4h, BTC24h    float64
+	Has1h, Has4h            bool
+}
+
+// relativeStrength measures the coin against BTC over 1h, 4h and 24h. The 1h
+// and 4h windows come from the coin's own already-fetched 1h candles and one
+// extra BTC 1h request; 24h comes from the tickers. A window that cannot be
+// measured on both legs is marked absent rather than reported as zero.
+func relativeStrength(ctx context.Context, tfs []scoreTF, coin24, btc24 float64) relStrength {
+	r := relStrength{Coin24h: coin24, BTC24h: btc24}
+	var coin1h *scoreTF
+	for i := range tfs {
+		if tfs[i].Interval == "1h" {
+			coin1h = &tfs[i]
+		}
+	}
+	if coin1h == nil {
+		return r
+	}
+	btc, err := binance.GetPublicKlines(ctx, "BTCUSDT", "1h", 6)
+	if err != nil || len(btc) < 5 {
+		return r
+	}
+	b := scoreTF{Interval: "1h", Klines: btc}
+	if len(coin1h.Klines) >= 2 {
+		r.Coin1h, r.BTC1h, r.Has1h = tfChg(*coin1h, 1), tfChg(b, 1), true
+	}
+	if len(coin1h.Klines) >= 5 {
+		r.Coin4h, r.BTC4h, r.Has4h = tfChg(*coin1h, 4), tfChg(b, 4), true
+	}
+	return r
+}
+
+// smoothEdge blends the new edge with the previous smoothed edge. The newest
+// reading dominates (0.7), and a previous reading older than one 4h horizon is
+// dropped: it describes a market the 4h call no longer covers.
+func smoothEdge(edge float64, prev *store.CopyTradeScoreMemory, nowMs int64) float64 {
+	if prev == nil || prev.LastAt <= 0 || nowMs-prev.LastAt > 4*3600*1000 {
+		return edge
+	}
+	return 0.7*edge + 0.3*prev.SmoothedEdge
+}
+
+// buildCoinScorePrompt builds the per-coin 4h reading.
+//
+// Changed from the previous version, based on the user's own stored outcomes:
+//   - The copy-trade crowd's consensus confidence, rank score and per-holder
+//     list are no longer shown. Over ~15k mature 4h signals they had no
+//     directional edge (about 50% hit, ~0 excess over BTC), and the highest
+//     confidence band did worse than average, so they were noise in the input.
+//     Only the count of FRESH openers per side stays, labelled as weak, since
+//     fresh calls were the one subset marginally above 50%.
+//   - The previous reading is shown as context only, without the instruction to
+//     keep it absent new evidence. Combined with heavy smoothing, that anchored
+//     a 4h call to readings hours old.
+//   - Relative strength vs BTC is given over 1h and 4h as well as 24h, because
+//     the call is about the next 4h and a 24h comparison mostly reflects moves
+//     that already happened.
+//   - The task is framed as ranking against the rest of the market over 4h,
+//     because absolute 4h direction in the stored history was mostly the
+//     market's own move.
+func buildCoinScorePrompt(lang, symbol string, tfs []scoreTF, t *binance.MarketTicker, deriv binance.DerivativeInfo, regime string, sum *copytrade.SymbolSummary, holders []copytrade.Holder, prev *store.CopyTradeScoreMemory, rel relStrength) (string, string) {
 	language := "English"
 	if lang == "zh" {
 		language = "Simplified Chinese"
 	}
-	system := `You are a disciplined crypto perpetual futures analyst. Judge ONE coin from BOTH sides with EQUAL rigor, using copy-trade consensus, multi-timeframe technicals, derivatives, and RELATIVE STRENGTH vs BTC and the broad market.
+	_ = holders // per-holder detail removed from the prompt; see doc comment
+	system := `You are a disciplined crypto perpetual futures analyst. Judge ONE coin's likely move over the NEXT 4 HOURS RELATIVE TO THE REST OF THE MARKET, from BOTH sides with EQUAL rigor, using multi-timeframe price structure, derivatives positioning, and relative strength vs BTC.
 Reply with ONE strict JSON object and nothing else:
 {"bull_score":0-100,"bear_score":0-100,"bias":"long|short|neutral","conviction":0-100,"horizon":"short|swing","tf_alignment":{"15m":-1|0|1,"1h":-1|0|1,"4h":-1|0|1},"long_case":["..."],"short_case":["..."],"invalidates":"one sentence","market_context":"one sentence","changed":true|false,"change_reason":"..."}
-Scoring rules:
-- Score bull_score and bear_score INDEPENDENTLY and with EQUAL weight. NEITHER side is the default. Do not lean short; a coin trends up about half the time too.
-- LONG evidence to check explicitly (symmetric to the short list): price above MA/EMA and holding; higher lows; MACD>0 and rising; RSI>50 and rising; breakout or support reclaimed; funding negative/low or open interest shifting (shorts crowded -> squeeze fuel); OI rising while price rises; OUT-performance vs BTC and vs the broad market; copy-trade crowd short or trapped shorts (short squeeze fuel); bullish divergence; strong relative strength.
-- SHORT evidence to check explicitly: price below MA/EMA; lower highs; MACD<0; RSI<50; breakdown; funding positive/rising (longs crowded); OI up while price falls; UNDER-performance vs BTC and vs the broad market; copy-trade crowd long and trapped/underwater; rejection at resistance; bearish divergence; relative weakness.
-- Crowded-and-underwater longs are ONE input (unwind risk that can go either way), NOT an automatic short. Trapped shorts are likewise ONE input, NOT an automatic long. Do not let either decide the side by itself.
-- RELATIVE STRENGTH decides the side, NOT BTC's absolute direction: a coin can be LONG even if BTC is falling (it is stronger than BTC/market) and SHORT even if BTC is rising (it is weaker). Weigh the coin against BTC and against the broad market, and reward the side that is relatively strong.
-- bias = the side with the clearly higher score. Use neutral ONLY when |bull_score - bear_score| <= 10, and say why.
-- conviction = |bull_score - bear_score|. Low conviction is allowed and honest.
-- If a PREVIOUS READING is given below, treat this as a re-evaluation: change only on new evidence or a triggered invalidation, set changed=true with change_reason; otherwise keep it and set changed=false.
+What the scores mean:
+- bull_score: strength of evidence that over the next 4h this coin does BETTER than the broad market (rises more, or falls less). bear_score: evidence it does WORSE. Judge the coin against the market, not in isolation: in a market where nearly everything falls, a coin falling much less is relatively strong, and its absolute price can still fall.
+- Score both sides INDEPENDENTLY and with EQUAL weight. Neither side is the default.
+- bias = the side with the clearly higher score. Use neutral when |bull_score - bear_score| <= 10, or when evidence on the 4h horizon is thin or conflicting. Neutral is an honest answer; do not force a side.
+- conviction = |bull_score - bear_score|. Scores are an evidence ranking, NOT win probabilities or expected returns, and are checked later against measured outcomes.
+Evidence to weigh (each is one input; none decides alone):
+- Relative strength vs BTC over 1h and 4h matters most for a 4h call; 24h is background that has largely already happened.
+- Price structure on 15m/1h/4h: trend vs MA/EMA, higher lows or lower highs, breakouts or breakdowns, rejection at levels, divergences. Prefer agreement across 1h and 4h.
+- Derivatives: funding sign and size (crowded side), open interest change with price (new positions vs unwinds), taker buy/sell, basis.
+- Lead-trader fresh openers (if shown) are WEAK evidence: historically close to a coin flip. Never let them decide the side.
+Re-evaluation:
+- A PREVIOUS READING, if shown, is context only. Re-judge from the current data; do not keep the old side just because it was the old side. Set changed=true and give change_reason when the side differs from the previous reading.
+Rules:
+- Missing or stale evidence lowers conviction.
+- State a concrete, observable invalidation for the next 4h.
 - NEVER give entry/stop/take-profit and never instruct an order. Conditional wording only.
 - Write long_case, short_case, invalidates and market_context in ` + language + `.`
 
@@ -1039,11 +1212,20 @@ Scoring rules:
 		fmt.Fprintf(&b, "Derivatives: OI %s (1h %+.2f%%), long/short ratio %.2f (long %.0f%%/short %.0f%%), taker buy/sell %.2f, basis %+.4f%%\n", fmtNum(deriv.OpenInterest), deriv.OIChangePct1h, deriv.LongShortRatio, deriv.LongAccountPct, deriv.ShortAccountPct, deriv.TakerBuySellRatio, deriv.BasisPct)
 	}
 	if regime != "" {
-		fmt.Fprintf(&b, "Market regime: %s\n", regime)
+		fmt.Fprintf(&b, "BTC context: %s\n", regime)
 	}
-	fmt.Fprintf(&b, "Relative strength (objective; the side comes from this, NOT from BTC's raw direction):\n")
-	fmt.Fprintf(&b, "- Coin 24h change %+.2f%% vs BTC 24h %+.2f%% => coin-minus-BTC %+.2f pts (positive = stronger than BTC)\n", coin24, btc24, coin24-btc24)
-	fmt.Fprintf(&b, "- Stronger than BTC/market supports LONG even if BTC falls; weaker supports SHORT even if BTC rises.\n")
+	b.WriteString("Relative strength vs BTC (coin change minus BTC change, percentage points; positive = stronger than BTC):\n")
+	if rel.Has1h {
+		fmt.Fprintf(&b, "- 1h: coin %+.2f%% vs BTC %+.2f%% => %+.2f pts\n", rel.Coin1h, rel.BTC1h, rel.Coin1h-rel.BTC1h)
+	} else {
+		b.WriteString("- 1h: unavailable\n")
+	}
+	if rel.Has4h {
+		fmt.Fprintf(&b, "- 4h: coin %+.2f%% vs BTC %+.2f%% => %+.2f pts\n", rel.Coin4h, rel.BTC4h, rel.Coin4h-rel.BTC4h)
+	} else {
+		b.WriteString("- 4h: unavailable\n")
+	}
+	fmt.Fprintf(&b, "- 24h (background): coin %+.2f%% vs BTC %+.2f%% => %+.2f pts\n", rel.Coin24h, rel.BTC24h, rel.Coin24h-rel.BTC24h)
 	for _, tf := range tfs {
 		fmt.Fprintf(&b, "\n[%s] MA7 %s MA25 %s MA99 %s EMA12 %s EMA26 %s MACD %s/%s/%s RSI6 %.1f RSI14 %.1f KDJ %.1f/%.1f/%.1f BOLL %s/%s/%s ATR %s\n",
 			tf.Interval, fmtNum(tf.Ind.MA7), fmtNum(tf.Ind.MA25), fmtNum(tf.Ind.MA99), fmtNum(tf.Ind.EMA12), fmtNum(tf.Ind.EMA26),
@@ -1060,40 +1242,17 @@ Scoring rules:
 		}
 	}
 
-	b.WriteString("\nFollowed copy-trade consensus (lead-trader crowd; crowded-and-underwater longs are unwind risk = ONE factor, NOT an automatic short; trapped shorts = ONE factor, NOT an automatic long):\n")
-	if sum == nil {
-		b.WriteString("no followed trader currently holds or traded this coin.\n")
+	// Only fresh openers survive from the copy-trade block: they were the one
+	// subset marginally above a coin flip, and are labelled as weak evidence.
+	b.WriteString("\nLead-trader fresh openers (WEAK evidence, historically close to a coin flip):\n")
+	if sum == nil || (sum.Long.Openers == 0 && sum.Short.Openers == 0) {
+		b.WriteString("none recently.\n")
 	} else {
-		fmt.Fprintf(&b, "Long: %d traders, %s USDT%s\n", sum.Long.Traders, fmtNum(sum.Long.Value), sideExtra(sum.Long))
-		fmt.Fprintf(&b, "Short: %d traders, %s USDT%s\n", sum.Short.Traders, fmtNum(sum.Short.Value), sideExtra(sum.Short))
-		fmt.Fprintf(&b, "Confidence %s %.0f/100 (agreement %.2f quality %.2f health %.2f longShare %.2f)\n",
-			sum.Confidence.Direction, sum.Confidence.Score, sum.Confidence.Agreement, sum.Confidence.Quality, sum.Confidence.Health, sum.Confidence.LongShare)
-		fmt.Fprintf(&b, "Rank %.0f dir=%s strength=%.0f independence=%.2f crowding=%.2f liquidity=%.2f entry=%.2f\n",
-			sum.Rank.Score, sum.Rank.Direction, sum.Rank.Strength, sum.Rank.Independence, sum.Rank.Crowding, sum.Rank.Liquidity, sum.Rank.Entry)
-		fmt.Fprintf(&b, "Fresh-call dir=%s score=%.0f longCalls=%d shortCalls=%d burst=%d entryGapPct=%.2f\n",
-			sum.Shadow.Direction, sum.Shadow.Score, sum.Shadow.LongCalls, sum.Shadow.ShortCalls, sum.Shadow.Burst, sum.Shadow.EntryGapPct)
-		if sum.Long.Trapped+sum.Short.Trapped > 0 {
-			fmt.Fprintf(&b, "Trapped holders: long %d, short %d (deep-in-loss, often reversal candidates)\n", sum.Long.Trapped, sum.Short.Trapped)
-		}
-		if sum.HighFreq > 0 {
-			fmt.Fprintf(&b, "Note: %d high-frequency holders (weighted down).\n", sum.HighFreq)
-		}
-		fmt.Fprintf(&b, "24h quote volume: %s USDT\n", fmtNum(sum.Volume24h))
-	}
-	if len(holders) > 0 {
-		b.WriteString("Top holders:\n")
-		n := len(holders)
-		if n > 5 {
-			n = 5
-		}
-		for _, h := range holders[:n] {
-			fmt.Fprintf(&b, "- %s %s %s USDT entry=%s return=%.1f%% style=%s score=%.0f\n",
-				h.Nickname, h.Side, fmtNum(h.EntryValue), fmtNum(h.EntryPrice), h.ReturnPct, h.Style, h.Score)
-		}
+		fmt.Fprintf(&b, "fresh long openers %d, fresh short openers %d\n", sum.Long.Openers, sum.Short.Openers)
 	}
 	if prev != nil {
-		fmt.Fprintf(&b, "\nPREVIOUS READING (%s, price %s): bias=%s bull=%.0f bear=%.0f conviction=%.0f invalidation=%q\n",
-			time.UnixMilli(prev.LastAt).UTC().Format("01-02 15:04"), fmtNum(prev.LastPrice), prev.Bias, prev.Bull, prev.Bear, prev.Conviction, prev.Invalidation)
+		fmt.Fprintf(&b, "\nPREVIOUS READING (context only, %s, price %s): bias=%s bull=%.0f bear=%.0f\n",
+			time.UnixMilli(prev.LastAt).UTC().Format("01-02 15:04"), fmtNum(prev.LastPrice), prev.Bias, prev.Bull, prev.Bear)
 	}
 	return system, b.String()
 }

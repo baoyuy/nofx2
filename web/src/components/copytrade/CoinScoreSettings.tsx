@@ -7,11 +7,13 @@ import type {
   CoinAccuracyResp,
   CoinScoreModelInfo,
   CoinScoreSettings as Settings,
+  PoolRankMode,
 } from '../../lib/api/copyTrade'
 import { notify } from '../../lib/notify'
 import { tr, ui } from '../market/marketUi'
 import { NoticeText } from '../NoticeText'
 import { ago } from './format'
+import { BaselineComparePanel } from './BaselineComparePanel'
 
 // Settings for the per-coin AI reading: run every coin on demand, or on a timer.
 export function CoinScoreSettings({ language }: { language: string }) {
@@ -42,6 +44,7 @@ export function CoinScoreSettings({ language }: { language: string }) {
   const [minVol, setMinVol] = useState('0')
   const [poolRefresh, setPoolRefresh] = useState('5')
   const [poolTTL, setPoolTTL] = useState('12')
+  const [rankMode, setRankMode] = useState<PoolRankMode>('measured')
   const [interval, setIntervalMin] = useState('60')
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
@@ -70,6 +73,9 @@ export function CoinScoreSettings({ language }: { language: string }) {
       setMinVol(String(data.min_quote_volume ?? 0))
       setPoolRefresh(String(data.pool_refresh_minutes ?? 5))
       setPoolTTL(String(data.pool_ttl_minutes ?? 12))
+      setRankMode(
+        data.pool_rank_mode === 'conviction' ? 'conviction' : 'measured'
+      )
       setIntervalMin(String(data.interval_minutes))
     }
   }, [data, dirty])
@@ -85,7 +91,7 @@ export function CoinScoreSettings({ language }: { language: string }) {
     if (!valid) return
     setSaving(true)
     try {
-      await api.setCoinScoreSettings({ enabled: nextEnabled, interval_minutes: n, pool_auto: poolAuto, top_n: Number(topN) || 0, concurrency: Number(conc) || 1, min_quote_volume: Number(minVol) || 0, pool_refresh_minutes: Number(poolRefresh) || 5, pool_ttl_minutes: Number(poolTTL) || 12 })
+      await api.setCoinScoreSettings({ enabled: nextEnabled, interval_minutes: n, pool_auto: poolAuto, top_n: Number(topN) || 0, concurrency: Number(conc) || 1, min_quote_volume: Number(minVol) || 0, pool_refresh_minutes: Number(poolRefresh) || 5, pool_ttl_minutes: Number(poolTTL) || 12, pool_rank_mode: rankMode })
       setDirty(false)
       await mutate()
     } catch (e) {
@@ -343,6 +349,7 @@ export function CoinScoreSettings({ language }: { language: string }) {
                   min_quote_volume: Number(minVol) || 0,
                   pool_refresh_minutes: Number(poolRefresh) || 5,
                   pool_ttl_minutes: Number(poolTTL) || 12,
+                  pool_rank_mode: rankMode,
                 })
                 await mutate()
               } catch (err) {
@@ -370,6 +377,64 @@ export function CoinScoreSettings({ language }: { language: string }) {
         <span className={`${ui.muted} text-xs tabular-nums`}>
           {tr(language, `当前币池 ${pool?.count ?? 0} 个`, `pool: ${pool?.count ?? 0} coins`)}
         </span>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 text-sm text-nofx-text">
+        <label htmlFor="pool-rank-mode">
+          {tr(language, '币池排序', 'Pool ranking')}
+        </label>
+        <select
+          id="pool-rank-mode"
+          className={ui.input}
+          value={rankMode}
+          onChange={async (e) => {
+            const next: PoolRankMode =
+              e.target.value === 'conviction' ? 'conviction' : 'measured'
+            const prev = rankMode
+            setRankMode(next)
+            try {
+              // Partial body: the server merges, so only the mode changes.
+              await api.setCoinScoreSettings({
+                enabled,
+                interval_minutes: valid ? n : data.interval_minutes,
+                pool_rank_mode: next,
+              })
+              await api.generateCoinPool()
+              await Promise.all([mutate(), mutatePool()])
+            } catch (err) {
+              setRankMode(prev)
+              notify.error(err instanceof Error ? err.message : String(err))
+            }
+          }}
+        >
+          <option value="measured">
+            {tr(
+              language,
+              '按历史实测（推荐）',
+              'Measured history (recommended)'
+            )}
+          </option>
+          <option value="conviction">
+            {tr(
+              language,
+              '按 AI 自报强度（旧）',
+              'AI self-reported conviction (old)'
+            )}
+          </option>
+        </select>
+        <p className={`${ui.muted} w-full text-xs`}>
+          {rankMode === 'measured'
+            ? tr(
+                language,
+                '按「方向 + 强度档」分组，用这一组过去 4 小时扣 0.2% 成本后的实际收益排序（取保守下限）。扣成本后亏钱的组不入池；样本不足的组暂用保守默认分并标注「样本不足」。大盘明显一边倒时，只拦逆势方向。这是对历史的总结，不是对下一笔的保证。',
+                'Groups readings by side and conviction band, and ranks each group by the 4h return it actually produced after a 0.2% cost (conservative lower bound). Groups that lost after cost are excluded; groups with too little history get a conservative default and are marked. When the market is clearly one-sided, only picks against it are dropped. A summary of history, not a promise about the next trade.'
+              )
+            : tr(
+                language,
+                '旧逻辑：按 AI 自报的强度排序。该数字未经校准，仅用于对比。',
+                'Previous behaviour: ranks on the conviction the model reports. That number is not calibrated; kept for comparison.'
+              )}
+        </p>
       </div>
 
       <div className="border-t border-[rgba(25,36,52,0.08)] pt-3">
@@ -422,6 +487,8 @@ export function CoinScoreSettings({ language }: { language: string }) {
           </p>
         )}
       </div>
+
+      <BaselineComparePanel language={language} />
 
       <p className="text-xs text-nofx-gold">
         {tr(

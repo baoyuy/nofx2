@@ -3,6 +3,30 @@ import { API_BASE, httpClient } from './helpers'
 // Copy-trade monitor: Binance futures lead traders the user follows, read
 // from binance.com's copy-trading pages by the backend.
 
+export interface DirectionEvidence {
+  samples: number
+  hits: number
+  hit_rate: number
+  lower_95: number
+  mean_return: number
+}
+export interface DirectionPick {
+  symbol: string
+  direction: 'long' | 'short'
+  ai_history: DirectionEvidence
+  trader_history: DirectionEvidence
+  calls: number
+  invalidation_price: number
+}
+export interface DirectionShortlist {
+  candidates: number
+  min_volume: number
+  as_of: number
+  long: DirectionPick[]
+  short: DirectionPick[]
+  excluded: Record<string, number>
+}
+
 export type TradeSide = 'long' | 'short'
 export type TradeAction = 'open' | 'add' | 'reduce' | 'close'
 
@@ -348,9 +372,12 @@ export interface CoinScoreBrief {
   model_id: string
 }
 
+export type PoolRankMode = 'measured' | 'conviction'
+
 export interface CoinScoreSettings {
   enabled: boolean
   pool_auto: boolean
+  pool_rank_mode: PoolRankMode
   top_n: number
   concurrency: number
   min_quote_volume: number
@@ -377,6 +404,46 @@ export interface OutcomeStat {
   beat_market: number
   avg_ret: number
   avg_excess: number
+  /** Samples whose move cleared the neutral band (hit_rate is over these). */
+  dir_samples: number
+  /** Gross average minus the assumed round-trip cost. */
+  net_avg_ret: number
+  net_win_rate: number
+  net_excess: number
+  /** One-sided 90% lower bound on net_excess. */
+  net_excess_lb: number
+  cost_pct: number
+}
+
+/** A reference rule measured over the same samples, with no model involved. */
+export interface BaselineStat {
+  name: string
+  label: string
+  samples: number
+  hit_rate: number
+  net_avg_ret: number
+  net_win_rate: number
+}
+
+export interface OutcomeWindow {
+  since: number
+  oldest: number
+  /** How many days the stored data actually spans (server-computed). */
+  coverage_days: number
+  days: number
+  retention_days: number
+  truncated: boolean
+  cost_pct: number
+  neutral_pct: number
+  exit_interval: string
+}
+
+export interface OutcomesResp {
+  rows: OutcomeStat[]
+  baselines: Record<string, BaselineStat[]>
+  window: OutcomeWindow
+  version: string
+  versions: string[]
 }
 
 export interface CoinPoolCoinBrief {
@@ -733,13 +800,18 @@ export const copyTradeApi = {
   getCoinScores: () =>
     get<{ items: CoinScoreBrief[] }>('/copytrade/coin-scores'),
 
-  getCoinScoreOutcomes: () => get<{ rows: OutcomeStat[] }>('/copytrade/coin-score/outcomes'),
+  getCoinScoreOutcomes: (version?: string) =>
+    get<OutcomesResp>(
+      `/copytrade/coin-score/outcomes${version ? `?version=${encodeURIComponent(version)}` : ''}`
+    ),
 
   getCoinPool: () => get<CoinPoolInfo>('/copytrade/coin-pool'),
 
   getCoinStatus: () => get<CoinStatusResp>('/copytrade/coin-status'),
 
   getCoinAccuracy: () => get<CoinAccuracyResp>('/copytrade/coin-accuracy'),
+
+  getDirectionShortlist: () => get<DirectionShortlist>('/copytrade/direction-shortlist'),
 
   getCoinRanking: (mode: 'stable' | 'ai' = 'stable') =>
     get<{ mode: string; items: unknown[] }>(`/copytrade/coin-ranking?mode=${mode}`),
@@ -764,6 +836,7 @@ export const copyTradeApi = {
     min_quote_volume?: number
     pool_refresh_minutes?: number
     pool_ttl_minutes?: number
+    pool_rank_mode?: PoolRankMode
   }): Promise<void> {
     const r = await httpClient.request<{ enabled: boolean; interval_minutes: number }>(
       `${API_BASE}/copytrade/coin-score/settings`,

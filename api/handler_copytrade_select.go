@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"nofx/copytrade"
 	"nofx/logger"
 	"nofx/store"
 )
@@ -27,6 +28,12 @@ const (
 	poolPerSide   = 7
 	poolEntryConv = 20.0 // a new coin must be at least this strong to enter
 	poolExitConv  = 10.0 // an existing coin is kept down to this (hysteresis)
+	// Measured-rank thresholds. On the measured scale (see copytrade.RankCandidates)
+	// 40 is a zero lower bound and 30 is the provisional rank of a thin group,
+	// so entry at 28 admits thin groups while exit at 20 keeps a member whose
+	// group has since weakened slightly.
+	poolEntryRank = 28.0
+	poolExitRank  = 20.0
 	poolScreener  = "copytrade_ai"
 	poolName      = "带单AI币池"
 )
@@ -44,6 +51,18 @@ type poolCandidate struct {
 	conv     float64
 	smoothed float64
 }
+
+// poolRankMode is how the pool orders candidates.
+//   - "measured" (default): order by the cost-adjusted forward return each
+//     (side, conviction band) group actually produced, veto candidates taken
+//     against a lopsided market, and drop groups whose measured bound is
+//     informative and non-positive.
+//   - "conviction": the previous behaviour, ordering on the model's
+//     self-reported conviction. Kept so the two can be compared.
+const (
+	poolRankMeasured   = "measured"
+	poolRankConviction = "conviction"
+)
 
 // buildCoinPool rebuilds the user's AI coin pool in place. The pool is an
 // ordinary coin pool (screener copytrade_ai) with a stable ID: strategies trade
@@ -126,32 +145,11 @@ func (s *Server) buildCoinPool(userID string) (*store.CoinPool, error) {
 	sort.SliceStable(cands, func(i, j int) bool { return cands[i].conv > cands[j].conv })
 
 	expiry := now.Add(time.Duration(ttlMin) * time.Minute).UnixMilli()
-	longN, shortN := 0, 0
-	picks := make([]store.CoinPoolCoin, 0, poolMaxTotal)
-	for _, c := range cands {
-		thr := poolEntryConv
-		if existing[c.symbol] {
-			thr = poolExitConv
-		}
-		if c.conv < thr {
-			continue
-		}
-		if len(picks) >= poolMaxTotal {
-			break
-		}
-		if c.side == "long" {
-			if longN >= poolPerSide {
-				continue
-			}
-			longN++
-		} else {
-			if shortN >= poolPerSide {
-				continue
-			}
-			shortN++
-		}
-		picks = append(picks, store.CoinPoolCoin{Symbol: c.symbol, Direction: c.side, Score: c.conv,
-			Note: fmt.Sprintf("edge %+.0f conv %.0f", c.smoothed, c.conv), ExpiryAt: expiry})
+	var picks []store.CoinPoolCoin
+	if cfg.rankMode() == poolRankMeasured {
+		picks = s.pickMeasured(userID, cands, existing, expiry)
+	} else {
+		picks = pickByConviction(cands, existing, expiry)
 	}
 
 	// Diff vs previous membership for the change log.
@@ -188,6 +186,115 @@ func (s *Server) buildCoinPool(userID string) (*store.CoinPool, error) {
 	}
 	lastPoolBuild.Store(nowMs)
 	return out, nil
+}
+
+// pickByConviction is the previous selection: order on the model's
+// self-reported conviction, with per-side caps and entry/exit hysteresis.
+func pickByConviction(cands []poolCandidate, existing map[string]bool, expiry int64) []store.CoinPoolCoin {
+	longN, shortN := 0, 0
+	picks := make([]store.CoinPoolCoin, 0, poolMaxTotal)
+	for _, c := range cands {
+		thr := poolEntryConv
+		if existing[c.symbol] {
+			thr = poolExitConv
+		}
+		if c.conv < thr {
+			continue
+		}
+		if len(picks) >= poolMaxTotal {
+			break
+		}
+		if c.side == "long" {
+			if longN >= poolPerSide {
+				continue
+			}
+			longN++
+		} else {
+			if shortN >= poolPerSide {
+				continue
+			}
+			shortN++
+		}
+		picks = append(picks, store.CoinPoolCoin{Symbol: c.symbol, Direction: c.side, Score: c.conv,
+			Note: fmt.Sprintf("edge %+.0f conv %.0f", c.smoothed, c.conv), ExpiryAt: expiry})
+	}
+	return picks
+}
+
+// pickMeasured orders candidates by the measured history of their (side,
+// conviction band) group and applies the breadth veto.
+//
+// Two gates in front of the ranking, both one-sided:
+//   - breadth: a candidate taken against a broadly lopsided market is dropped.
+//     A mixed or unknown reading drops nothing.
+//   - group history: a group whose cost-adjusted lower bound is informative and
+//     non-positive is dropped. A group with too little history is kept at a
+//     provisional rank and marked "样本不足", so a side with no samples yet is
+//     not shut out for good.
+//
+// Hysteresis still applies, on the measured rank rather than on conviction, so
+// a coin already in the pool is not dropped by a small change.
+func (s *Server) pickMeasured(userID string, cands []poolCandidate, existing map[string]bool, expiry int64) []store.CoinPoolCoin {
+	snap := s.groupHistory(userID)
+	inputs := make([]copytrade.GroupRankInput, 0, len(cands))
+	smoothed := make(map[string]float64, len(cands))
+	for _, c := range cands {
+		if snap.breadth.BreadthVetoes(c.side) {
+			continue
+		}
+		inputs = append(inputs, copytrade.GroupRankInput{Symbol: c.symbol, Side: c.side, Conviction: c.conv})
+		smoothed[c.symbol] = c.smoothed
+	}
+	ranked := copytrade.RankCandidates(inputs, snap.stats)
+
+	longN, shortN := 0, 0
+	picks := make([]store.CoinPoolCoin, 0, poolMaxTotal)
+	for _, r := range ranked {
+		if r.Blocked {
+			continue
+		}
+		thr := poolEntryRank
+		if existing[r.Symbol] {
+			thr = poolExitRank
+		}
+		if r.Rank < thr {
+			continue
+		}
+		if len(picks) >= poolMaxTotal {
+			break
+		}
+		if r.Side == "long" {
+			if longN >= poolPerSide {
+				continue
+			}
+			longN++
+		} else {
+			if shortN >= poolPerSide {
+				continue
+			}
+			shortN++
+		}
+		picks = append(picks, store.CoinPoolCoin{Symbol: r.Symbol, Direction: r.Side, Score: r.Rank,
+			Note: measuredNote(r, snap.breadth, smoothed[r.Symbol]), ExpiryAt: expiry})
+	}
+	return picks
+}
+
+// measuredNote explains a pick in terms of what was measured, never as a
+// prediction: the group's sample count and cost-adjusted lower bound, or an
+// explicit "样本不足" when the group is too thin to judge.
+func measuredNote(r copytrade.GroupRanked, b copytrade.Breadth, smoothedEdge float64) string {
+	if r.Thin {
+		return fmt.Sprintf("样本不足(%s %s, n=%d) 暂用保守默认分 · 大盘%s · conv %.0f",
+			r.Side, r.Band, r.Stat.Samples, b.Label(), r.Conviction)
+	}
+	bound, metric := r.Stat.NetLower, "净"
+	if r.Stat.HasExcess {
+		bound, metric = r.Stat.ExcessLower, "超额"
+	}
+	return fmt.Sprintf("历史%s下限 %+.2f%%/4h (n=%d, 胜率%.0f%%, 扣成本%.1f%%) · 组 %s %s · 大盘%s · conv %.0f · edge %+.0f",
+		metric, bound*100, r.Stat.Samples, r.Stat.WinRate*100, copytrade.GroupCost*100,
+		r.Side, r.Band, b.Label(), r.Conviction, smoothedEdge)
 }
 
 func (s *Server) handleCoinPoolGenerate(c *gin.Context) {

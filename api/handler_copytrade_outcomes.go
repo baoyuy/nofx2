@@ -3,12 +3,14 @@ package api
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"nofx/copytrade"
 	"nofx/logger"
 	"nofx/store"
 	"nofx/trader/binance"
@@ -22,6 +24,26 @@ import (
 const (
 	outcomeBucketMs = int64(30 * 60 * 1000)     // cohort window for the benchmark
 	outcomeDedupMs  = int64(4 * 60 * 60 * 1000) // same coin+side counts once per 4h
+	// outcomeRetentionMs is how long evaluated readings are kept. The previous
+	// 7 days could never accumulate enough samples to judge a rule across
+	// different market conditions, which is the whole point of storing them.
+	outcomeRetentionMs = int64(90 * 24 * 60 * 60 * 1000)
+	// outcomeStatsWindowMs is how far back the statistics endpoints look.
+	outcomeStatsWindowMs = int64(30 * 24 * 60 * 60 * 1000)
+	// outcomeExitInterval is the candle size used to price the horizon exit.
+	// 1h candles priced a "4h" result up to an hour late; 15m candles bound
+	// that error to 15 minutes.
+	outcomeExitInterval = "15m"
+	// outcomeExitTolMs is how far past the due time an exit candle may sit
+	// before the horizon is left pending rather than mispriced.
+	outcomeExitTolMs = int64(30 * 60 * 1000)
+	// outcomeRoundTripCost is the assumed round-trip execution cost applied to
+	// the net figures. It is an assumption, not a measured fill cost, and does
+	// not include funding.
+	outcomeRoundTripCost = 0.002
+	// outcomeNeutralMove: a move smaller than this is not a directional
+	// result; it counts as neither a hit nor a miss.
+	outcomeNeutralMove = coinScoreNeutralMovePct / 100.0
 )
 
 func (s *Server) StartScoreOutcomeLoop(ctx context.Context) {
@@ -38,26 +60,28 @@ func (s *Server) scoreOutcomeLoop(ctx context.Context) {
 		case <-t.C:
 		}
 		s.evaluateScoreOutcomes(ctx)
+		s.evaluateDirectionResearch(ctx)
 	}
 }
 
-func priceAtKh(k []binance.MarketKline, ms int64) (float64, bool) {
+// priceAtKh returns the close of the last candle at or before ms, and how far
+// before ms that candle opened. The gap lets callers reject a price that is too
+// old to represent the horizon.
+func priceAtKh(k []binance.MarketKline, ms int64) (price float64, gapMs int64, ok bool) {
 	sec := ms / 1000
-	var p float64
-	ok := false
 	for _, c := range k {
 		if c.Time <= sec {
-			p, ok = c.Close, true
+			price, gapMs, ok = c.Close, (sec-c.Time)*1000, true
 		} else {
 			break
 		}
 	}
-	return p, ok
+	return price, gapMs, ok
 }
 
 func (s *Server) evaluateScoreOutcomes(ctx context.Context) {
 	now := time.Now().UnixMilli()
-	if err := s.store.CopyTrade().PruneScoreOutcomes(now - 7*24*3600*1000); err != nil {
+	if err := s.store.CopyTrade().PruneScoreOutcomes(now - outcomeRetentionMs); err != nil {
 		logger.Warnf("copy-trade outcomes: prune: %v", err)
 	}
 	pend, err := s.store.CopyTrade().PendingScoreOutcomes(now)
@@ -73,7 +97,10 @@ func (s *Server) evaluateScoreOutcomes(ctx context.Context) {
 		o := &pend[i]
 		k, ok := cache[o.Symbol]
 		if !ok {
-			k, _ = binance.GetPublicKlines(ctx, o.Symbol, "1h", 400)
+			// 15m candles, enough of them to cover the 72h horizon plus the
+			// entry lookback, so an exit is priced within 15 minutes of its
+			// due time rather than up to an hour late.
+			k, _ = binance.GetPublicKlines(ctx, o.Symbol, outcomeExitInterval, 400)
 			cache[o.Symbol] = k
 		}
 		if len(k) == 0 {
@@ -81,7 +108,7 @@ func (s *Server) evaluateScoreOutcomes(ctx context.Context) {
 		}
 		entry := o.EntryPrice
 		if entry <= 0 {
-			if p, ok := priceAtKh(k, o.AnalyzedAt); ok {
+			if p, gap, ok := priceAtKh(k, o.AnalyzedAt); ok && gap <= outcomeExitTolMs {
 				entry = p
 			}
 		}
@@ -97,8 +124,19 @@ func (s *Server) evaluateScoreOutcomes(ctx context.Context) {
 			if now < due {
 				return
 			}
-			exit, ok := priceAtKh(k, due)
-			if !ok {
+			if due < k[0].Time*1000 {
+				// The due time is older than the candles we can fetch (for
+				// example the app was down). It can never be priced; close the
+				// horizon with no result so the row stops being re-fetched and
+				// can be pruned. Statistics skip a nil return.
+				*done = true
+				changed = true
+				return
+			}
+			exit, gap, ok := priceAtKh(k, due)
+			if !ok || gap > outcomeExitTolMs {
+				// No candle close enough to the due time yet: leave the
+				// horizon pending rather than recording a mispriced result.
 				return
 			}
 			r := exit/entry - 1
@@ -130,6 +168,29 @@ type outcomeStat struct {
 	BeatRate  float64 `json:"beat_market"` // % beating the market-average benchmark
 	AvgRet    float64 `json:"avg_ret"`
 	AvgExcess float64 `json:"avg_excess"` // vs market-average benchmark
+	// Cost-adjusted figures. These are the ones to judge a rule by: the gross
+	// numbers above ignore fees and slippage entirely.
+	//
+	// DirSamples counts only samples whose move cleared the neutral threshold,
+	// so a flat market is not scored as a near-miss either way.
+	DirSamples  int     `json:"dir_samples"`
+	NetAvgRet   float64 `json:"net_avg_ret"`   // AvgRet minus the assumed round-trip cost
+	NetWinRate  float64 `json:"net_win_rate"`  // % of samples profitable after cost
+	NetExcess   float64 `json:"net_excess"`    // cost-adjusted excess over the market
+	NetExcessLB float64 `json:"net_excess_lb"` // one-sided 90% lower bound on NetExcess
+	CostPct     float64 `json:"cost_pct"`      // the cost assumption applied, in %
+}
+
+// baselineStat is a reference strategy measured over the same samples, so an AI
+// number can be read against what a rule with no model would have produced.
+type baselineStat struct {
+	Name string `json:"name"`
+	// Label is a short human description of the rule.
+	Label      string  `json:"label"`
+	Samples    int     `json:"samples"`
+	HitRate    float64 `json:"hit_rate"`
+	NetAvgRet  float64 `json:"net_avg_ret"`
+	NetWinRate float64 `json:"net_win_rate"`
 }
 
 func bandOf(bull, bear float64) string {
@@ -174,6 +235,11 @@ func rawLong(o store.CopyTradeScoreOutcome, h string) (float64, bool) {
 
 func cohortBucket(ms int64) int64 { return ms / outcomeBucketMs }
 
+// cohortKey is the benchmark map key for one horizon and cohort.
+func cohortKey(h string, ms int64) string {
+	return fmt.Sprintf("%s|%d", h, cohortBucket(ms))
+}
+
 // dedupOutcomes keeps the first occurrence of each (symbol, bias) within any 4h
 // window, so one coin+direction is only counted once per 4h.
 func dedupOutcomes(rows []store.CopyTradeScoreOutcome) []store.CopyTradeScoreOutcome {
@@ -203,7 +269,7 @@ func buildBench(rows []store.CopyTradeScoreOutcome) map[string]float64 {
 			if !ok {
 				continue
 			}
-			k := fmt.Sprintf("%s|%d", h, cohortBucket(o.AnalyzedAt))
+			k := cohortKey(h, o.AnalyzedAt)
 			sums[k] += r
 			cnts[k]++
 			ka := h + "|all"
@@ -221,16 +287,17 @@ func buildBench(rows []store.CopyTradeScoreOutcome) map[string]float64 {
 }
 
 func benchAt(bench map[string]float64, h string, analyzedAt int64) float64 {
-	if v, ok := bench[fmt.Sprintf("%s|%d", h, cohortBucket(analyzedAt))]; ok {
+	if v, ok := bench[cohortKey(h, analyzedAt)]; ok {
 		return v
 	}
 	return bench[h+"|all"] // fallback
 }
 
 func statFor(h, side, band string, rows []store.CopyTradeScoreOutcome, bench map[string]float64) outcomeStat {
-	st := outcomeStat{Horizon: h, Side: side, Band: band}
+	st := outcomeStat{Horizon: h, Side: side, Band: band, CostPct: outcomeRoundTripCost * 100}
 	var sum, exSum float64
-	hit, beat, n := 0, 0, 0
+	var netEx []float64
+	hit, beat, n, dirN, netWins := 0, 0, 0, 0, 0
 	for _, o := range rows {
 		r, ok := retOf(o, h)
 		if !ok {
@@ -238,8 +305,17 @@ func statFor(h, side, band string, rows []store.CopyTradeScoreOutcome, bench map
 		}
 		n++
 		sum += *r
-		if *r > 0 {
-			hit++
+		// A move inside the neutral band is not a directional result: it is
+		// counted in Samples but is neither a hit nor a miss.
+		if math.Abs(*r) >= outcomeNeutralMove {
+			dirN++
+			if *r > 0 {
+				hit++
+			}
+		}
+		net := *r - outcomeRoundTripCost
+		if net > 0 {
+			netWins++
 		}
 		bm := benchAt(bench, h, o.AnalyzedAt)
 		// Returns are signed in the predicted direction, while the cohort
@@ -249,30 +325,133 @@ func statFor(h, side, band string, rows []store.CopyTradeScoreOutcome, bench map
 			bm = -bm
 		}
 		exSum += *r - bm
+		netEx = append(netEx, net-bm)
 		if *r > bm {
 			beat++
 		}
 	}
 	st.Samples = n
+	st.DirSamples = dirN
 	if n == 0 {
 		return st
 	}
-	st.HitRate = float64(hit) / float64(n) * 100
+	if dirN > 0 {
+		st.HitRate = float64(hit) / float64(dirN) * 100
+	}
 	st.BeatRate = float64(beat) / float64(n) * 100
 	st.AvgRet = sum / float64(n) * 100
 	st.AvgExcess = exSum / float64(n) * 100
+	st.NetAvgRet = st.AvgRet - outcomeRoundTripCost*100
+	st.NetWinRate = float64(netWins) / float64(n) * 100
+	mean, lb := copytrade.MeanLower90(netEx)
+	st.NetExcess, st.NetExcessLB = mean*100, lb*100
 	return st
 }
 
+// baselinesFor measures reference rules over the same de-duplicated readings,
+// so the AI's numbers can be compared with what needed no model:
+//   - short_all / long_all: take every scored coin on one side. In a trending
+//     market these alone can look good, which is exactly why they are shown.
+//   - momentum: follow the coin's own direction over the preceding window,
+//     using the previous reading of the same coin as the reference point. No
+//     model, just continuation.
+//
+// A baseline is measured on the coin's raw long return, so it is independent of
+// what the AI chose for that coin.
+func baselinesFor(h string, rows []store.CopyTradeScoreOutcome) []baselineStat {
+	type acc struct {
+		rets []float64
+	}
+	sides := map[string]*acc{"long_all": {}, "short_all": {}, "momentum": {}}
+	// Previous raw long return per coin, for the momentum rule.
+	prevRet := map[string]float64{}
+	seenPrev := map[string]bool{}
+	for _, o := range rows {
+		raw, ok := rawLong(o, h)
+		if !ok {
+			continue
+		}
+		sides["long_all"].rets = append(sides["long_all"].rets, raw)
+		sides["short_all"].rets = append(sides["short_all"].rets, -raw)
+		if seenPrev[o.Symbol] {
+			// Continue the coin's own previous direction.
+			if prevRet[o.Symbol] > 0 {
+				sides["momentum"].rets = append(sides["momentum"].rets, raw)
+			} else if prevRet[o.Symbol] < 0 {
+				sides["momentum"].rets = append(sides["momentum"].rets, -raw)
+			}
+		}
+		prevRet[o.Symbol], seenPrev[o.Symbol] = raw, true
+	}
+	labels := map[string]string{
+		"long_all":  "全部做多（不用AI）",
+		"short_all": "全部做空（不用AI）",
+		"momentum":  "延续上一次方向（不用AI）",
+	}
+	order := []string{"short_all", "long_all", "momentum"}
+	out := make([]baselineStat, 0, len(order))
+	for _, name := range order {
+		rets := sides[name].rets
+		b := baselineStat{Name: name, Label: labels[name], Samples: len(rets)}
+		if len(rets) == 0 {
+			out = append(out, b)
+			continue
+		}
+		var sum float64
+		dirN, hits, netWins := 0, 0, 0
+		for _, r := range rets {
+			sum += r
+			if math.Abs(r) >= outcomeNeutralMove {
+				dirN++
+				if r > 0 {
+					hits++
+				}
+			}
+			if r-outcomeRoundTripCost > 0 {
+				netWins++
+			}
+		}
+		if dirN > 0 {
+			b.HitRate = float64(hits) / float64(dirN) * 100
+		}
+		b.NetAvgRet = sum/float64(len(rets))*100 - outcomeRoundTripCost*100
+		b.NetWinRate = float64(netWins) / float64(len(rets)) * 100
+		out = append(out, b)
+	}
+	return out
+}
+
+// outcomeVersion labels a row's scoring version; rows recorded before the
+// version was stored are "legacy".
+func outcomeVersion(o store.CopyTradeScoreOutcome) string {
+	if o.ConfigVersion == "" {
+		return "legacy"
+	}
+	return o.ConfigVersion
+}
+
 func (s *Server) handleCoinScoreOutcomes(c *gin.Context) {
-	rows, err := s.store.CopyTrade().ListScoreOutcomes(c.GetString("user_id"))
+	now := time.Now().UnixMilli()
+	since := now - outcomeStatsWindowMs
+	all, truncated, err := s.store.CopyTrade().ListScoreOutcomesSince(c.GetString("user_id"), since)
 	if err != nil {
 		SafeInternalError(c, "Read score outcomes", err)
 		return
 	}
+	version := c.Query("version") // optional: one scoring version only
+	rows := all
+	if version != "" {
+		rows = make([]store.CopyTradeScoreOutcome, 0, len(all))
+		for _, o := range all {
+			if outcomeVersion(o) == version {
+				rows = append(rows, o)
+			}
+		}
+	}
 	rows = dedupOutcomes(rows)
 	bench := buildBench(rows)
 	var out []outcomeStat
+	baselines := map[string][]baselineStat{}
 	for _, h := range []string{"4h", "24h", "72h"} {
 		out = append(out, statFor(h, "all", "all", rows, bench))
 		for _, side := range []string{"long", "short"} {
@@ -293,6 +472,43 @@ func (s *Server) handleCoinScoreOutcomes(c *gin.Context) {
 			}
 			out = append(out, statFor(h, "all", band, sub, bench))
 		}
+		baselines[h] = baselinesFor(h, rows)
 	}
-	c.JSON(http.StatusOK, gin.H{"rows": out})
+	// Versions present in the window, newest first, so the page can offer a
+	// per-version view instead of mixing prompt generations.
+	seenV := map[string]int64{}
+	for _, o := range all {
+		v := outcomeVersion(o)
+		if o.AnalyzedAt > seenV[v] {
+			seenV[v] = o.AnalyzedAt
+		}
+	}
+	versions := make([]string, 0, len(seenV))
+	for v := range seenV {
+		versions = append(versions, v)
+	}
+	sort.Slice(versions, func(i, j int) bool { return seenV[versions[i]] > seenV[versions[j]] })
+	var oldest int64
+	coverageDays := 0.0
+	if len(all) > 0 {
+		oldest = all[0].AnalyzedAt
+		coverageDays = float64(now-oldest) / float64(24*3600*1000)
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"rows":      out,
+		"baselines": baselines,
+		"window": gin.H{
+			"since":          since,
+			"oldest":         oldest,
+			"coverage_days":  coverageDays,
+			"days":           outcomeStatsWindowMs / (24 * 3600 * 1000),
+			"retention_days": outcomeRetentionMs / (24 * 3600 * 1000),
+			"truncated":      truncated,
+			"cost_pct":       outcomeRoundTripCost * 100,
+			"neutral_pct":    coinScoreNeutralMovePct,
+			"exit_interval":  outcomeExitInterval,
+		},
+		"version":  version,
+		"versions": versions,
+	})
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"math"
 	"net/http"
-	"sort"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -78,9 +77,8 @@ func (s *Server) handleCoinAccuracy(c *gin.Context) {
 		}
 	}
 
-	rows, _ := s.store.CopyTrade().ListScoreOutcomes(userID)
-	// dedup: one coin+direction per 4h.
-	sort.Slice(rows, func(i, j int) bool { return rows[i].AnalyzedAt < rows[j].AnalyzedAt })
+	rows, _, _ := s.store.CopyTrade().ListScoreOutcomesSince(userID, time.Now().UnixMilli()-outcomeStatsWindowMs)
+	// dedup: one coin+direction per 4h (rows are already oldest first).
 	seen := map[string]int64{}
 	overall := accBucket{}
 	bySide := map[string]*accBucket{"long": {}, "short": {}}
