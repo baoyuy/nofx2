@@ -17,6 +17,7 @@ import (
 	"nofx/copytrade"
 	"nofx/kernel"
 	"nofx/logger"
+	"nofx/store"
 	"nofx/trader/binance"
 )
 
@@ -479,7 +480,14 @@ func (s *Server) handleCopyTradeSymbols(c *gin.Context) {
 		copytrade.AttachRanks(sums, volumes)
 	}
 	// Calibrate each coin's live 4h direction against mature AI and trader outcomes.
-	userID := c.GetString("user_id")
+	s.attachStableDirections(c.GetString("user_id"), sums)
+	c.JSON(http.StatusOK, gin.H{"symbols": sums, "fresh_traders": fresh, "total_traders": total})
+}
+
+// attachStableDirections fills each summary's 4h stable direction from mature
+// AI outcomes and trader signals over the last 30 days. Shared by the coin list
+// and the single-coin detail so both report the same samples.
+func (s *Server) attachStableDirections(userID string, sums []copytrade.SymbolSummary) {
 	now := time.Now()
 	currentScores, _ := s.store.CopyTrade().ListCoinScores(userID)
 	scoreAtBySymbol := make(map[string]int64, len(currentScores))
@@ -492,37 +500,7 @@ func (s *Server) handleCopyTradeSymbols(c *gin.Context) {
 		sum := &sums[i]
 		aiRows, _ := s.store.CopyTrade().RecentMatureScoreOutcomes(userID, sum.Symbol, now.Add(-30*24*time.Hour).UnixMilli())
 		tradeRows, _ := s.store.CopyTrade().RecentMatureSignals(sum.Symbol, now.Add(-30*24*time.Hour).Unix())
-		var ah, an, th, tn int
-		for _, o := range aiRows {
-			if o.Bias != "long" && o.Bias != "short" || o.Ret4h == nil {
-				continue
-			}
-			// Score outcomes store returns in the called direction: positive
-			// means the AI call was right for both long and short. A move smaller
-			// than the neutral threshold is an invalid sample (not hit, not miss).
-			r := *o.Ret4h
-			if math.Abs(r) < coinScoreNeutralMovePct/100.0 {
-				continue
-			}
-			an++
-			if r > 0 {
-				ah++
-			}
-		}
-		for _, sig := range tradeRows {
-			if sig.Direction != "long" && sig.Direction != "short" {
-				continue
-			}
-			ex := *sig.Ret4h
-			if sig.Bench4h != nil {
-				ex -= *sig.Bench4h
-			}
-			hit := (sig.Direction == "long" && ex > 0) || (sig.Direction == "short" && ex < 0)
-			tn++
-			if hit {
-				th++
-			}
-		}
+		ah, an, th, tn := stableCounts(aiRows, tradeRows)
 		dir := sum.StyleReading.Direction
 		if dir == "neutral" {
 			dir = sum.Rank.Direction
@@ -536,7 +514,40 @@ func (s *Server) handleCopyTradeSymbols(c *gin.Context) {
 		sum.Stable = copytrade.StableScore(ah, an, th, tn, dir, risk, fresh)
 		sum.Stable.Traders = sum.Long.Traders + sum.Short.Traders
 	}
-	c.JSON(http.StatusOK, gin.H{"symbols": sums, "fresh_traders": fresh, "total_traders": total})
+}
+
+// stableCounts turns mature rows into hit/sample counts.
+//   - AI outcomes store returns in the called direction (positive = right for
+//     both sides). A move under the neutral threshold is neither hit nor miss.
+//   - Trader signals are judged on excess over BTC in the signal's direction.
+func stableCounts(aiRows []store.CopyTradeScoreOutcome, tradeRows []store.CopyTradeSignal) (ah, an, th, tn int) {
+	for _, o := range aiRows {
+		if o.Bias != "long" && o.Bias != "short" || o.Ret4h == nil {
+			continue
+		}
+		r := *o.Ret4h
+		if math.Abs(r) < coinScoreNeutralMovePct/100.0 {
+			continue
+		}
+		an++
+		if r > 0 {
+			ah++
+		}
+	}
+	for _, sig := range tradeRows {
+		if sig.Direction != "long" && sig.Direction != "short" || sig.Ret4h == nil {
+			continue
+		}
+		ex := *sig.Ret4h
+		if sig.Bench4h != nil {
+			ex -= *sig.Bench4h
+		}
+		tn++
+		if (sig.Direction == "long" && ex > 0) || (sig.Direction == "short" && ex < 0) {
+			th++
+		}
+	}
+	return ah, an, th, tn
 }
 
 // copyTradeCoverage counts the followed traders with fresh data and those that
@@ -568,9 +579,14 @@ func (s *Server) handleCopyTradeSymbol(c *gin.Context) {
 		copytrade.AttachRanks(sums, volumes)
 	}
 	var summary *copytrade.SymbolSummary
-	for _, sum := range sums {
-		if sum.Symbol == symbol {
-			summary = &sum
+	for i := range sums {
+		if sums[i].Symbol == symbol {
+			// The detail panel shows the same 4h stable direction as the list.
+			// It used to be left as the zero value here, so the panel always
+			// read "0 samples / insufficient" however much history existed.
+			one := sums[i : i+1]
+			s.attachStableDirections(c.GetString("user_id"), one)
+			summary = &one[0]
 			break
 		}
 	}
