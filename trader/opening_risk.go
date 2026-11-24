@@ -13,6 +13,39 @@ import (
 var openingCandles = market.GetWithTimeframesFor
 var openingQuote = market.GetReferenceQuote
 
+// entrySlipAllowance is the adverse entry move the quote-time reward/risk check
+// must survive. The quote is not a fill: a plan that only clears the configured
+// ratio AT the quote fails the post-fill re-check after ordinary slippage, and
+// the position is opened and then emergency-closed for nothing. Observed on the
+// server: ZEC short, quote 772.40 -> ratio 2.051 passed, fill 771.83 -> 1.995
+// failed and was closed (decision 2925); UNI long did the same at 2.036.
+//
+// 0.1% of entry is several times the paper venue's 0.02% market slippage and
+// still below every opening that actually succeeded there (lowest 2.080), so it
+// separates the openings that could not hold from the ones that did. It is a
+// headroom requirement on the PLAN, not a change to the configured ratio: the
+// post-fill check stays exactly as strict.
+const entrySlipAllowance = 0.001
+
+// worstEntryRatio is the net reward/risk the plan would have if it filled
+// entrySlipAllowance worse than the quote: a long fills higher, a short lower.
+// The quote-time check requires THIS to reach the configured ratio, which is
+// exactly the condition the post-fill re-check applies, evaluated at the worst
+// entry the allowance covers. (An earlier draft scaled the configured ratio
+// instead; that is only an approximation and let some plans that sat on the
+// bar fall just short at the worst entry.)
+func worstEntryRatio(price, stop, take, cost float64, short bool) float64 {
+	worst := price * (1 + entrySlipAllowance)
+	if short {
+		worst = price * (1 - entrySlipAllowance)
+	}
+	risk := math.Abs(worst-stop)/worst + cost
+	if risk <= 0 {
+		return 0
+	}
+	return (math.Abs(take-worst)/worst - cost) / risk
+}
+
 func positiveBudget(v, fallback float64) float64 {
 	if v == 0 {
 		return fallback
@@ -41,6 +74,14 @@ func sizeOpening(d *kernel.Decision, r store.RiskControlConfig, equity, availabl
 		reward := math.Abs(d.TakeProfit-price)/price - cost
 		if reward <= 0 || reward/riskPerDollar < r.MinRiskRewardRatio {
 			return fmt.Errorf("net reward/risk %.3f below configured %.3f after costs", reward/riskPerDollar, r.MinRiskRewardRatio)
+		}
+		// The quote is not a fill. Require the plan to keep the configured
+		// ratio even at an adverse entry, so a plan that would fail the
+		// post-fill re-check is refused BEFORE any order is placed rather than
+		// opened and emergency-closed.
+		if worst := worstEntryRatio(price, d.StopLoss, d.TakeProfit, cost, d.Action == "open_short"); worst < r.MinRiskRewardRatio {
+			return fmt.Errorf("net reward/risk %.3f at quote falls to %.3f after %.2f%% entry slippage, below configured %.3f; widen the target or tighten the stop",
+				reward/riskPerDollar, worst, entrySlipAllowance*100, r.MinRiskRewardRatio)
 		}
 	}
 	marginCap := r.MaxMarginUsage

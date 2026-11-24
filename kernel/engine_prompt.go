@@ -604,23 +604,37 @@ func writeHardConstraints(sb *strings.Builder, accountEquity float64, riskContro
 			sb.WriteString(fmt.Sprintf("- Trading Leverage: Altcoin/Stock max %dx | BTC/ETH max %dx\n", riskControl.AltcoinMaxLeverage, riskControl.BTCETHMaxLeverage))
 		}
 	}
+	// The ratio is re-checked against the actual fill, and the quote-time check
+	// carries headroom for entry slippage. A plan aimed exactly at the minimum
+	// fails one of the two, so ask for a visible margin above it.
 	if zh {
-		sb.WriteString(fmt.Sprintf("- Risk-Reward Ratio: ≥1:%.1f (net target distance / stop distance including round-trip costs)\n", riskControl.MinRiskRewardRatio))
-		sb.WriteString(fmt.Sprintf("- Min Confidence: ≥%d to open position\n\n", riskControl.MinConfidence))
-	} else if riskControl.MinStopATR > 0 {
-		sb.WriteString(fmt.Sprintf("- Risk-Reward Ratio: ≥1:%.1f (net target distance / stop distance including round-trip costs)\n", riskControl.MinRiskRewardRatio))
-		sb.WriteString(fmt.Sprintf("- Stop Distance: stop_loss at least %.1f × ATR14 (primary timeframe) away from the current price; closer stops are rejected by the program\n", riskControl.MinStopATR))
+		sb.WriteString(fmt.Sprintf("- 盈亏比：≥1:%.1f（扣除往返成本后的净目标距离 / 止损距离）。程序会按实际成交价复核；请让方案明显高于该值（例如 ≥%.2f），正好卡在门槛上的方案会因滑点被拒绝。\n", riskControl.MinRiskRewardRatio, riskControl.MinRiskRewardRatio*1.05))
 		sb.WriteString(fmt.Sprintf("- Min Confidence: ≥%d to open position\n\n", riskControl.MinConfidence))
 	} else {
-		sb.WriteString(fmt.Sprintf("- Risk-Reward Ratio: ≥1:%.1f (net target distance / stop distance including round-trip costs)\n", riskControl.MinRiskRewardRatio))
+		sb.WriteString(fmt.Sprintf("- Risk-Reward Ratio: ≥1:%.1f (net target distance / stop distance including round-trip costs). It is re-checked against the actual fill; aim clearly above it (e.g. ≥%.2f), since a plan sitting exactly on the minimum is refused once entry slippage is applied.\n", riskControl.MinRiskRewardRatio, riskControl.MinRiskRewardRatio*1.05))
 		sb.WriteString(fmt.Sprintf("- Min Confidence: ≥%d to open position\n\n", riskControl.MinConfidence))
 	}
 
+	// State the two bounds exactly as the program enforces them. They are not
+	// symmetric: a stop TIGHTER than the minimum is rejected outright (the
+	// decision gate refuses the open), while a stop WIDER than the maximum is
+	// pulled in. Saying "clamped automatically" for both made the model keep
+	// proposing stops just inside the minimum, which were then refused.
 	if riskControl.MinStopATR > 0 || riskControl.MaxStopATR > 0 {
 		if zh {
-			sb.WriteString(fmt.Sprintf("- 止损距离（程序强制）：止损价距现价约 %.1f ~ %.1f × ATR14（0 表示该端不限制）；超出范围会被程序自动收紧/放宽。\n", riskControl.MinStopATR, riskControl.MaxStopATR))
+			if riskControl.MinStopATR > 0 {
+				sb.WriteString(fmt.Sprintf("- 止损距离（程序强制）：止损价距现价必须不少于 %.1f × ATR14（主周期）。更近的止损会被直接拒绝，不会自动放宽，因此请留出余量。\n", riskControl.MinStopATR))
+			}
+			if riskControl.MaxStopATR > 0 {
+				sb.WriteString(fmt.Sprintf("- 止损上限：超过 %.1f × ATR14 的止损会被程序收紧到该上限。\n", riskControl.MaxStopATR))
+			}
 		} else {
-			sb.WriteString(fmt.Sprintf("- Stop Distance (enforced by the program): stop_loss about %.1f-%.1f × ATR14 from price (0 = that bound off); values outside are clamped automatically.\n", riskControl.MinStopATR, riskControl.MaxStopATR))
+			if riskControl.MinStopATR > 0 {
+				sb.WriteString(fmt.Sprintf("- Stop Distance (enforced by the program): stop_loss must be at least %.1f × ATR14 (primary timeframe) from price. A closer stop is REJECTED outright, never widened for you, so leave margin.\n", riskControl.MinStopATR))
+			}
+			if riskControl.MaxStopATR > 0 {
+				sb.WriteString(fmt.Sprintf("- Stop ceiling: a stop wider than %.1f × ATR14 is pulled back to that ceiling.\n", riskControl.MaxStopATR))
+			}
 		}
 	}
 
