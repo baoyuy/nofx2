@@ -12,9 +12,10 @@ type BacktestInput struct {
 	// Fills per portfolio, in any order: followed traders and dropped ones
 	// whose fills were kept.
 	Fills map[string][]Fill
-	// Follows carries what is known of a portfolio (balance, public twin).
-	// Results on Binance (ROI, drawdown) are today's and are not used: every
-	// trader scores the same, so nothing read after the fact leaks in.
+	// Follows carries what is known of a portfolio (nickname, public twin).
+	// Results on Binance (ROI, drawdown) and the margin balance are today's and
+	// are not used: every trader scores the same and no balance is assumed, so
+	// nothing read after the fact leaks in.
 	Follows map[string]store.CopyTradeFollow
 	// Bars are closed hourly candles per symbol, oldest first, benchSymbol
 	// included.
@@ -105,9 +106,15 @@ func Backtest(in BacktestInput) BacktestResult {
 					events[i], events[j] = events[j], events[i]
 				}
 				f := in.Follows[t.id]
+				// MarginBalance is deliberately left at 0. The stored follow
+				// holds TODAY's balance; using it for every replayed hour was
+				// look-ahead (and a level mismatch for anyone whose balance
+				// changed), feeding both the stake weight and the inferred
+				// liquidation test. With no balance, stakeFactor returns its
+				// neutral 0.5 and the liquidation test is skipped, the same way
+				// the trader score is neutralised to backtestScore.
 				t.snap = Snapshot{
-					Follow: store.CopyTradeFollow{PortfolioID: t.id, Nickname: f.Nickname, PublicID: f.PublicID,
-						MarginBalance: f.MarginBalance},
+					Follow: store.CopyTradeFollow{PortfolioID: t.id, Nickname: f.Nickname, PublicID: f.PublicID},
 					Events: events, Style: StyleOf(window), HistoryComplete: true, PositionsSource: "inferred",
 					Score: TraderScore{Score: backtestScore},
 				}
@@ -118,7 +125,7 @@ func Backtest(in BacktestInput) BacktestResult {
 			s.HighFreq = s.OrdersPerDay >= highFreqOrders
 			s.Positions = assessHealth(t.raw, marks, s.Follow.MarginBalance, at)
 			s.Accuracy = scoreCalls(t.calls, in.Bars, at)
-			s.StyleAccuracy = scoreCallsOver(t.calls, in.Bars, at, styleHorizon(s.Style.Kind))
+			s.StyleAccuracy = scoreCallsOver(t.calls, in.Bars, at, styleHorizon(horizonKind(s)))
 			s.AccuracyBy = map[string]Accuracy{}
 			by := map[string][]call{}
 			for _, c := range t.calls {
@@ -138,7 +145,7 @@ func Backtest(in BacktestInput) BacktestResult {
 				}
 				opens = append(opens, rawOpen{trader: t.id, votes: styleVotes(s), callEvent: callEvent{
 					kind: styleKindOf(s), symbol: e.Symbol, side: e.Side, at: e.Time, hour: hour, price: e.Price,
-					own: int(styleHorizon(s.Style.Kind).Hours()), prior: priorBand(s.StyleAccuracy)}})
+					own: int(styleHorizon(horizonKind(s)).Hours()), prior: priorBand(s.StyleAccuracy)}})
 			}
 		}
 		follow.add(opens)
@@ -218,11 +225,11 @@ func Backtest(in BacktestInput) BacktestResult {
 		kind := styleKindOf(s)
 		st := stats[kind]
 		if st == nil {
-			st = &StyleStat{Kind: kind, OwnHours: int(styleHorizon(s.Style.Kind).Hours())}
+			st = &StyleStat{Kind: kind, OwnHours: int(styleHorizon(horizonKind(s)).Hours())}
 			stats[kind] = st
 		}
 		st.Traders++
-		st.Own = mergeAccuracy(st.Own, scoreCallsOver(t.calls, in.Bars, in.To, styleHorizon(s.Style.Kind)))
+		st.Own = mergeAccuracy(st.Own, scoreCallsOver(t.calls, in.Bars, in.To, styleHorizon(horizonKind(s))))
 		st.Day = mergeAccuracy(st.Day, scoreCalls(t.calls, in.Bars, in.To))
 		if s.Style.MedianHoldHours > 0 {
 			holds[kind] = append(holds[kind], s.Style.MedianHoldHours)

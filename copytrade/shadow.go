@@ -249,6 +249,6 @@ func shadowOf(calls []shadowCall, exits []shadowExit) Shadow {
 	case sh.Burst == 2:
 		burst = 1.15
 	}
-	sh.Score = math.Min(100, 100*math.Abs(sh.Flow)*countFactor(len(lead))*chase*burst*openFactor(sh.OpenShare))
+	sh.Score = math.Min(100, 100*math.Abs(sh.Flow)*countFactor(float64(len(lead)))*chase*burst*openFactor(sh.OpenShare))
 	return sh
 }

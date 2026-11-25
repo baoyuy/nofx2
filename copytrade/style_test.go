@@ -110,3 +110,46 @@ func TestStyleSkipsTheFirstRoundTrip(t *testing.T) {
 		t.Fatalf("the dropped trip must not pull the median down: %+v", got)
 	}
 }
+
+// One market order often fills in several pieces a few seconds apart. Those
+// pieces are one entry, not adds: counting them inflated adds per trade and,
+// since they fill at progressively worse prices, diluted the adverse share, so
+// a real averager could be classed as swing or scalp and vote at full weight.
+func TestStyleOfMergesSplitFillsOfOneOrder(t *testing.T) {
+	split := func(i int64) []Fill {
+		open := i * hourMs
+		return []Fill{
+			// One buy order at ~100, filled in four pieces within 2 seconds.
+			{Time: open, Symbol: "BTCUSDT", Side: "BUY", PositionSide: "BOTH", Qty: 1, Price: 100},
+			{Time: open + 500, Symbol: "BTCUSDT", Side: "BUY", PositionSide: "BOTH", Qty: 1, Price: 100.1},
+			{Time: open + 1000, Symbol: "BTCUSDT", Side: "BUY", PositionSide: "BOTH", Qty: 1, Price: 100.2},
+			{Time: open + 2000, Symbol: "BTCUSDT", Side: "BUY", PositionSide: "BOTH", Qty: 1, Price: 100.3},
+			{Time: open + 24*hourMs, Symbol: "BTCUSDT", Side: "SELL", PositionSide: "BOTH", Qty: 4, Price: 105, RealizedPnL: 19},
+		}
+	}
+	got := StyleOf(repeats(7, 48, split))
+	if got.AddsPerTrade != 0 {
+		t.Fatalf("split fills of one order are not adds: AddsPerTrade = %v", got.AddsPerTrade)
+	}
+	if got.Kind == StyleMartingale {
+		t.Fatalf("a single split entry must not read as averaging down: %+v", got)
+	}
+
+	// A real add a minute later still counts, and an adverse one is caught.
+	averager := func(i int64) []Fill {
+		open := i * hourMs
+		return []Fill{
+			{Time: open, Symbol: "BTCUSDT", Side: "BUY", PositionSide: "BOTH", Qty: 1, Price: 100},
+			{Time: open + 500, Symbol: "BTCUSDT", Side: "BUY", PositionSide: "BOTH", Qty: 1, Price: 100.1}, // same order
+			{Time: open + 60000, Symbol: "BTCUSDT", Side: "BUY", PositionSide: "BOTH", Qty: 2, Price: 90},  // real, adverse add
+			{Time: open + 24*hourMs, Symbol: "BTCUSDT", Side: "SELL", PositionSide: "BOTH", Qty: 4, Price: 96, RealizedPnL: -4},
+		}
+	}
+	got = StyleOf(repeats(7, 48, averager))
+	if got.AddsPerTrade != 1 || got.AdverseAddShare != 1 {
+		t.Fatalf("one real adverse add per trade expected: %+v", got)
+	}
+	if got.Kind != StyleMartingale {
+		t.Fatalf("a real averager must still be caught: %+v", got)
+	}
+}

@@ -16,7 +16,7 @@ const (
 	// StyleLong holds them for longer than longMinHold.
 	StyleLong = "long"
 	// StyleMartingale keeps adding to losing positions: its size says little
-	// about conviction, so it votes martingaleWeight.
+	// about conviction, so it does not vote at all (it stays visible).
 	StyleMartingale = "martingale"
 	// StyleFewSamples has too few completed trades to tell.
 	StyleFewSamples = "few_samples"
@@ -35,10 +35,6 @@ const (
 	// trader who averages down and waits to break even mostly exits green.
 	martingaleAddsPerTrade = 1.0
 	martingaleAdverseShare = 0.5
-
-	// martingaleWeight scales a martingale's vote. Adding to a losing position
-	// makes the size look like conviction when it is the opposite.
-	martingaleWeight = 0.3
 )
 
 // Style is how a lead trader trades, measured from the fills kept for them.
@@ -68,6 +64,9 @@ type styleBook struct {
 	adverse  int
 	realized float64
 	closes   int
+	// growAt is the time of the last fill that grew the position, so the
+	// pieces of one order are not counted as separate adds.
+	growAt int64
 }
 
 func share(part, whole int) float64 {
@@ -120,12 +119,20 @@ func StyleOf(fills []Fill) Style {
 		case b.q == 0 || (b.q > 0) == (delta > 0):
 			if b.q == 0 {
 				b.openedAt, b.adds, b.adverse, b.realized = f.Time, 0, 0, f.RealizedPnL
-			} else {
+				b.growAt = f.Time
+			} else if f.Time-b.growAt > mergeWindowMs {
+				// One market order often fills in several pieces within a few
+				// seconds. Counting each piece as an add inflated adds per
+				// trade, and because the pieces fill at progressively worse
+				// prices they never looked adverse, which also diluted the
+				// adverse share — so a real averager could be classed as
+				// swing or scalp and vote at full weight.
 				b.adds++
 				avg := b.cost / math.Abs(b.q)
 				if (delta > 0 && f.Price < avg) || (delta < 0 && f.Price > avg) {
 					b.adverse++
 				}
+				b.growAt = f.Time
 			}
 			b.q += delta
 			b.cost += f.Qty * f.Price

@@ -254,7 +254,9 @@ func SymbolsAt(snaps []Snapshot, now time.Time) []SymbolSummary {
 			v.stake += p.EntryValue
 			v.health += healthFactor(p) * p.EntryValue
 			v.opened += openedValue(p)
-			v.hold += holdFactor(p, now) * p.EntryValue
+			// Freshness shapes how much the vote counts (age), never how
+			// healthy it looks (losses).
+			v.hold += holdFactor(p, now) * freshnessBoost(p) * p.EntryValue
 			side := &sum.Long
 			if p.Side == "short" {
 				side = &sum.Short
@@ -322,14 +324,19 @@ func SymbolsAt(snaps []Snapshot, now time.Time) []SymbolSummary {
 			if size <= 0 {
 				size = v.stake
 			}
-			base := math.Max(1, v.score) * stakeFactor(size, balance[v.trader])
+			// Weigh the margin committed, not the notional: see stakeFactor.
+			base := math.Max(1, v.score) * stakeFactor(v.marginFor(size), balance[v.trader])
 			if v.highFreq {
 				base *= highFreqWeight
 			}
-			// A trader who keeps adding to losses would otherwise look
-			// convinced: their position size is a symptom, not a signal.
+			// Averaging-down traders do not vote (the owner's standing rule):
+			// their size grows because the trade went wrong, so it is a
+			// symptom, not a call. They used to vote at martingaleWeight and
+			// still counted as a whole trader toward the count factor, so
+			// three martingales plus one normal holder read as four voices.
+			// They stay visible in the holder list; they just do not vote.
 			if martingale[v.trader] {
-				base *= martingaleWeight
+				continue
 			}
 			if probation[v.trader] {
 				base *= probationWeight

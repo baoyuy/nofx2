@@ -13,14 +13,22 @@ import (
 //
 // It is measured in backtests before anything trades on it (see Backtest).
 
+// horizonKind is the style a trader's calls are judged on. High-frequency books
+// are useful for the next few hours only, so they use the scalp horizon
+// whatever their style label. (This intent used to sit in a styleHorizon case
+// for a "high_freq" kind that StyleOf never returns, so it never applied and
+// high-frequency traders were judged on the generic 24h horizon.)
+func horizonKind(s Snapshot) string {
+	if s.HighFreq {
+		return StyleScalp
+	}
+	return s.Style.Kind
+}
+
 // styleHorizon is how long after a call a trader of the style is judged.
 func styleHorizon(kind string) time.Duration {
 	switch kind {
 	case StyleScalp:
-		return 4 * time.Hour
-	case "high_freq":
-		// High frequency books are useful for the next few hours only; using
-		// the generic 24h horizon made their record look artificially stale.
 		return 4 * time.Hour
 	case StyleMartingale:
 		// A martingale's first call can carry a short-term signal, while its
@@ -52,21 +60,27 @@ func styleWeight(a Accuracy) float64 { return shadowAccuracy(a) }
 // position is a directional vote for a four-hour horizon; the trader's own
 // accuracy still moves it up or down.
 func styleFactor(s Snapshot) float64 {
-	f := 1.0
-	if s.HighFreq || s.Style.Kind == "high_freq" {
-		f = 0.20
+	// Averaging-down traders do not vote (the owner's standing rule): their
+	// size grows because the trade went wrong, so it is a symptom, not a call.
+	// This used to give them 0.10, which still counted them.
+	if s.Style.Kind == StyleMartingale {
+		return 0
 	}
+	f := 1.0
 	switch s.Style.Kind {
-	case StyleMartingale:
-		f = 0.10
-	case "grid":
-		f = 0.35
 	case StyleScalp:
 		f = 0.75
 	case StyleLong:
 		f = 0.45
 	case StyleFewSamples, StyleUnknown:
 		f = 0.20
+	}
+	// High-frequency books are down-weighted whatever their style label. This
+	// was set BEFORE the switch above, so the switch overwrote it: most
+	// high-frequency books classify as scalp and voted at 0.75 instead of
+	// 0.20. Applying it last makes it a ceiling nothing can raise.
+	if s.HighFreq {
+		f = math.Min(f, 0.20)
 	}
 	return f
 }
@@ -119,7 +133,8 @@ func StyleReadings(snaps []Snapshot, now time.Time) map[string]Confidence {
 			v.stake += p.EntryValue
 			v.health += healthFactor(p) * p.EntryValue
 			v.opened += openedValue(p)
-			decay[p.Symbol+k] += styleDecay(p, s.Style, now) * p.EntryValue
+			v.margin += positionMargin(p, openedValue(p))
+			decay[p.Symbol+k] += styleDecay(p, s.Style, now) * freshnessBoost(p) * p.EntryValue
 		}
 	}
 	out := make(map[string]Confidence, len(votes))
@@ -142,7 +157,8 @@ func StyleReadings(snaps []Snapshot, now time.Time) map[string]Confidence {
 				size = v.stake
 			}
 			w := weight[v.trader] * factors[v.trader]
-			base := w * stakeFactor(size, balance[v.trader]) * fade
+			// Weigh the margin committed, not the notional: see stakeFactor.
+			base := w * stakeFactor(v.marginFor(size), balance[v.trader]) * fade
 			// The rating stands in for the trader score: 1 is an unrated 50.
 			list = append(list, vote{trader: v.trader, side: v.side, score: math.Min(100, 50*w),
 				base: base, weight: base * health})

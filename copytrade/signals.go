@@ -185,10 +185,19 @@ func (m *Monitor) EvaluateSignals(ctx context.Context, now time.Time) error {
 		return err
 	}
 	bySymbol := map[string][]store.CopyTradeSignal{}
-	oldest := pending[0].Hour
+	// The benchmark is fetched far enough back for the oldest pending signal
+	// that can still be priced. A signal older than maxBarsFetch can never be
+	// priced (its symbol's bars are out of reach too), so it must not set how
+	// far back BTC is read: one such row — a delisted symbol that never
+	// settles — used to push the BTC request past maxBarsFetch, which then
+	// returned nothing and left EVERY other signal with no benchmark.
+	reachable := now.Unix() - int64(maxBarsFetch-3)*3600
+	oldest := now.Unix()
 	for _, s := range pending {
 		bySymbol[s.Symbol] = append(bySymbol[s.Symbol], s)
-		oldest = min(oldest, s.Hour)
+		if s.Hour >= reachable {
+			oldest = min(oldest, s.Hour)
+		}
 	}
 	closesOf := func(symbol string, from int64) map[int64]float64 {
 		// One bar before the signal hour: that close is the entry price.
@@ -207,6 +216,11 @@ func (m *Monitor) EvaluateSignals(ctx context.Context, now time.Time) error {
 		return closes
 	}
 	bench := closesOf(benchSymbol, oldest)
+	// Without the benchmark nothing is settled this tick: settling would mark
+	// the rows done with no benchmark, permanently, over a transient error.
+	if bench == nil {
+		return nil
+	}
 	for symbol, sigs := range bySymbol {
 		closes := closesOf(symbol, sigs[0].Hour)
 		if closes == nil && int((now.Unix()-sigs[0].Hour)/3600)+3 <= maxBarsFetch {

@@ -73,23 +73,36 @@ func (h Health) marginLossPct() float64 {
 	return -h.ReturnPct * assumedLeverage
 }
 
-// healthFactor scales a position's vote: a losing position counts less
-// (0.55 at 50% of margin lost, 0.1 at 100%), a liquidated one not at all,
-// and a fresh open or add counts more unless the current position is trapped.
+// healthFactor scales a position's vote by its LOSSES only: 0.55 at 50% of
+// margin lost, 0.1 at 100%, 0 for a liquidated one.
+//
+// The fresh-open boost used to be applied here and could cancel the loss
+// penalty outright: one fresh open (1.3) beside a holder 33% down (0.70) gave
+// a ratio of 1.0, so Confidence.Health read a perfectly healthy side while
+// half of it sat on losses. Freshness is about age, not health, so it now
+// lives in freshnessBoost and is applied to the age factor instead. Keeping
+// Health strictly about losses is what its own documentation promises.
 func healthFactor(p Position) float64 {
 	if p.Liquidated {
 		return 0
 	}
-	f := 1 - 0.9*math.Min(100, p.marginLossPct())/100
-	if !p.Trapped {
-		switch {
-		case p.OpenedRecently:
-			f *= freshBoost
-		case p.AddedRecently:
-			f *= addBoost
-		}
+	return 1 - 0.9*math.Min(100, p.marginLossPct())/100
+}
+
+// freshnessBoost rewards a position just opened or added to, unless it is
+// already trapped. It multiplies the age factor, so it can change how much a
+// vote counts without ever masking a loss.
+func freshnessBoost(p Position) float64 {
+	if p.Trapped {
+		return 1
 	}
-	return f
+	switch {
+	case p.OpenedRecently:
+		return freshBoost
+	case p.AddedRecently:
+		return addBoost
+	}
+	return 1
 }
 
 // assessHistoricalEntry records adverse movement from the first observed fill

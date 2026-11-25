@@ -9,14 +9,16 @@ import (
 	"nofx/logger"
 )
 
-// Accuracy is how often a lead trader's own calls moved their way: each new
+// Accuracy is how often a lead trader's own calls BEAT THE MARKET: each new
 // open or add on a coin and side (repeats within callGap count once), scored
-// by the price accuracyHorizon later against the fill price.
+// by the price accuracyHorizon later against the fill price, minus the
+// benchmark's move over the same window. A rate near 50% therefore means "no
+// better than holding the market", not "no better than flat".
 type Accuracy struct {
 	Calls int     `json:"calls"`
 	Hits  int     `json:"hits"`
 	Rate  float64 `json:"rate"` // hits / calls
-	// AvgReturn is the mean price move in the called direction.
+	// AvgReturn is the mean market-relative move in the called direction.
 	AvgReturn float64 `json:"avg_return"`
 }
 
@@ -75,6 +77,17 @@ func scoreCalls(calls []call, bars map[string][]Bar, now time.Time) Accuracy {
 }
 
 // scoreCallsOver is scoreCalls with the price read horizon after each call.
+//
+// A call is scored on its move RELATIVE TO THE MARKET (benchSymbol) over the
+// same window, not on the raw price move. Scoring the raw move measured market
+// direction, not the trader: in a falling month every short-biased trader
+// scored high and every long-biased one low, whatever their skill. That rate
+// then became a vote weight of up to 8x across Confidence, Shadow and Style,
+// so the consensus became a lagging echo of the market — which is exactly why
+// it showed no excess edge over BTC, and why it flipped worst at a turn.
+//
+// The benchmark's own calls are scored on their absolute move: the market
+// cannot beat itself.
 func scoreCallsOver(calls []call, bars map[string][]Bar, now time.Time, horizon time.Duration) Accuracy {
 	var a Accuracy
 	var sum float64
@@ -88,6 +101,16 @@ func scoreCallsOver(calls []call, bars map[string][]Bar, now time.Time, horizon 
 			continue
 		}
 		r := price/c.price - 1
+		// Subtract the market's move over the same window. Without a usable
+		// benchmark reading the call is skipped rather than scored on beta:
+		// a wrong weight is worse than a missing sample.
+		if c.symbol != benchSymbol {
+			ex, ok := benchMove(bars, c.at, target)
+			if !ok {
+				continue
+			}
+			r -= ex
+		}
 		if c.side == "short" {
 			r = -r
 		}
@@ -102,6 +125,21 @@ func scoreCallsOver(calls []call, bars map[string][]Bar, now time.Time, horizon 
 		a.AvgReturn = sum / float64(a.Calls)
 	}
 	return a
+}
+
+// benchMove is the market's fractional move between the call and its horizon,
+// read from the same hourly bars. ok is false when either end is missing.
+func benchMove(bars map[string][]Bar, atMs int64, target time.Time) (float64, bool) {
+	b := bars[benchSymbol]
+	if len(b) == 0 {
+		return 0, false
+	}
+	from := barCloseAt(b, time.UnixMilli(atMs))
+	to := barCloseAt(b, target)
+	if from <= 0 || to <= 0 {
+		return 0, false
+	}
+	return to/from - 1, true
 }
 
 // barCloseAt is the close of the hourly bar holding t.
@@ -162,12 +200,15 @@ func (m *Monitor) ScoreAccuracy(ctx context.Context, now time.Time) {
 	symbols := map[string]bool{}
 	for id, s := range m.snaps {
 		byTrader[id] = s.calls
-		kinds[id] = s.Style.Kind
+		kinds[id] = horizonKind(*s)
 		for _, c := range s.calls {
 			symbols[c.symbol] = true
 		}
 	}
 	m.mu.RUnlock()
+	// Every call is scored against the market's move over the same window, so
+	// the benchmark's bars are always needed, called or not.
+	symbols[benchSymbol] = true
 	bars := make(map[string][]Bar, len(symbols))
 	for sym := range symbols {
 		select {

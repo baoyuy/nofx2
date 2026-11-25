@@ -201,3 +201,45 @@ func TestMartingaleVotesCountLess(t *testing.T) {
 		t.Fatalf("martingale votes at 0.3 let the lone short win: %+v", got.Confidence)
 	}
 }
+
+// Health must describe losses only. A fresh open used to be boosted inside
+// healthFactor, so one fresh position could cancel a trapped holder's penalty
+// and the leading side read as fully healthy while half of it sat on losses.
+func TestHealthFactorIsAboutLossesAndFreshnessIsSeparate(t *testing.T) {
+	pos := func(ret float64, opened, added, trapped bool) Position {
+		var p Position
+		p.Priced, p.ReturnPct, p.PctOfMargin = true, ret, true
+		p.OpenedRecently, p.AddedRecently, p.Trapped = opened, added, trapped
+		return p
+	}
+	flat, fresh := pos(0, false, false, false), pos(0, true, false, false)
+	if healthFactor(fresh) != healthFactor(flat) {
+		t.Fatalf("a fresh open must not raise health: %v vs %v", healthFactor(fresh), healthFactor(flat))
+	}
+	losing, freshLosing := pos(-33, false, false, false), pos(-33, true, false, false)
+	if healthFactor(freshLosing) != healthFactor(losing) {
+		t.Fatal("freshness must not mask a loss")
+	}
+	if healthFactor(losing) >= 1 {
+		t.Fatalf("a losing position must score below 1: %v", healthFactor(losing))
+	}
+	// A fresh healthy position beside a losing one must still read unhealthy.
+	if avg := (healthFactor(fresh) + healthFactor(losing)) / 2; avg >= 1 {
+		t.Fatalf("mixed side must read unhealthy, got %v", avg)
+	}
+	// The boost still exists, on the age axis.
+	if freshnessBoost(fresh) <= 1 {
+		t.Fatalf("a fresh open should still count for more by age: %v", freshnessBoost(fresh))
+	}
+	if freshnessBoost(pos(0, true, false, true)) != 1 {
+		t.Fatal("a trapped position gets no freshness boost")
+	}
+	if freshnessBoost(pos(0, false, true, false)) <= 1 {
+		t.Fatal("a recent add should count for more by age")
+	}
+	var liq Position
+	liq.Liquidated = true
+	if healthFactor(liq) != 0 {
+		t.Fatal("a liquidated position must not vote")
+	}
+}

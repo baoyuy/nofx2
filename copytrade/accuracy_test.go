@@ -35,21 +35,100 @@ func TestCallsOfCountsARunOfAddsOnce(t *testing.T) {
 
 func TestScoreCalls(t *testing.T) {
 	t0 := int64(1_700_000_000) // s, top of an hour is not needed
-	bars := map[string][]Bar{"BTC": hourly(t0, make([]float64, 60)...)}
-	for i := range bars["BTC"] {
-		bars["BTC"][i].Close = 100 + float64(i) // rises an hour at a time
+	// A flat market, so a call's own move is its market-relative move and the
+	// old expectations still describe the result.
+	flat := hourly(t0, make([]float64, 60)...)
+	for i := range flat {
+		flat[i].Close = 1000
 	}
+	rising := hourly(t0, make([]float64, 60)...)
+	for i := range rising {
+		rising[i].Close = 100 + float64(i) // rises an hour at a time
+	}
+	bars := map[string][]Bar{"ALTUSDT": rising, benchSymbol: flat}
 	ms := t0 * 1000
 	calls := []call{
-		{symbol: "BTC", side: "long", at: ms, price: 100},               // 24h later 124: right
-		{symbol: "BTC", side: "short", at: ms + 3600_000, price: 101},   // wrong
-		{symbol: "BTC", side: "long", at: ms + 50*3600_000, price: 150}, // horizon not passed
-		{symbol: "ETH", side: "long", at: ms, price: 1},                 // no bars
+		{symbol: "ALTUSDT", side: "long", at: ms, price: 100},               // 24h later 124: right
+		{symbol: "ALTUSDT", side: "short", at: ms + 3600_000, price: 101},   // wrong
+		{symbol: "ALTUSDT", side: "long", at: ms + 50*3600_000, price: 150}, // horizon not passed
+		{symbol: "ETHUSDT", side: "long", at: ms, price: 1},                 // no bars
 	}
 	now := time.Unix(t0+55*3600, 0)
 	a := scoreCalls(calls, bars, now)
 	if a.Calls != 2 || a.Hits != 1 || a.Rate != 0.5 {
 		t.Fatalf("accuracy = %+v", a)
+	}
+}
+
+// A call is scored on how much it beat the market, not on the raw price move.
+// Scoring the raw move made every short-biased trader look skilled in a
+// falling market, which is what made the consensus a lagging echo of beta.
+func TestScoreCallsMeasuresAgainstTheMarket(t *testing.T) {
+	t0 := int64(1_700_000_000)
+	ms := t0 * 1000
+	now := time.Unix(t0+60*3600, 0)
+	// The market falls 10% over the window; the coin falls only 5%.
+	bench := hourly(t0, make([]float64, 40)...)
+	coin := hourly(t0, make([]float64, 40)...)
+	for i := range bench {
+		bench[i].Close = 1000
+		coin[i].Close = 100
+	}
+	for i := 24; i < len(bench); i++ {
+		bench[i].Close = 900 // -10%
+		coin[i].Close = 95   // -5%
+	}
+	bars := map[string][]Bar{benchSymbol: bench, "ALTUSDT": coin}
+
+	short := scoreCalls([]call{{symbol: "ALTUSDT", side: "short", at: ms, price: 100}}, bars, now)
+	if short.Calls != 1 || short.Hits != 0 {
+		t.Fatalf("a short on a coin that fell LESS than the market must be a miss: %+v", short)
+	}
+	long := scoreCalls([]call{{symbol: "ALTUSDT", side: "long", at: ms, price: 100}}, bars, now)
+	if long.Calls != 1 || long.Hits != 1 {
+		t.Fatalf("a long on a coin that outperformed must be a hit even though its price fell: %+v", long)
+	}
+	if long.AvgReturn <= 0 {
+		t.Fatalf("average return is market-relative: %+v", long)
+	}
+}
+
+// The market cannot beat itself: the benchmark's own calls keep their
+// absolute move, instead of scoring exactly 0 and always counting as misses.
+func TestScoreCallsKeepsAbsoluteMoveForTheBenchmark(t *testing.T) {
+	t0 := int64(1_700_000_000)
+	ms := t0 * 1000
+	bench := hourly(t0, make([]float64, 40)...)
+	for i := range bench {
+		bench[i].Close = 100
+	}
+	for i := 24; i < len(bench); i++ {
+		bench[i].Close = 110 // +10%
+	}
+	bars := map[string][]Bar{benchSymbol: bench}
+	now := time.Unix(t0+60*3600, 0)
+	a := scoreCalls([]call{
+		{symbol: benchSymbol, side: "long", at: ms, price: 100},
+		{symbol: benchSymbol, side: "short", at: ms, price: 100},
+	}, bars, now)
+	if a.Calls != 2 || a.Hits != 1 {
+		t.Fatalf("the benchmark's own calls are judged on its move: %+v", a)
+	}
+}
+
+// Without a usable benchmark reading a call is skipped, not scored on beta.
+func TestScoreCallsSkipsCallsWithoutABenchmark(t *testing.T) {
+	t0 := int64(1_700_000_000)
+	ms := t0 * 1000
+	coin := hourly(t0, make([]float64, 40)...)
+	for i := range coin {
+		coin[i].Close = 100 + float64(i)
+	}
+	now := time.Unix(t0+60*3600, 0)
+	a := scoreCalls([]call{{symbol: "ALTUSDT", side: "long", at: ms, price: 100}},
+		map[string][]Bar{"ALTUSDT": coin}, now)
+	if a.Calls != 0 {
+		t.Fatalf("no benchmark bars must mean no sample, got %+v", a)
 	}
 }
 
