@@ -44,3 +44,36 @@ func TestStableCountsSurvivesPendingSignals(t *testing.T) {
 		t.Fatalf("pending rows must count for nothing, got %d/%d %d/%d", ah, an, th, tn)
 	}
 }
+
+// BTC is the benchmark every other coin is measured against, so its own excess
+// over itself is exactly 0 and every BTC call used to score as a miss (all 320
+// BTC signals on the server did). It must be judged on its absolute move.
+func TestStableCountsJudgesTheBenchmarkOnItsAbsoluteMove(t *testing.T) {
+	own := f64(0.03) // BTC rose 3%; as the benchmark, bench == ret
+	rows := []store.CopyTradeSignal{
+		{Symbol: "BTCUSDT", Direction: "long", Ret4h: own, Bench4h: own},
+		{Symbol: "BTCUSDT", Direction: "short", Ret4h: own, Bench4h: own},
+	}
+	_, _, th, tn := stableCounts(nil, rows)
+	if tn != 2 {
+		t.Fatalf("samples = %d, want 2", tn)
+	}
+	if th != 1 {
+		t.Fatalf("hits = %d, want 1: the long was right and the short was wrong on BTC's own move", th)
+	}
+}
+
+// A non-benchmark coin is still judged on excess over BTC, unchanged.
+func TestStableCountsStillUsesExcessForOtherCoins(t *testing.T) {
+	bench := f64(0.03) // BTC +3%
+	rows := []store.CopyTradeSignal{
+		// Rose 1%, but less than BTC: a long on it did NOT beat the market.
+		{Symbol: "ETHUSDT", Direction: "long", Ret4h: f64(0.01), Bench4h: bench},
+		// Rose 5%, more than BTC: a long on it did beat the market.
+		{Symbol: "SOLUSDT", Direction: "long", Ret4h: f64(0.05), Bench4h: bench},
+	}
+	_, _, th, tn := stableCounts(nil, rows)
+	if tn != 2 || th != 1 {
+		t.Fatalf("hits/samples = %d/%d, want 1/2 (excess over BTC decides)", th, tn)
+	}
+}

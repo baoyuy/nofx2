@@ -83,8 +83,8 @@ var (
 )
 
 const (
-	stableBoardRefreshMs = 60 * 60 * 1000 // refresh the slot set hourly
-	stableBoardGraceMul  = 0.9            // keep a coin until volume < 0.9x min
+	stableBoardRefreshMs     = 60 * 60 * 1000 // refresh the slot set hourly
+	stableBoardGraceMul      = 0.9            // keep a coin until volume < 0.9x min
 	stableBoardPlaceholderMs = 24 * 60 * 60 * 1000
 )
 
@@ -106,7 +106,6 @@ func (s *Server) handleCoinRanking(c *gin.Context) {
 		ttlMin = 12
 	}
 	ttlMs := int64(ttlMin) * 60 * 1000
-	neutral := coinScoreNeutralMovePct / 100.0
 	userID := c.GetString("user_id")
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 40*time.Second)
@@ -172,32 +171,9 @@ func (s *Server) handleCoinRanking(c *gin.Context) {
 				// stale, so a coin keeps its last known value while waiting).
 				aiRows, _ := s.store.CopyTrade().RecentMatureScoreOutcomes(userID, sum.Symbol, now.Add(-30*24*time.Hour).UnixMilli())
 				tradeRows, _ := s.store.CopyTrade().RecentMatureSignals(sum.Symbol, now.Add(-30*24*time.Hour).Unix())
-				var ah, an, th, tn int
-				for _, o := range aiRows {
-					if (o.Bias != "long" && o.Bias != "short") || o.Ret4h == nil {
-						continue
-					}
-					if math.Abs(*o.Ret4h) < neutral {
-						continue
-					}
-					an++
-					if *o.Ret4h > 0 {
-						ah++
-					}
-				}
-				for _, sig := range tradeRows {
-					if (sig.Direction != "long" && sig.Direction != "short") || sig.Ret4h == nil {
-						continue
-					}
-					ex := *sig.Ret4h
-					if sig.Bench4h != nil {
-						ex -= *sig.Bench4h
-					}
-					tn++
-					if (sig.Direction == "long" && ex > 0) || (sig.Direction == "short" && ex < 0) {
-						th++
-					}
-				}
+				// Shared with the coin list and detail, so every page counts the
+				// same samples the same way (and skips the BTC self-benchmark).
+				ah, an, th, tn := stableCounts(aiRows, tradeRows)
 				risk := float64(sum.Liquidated+sum.Long.Trapped+sum.Short.Trapped) / float64(max(1, sum.Long.Traders+sum.Short.Traders))
 				fresh := copytrade.StableFresh(a.at, now)
 				sd := copytrade.StableScore(ah, an, th, tn, dir, risk, fresh)

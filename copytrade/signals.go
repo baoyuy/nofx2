@@ -63,6 +63,10 @@ func (m *Monitor) signalLoop(ctx context.Context) {
 // benchSymbol is the market every call is measured against.
 const benchSymbol = "BTCUSDT"
 
+// BenchSymbol is benchSymbol for callers outside the package, so they skip
+// the benchmark when computing excess instead of comparing it with itself.
+const BenchSymbol = benchSymbol
+
 // RecordSignals saves this hour's reading of the maxSignalsPerHour most
 // confident coins (marked Ranked) and of every coin with a fresh-call signal,
 // priced at the close of the hour that just ended, with what the reading was
