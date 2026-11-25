@@ -17,6 +17,7 @@ import (
 	"nofx/copytrade"
 	"nofx/kernel"
 	"nofx/logger"
+	"nofx/market"
 	"nofx/store"
 	"nofx/trader/binance"
 )
@@ -47,6 +48,11 @@ func (s *Server) StartCopyTrade(ctx context.Context) {
 	}
 	// fapi, not the copy-trade web API: does not count against its limits.
 	m.Marks = binance.GetPublicMarkPrices
+	// Asset-scope classification for the whole app: Binance's own listing
+	// metadata, not a hardcoded ticker list. Without this the "crypto only"
+	// scope missed most TRADIFI_PERPETUAL contracts (gold, silver, copper,
+	// single stocks, leveraged stock ETFs).
+	market.TradFiResolver = binance.ClassifyTradFi
 	// Stock and commodity contracts are their own market class.
 	copytrade.ClassOf = func(symbol string) string {
 		switch {
@@ -519,7 +525,8 @@ func (s *Server) attachStableDirections(userID string, sums []copytrade.SymbolSu
 // stableCounts turns mature rows into hit/sample counts.
 //   - AI outcomes store returns in the called direction (positive = right for
 //     both sides). A move under the neutral threshold is neither hit nor miss.
-//   - Trader signals are judged on excess over BTC in the signal's direction.
+//   - Trader signals are judged on excess over BTC in the signal's direction;
+//     BTC itself, being the benchmark, is judged on its absolute move.
 func stableCounts(aiRows []store.CopyTradeScoreOutcome, tradeRows []store.CopyTradeSignal) (ah, an, th, tn int) {
 	for _, o := range aiRows {
 		if o.Bias != "long" && o.Bias != "short" || o.Ret4h == nil {
@@ -539,7 +546,11 @@ func stableCounts(aiRows []store.CopyTradeScoreOutcome, tradeRows []store.CopyTr
 			continue
 		}
 		ex := *sig.Ret4h
-		if sig.Bench4h != nil {
+		// The benchmark cannot beat itself: for BTC, Bench4h IS its own return,
+		// so the excess is exactly 0 and every call would score as a miss
+		// (all 320 BTC signals on the server did). Judge BTC on its absolute
+		// move instead, as the hit-rate page already does.
+		if sig.Bench4h != nil && sig.Symbol != copytrade.BenchSymbol {
 			ex -= *sig.Bench4h
 		}
 		tn++

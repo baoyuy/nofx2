@@ -212,6 +212,7 @@ func GetPublicSymbols(ctx context.Context) ([]string, error) {
 var (
 	tradFiMu       sync.Mutex
 	tradFiSymbols  map[string]bool
+	listedSymbols  map[string]bool // every USDT-M symbol in the loaded listing
 	tradFiCachedAt time.Time
 	tradFiTriedAt  time.Time
 )
@@ -220,6 +221,15 @@ var (
 // commodity rather than a coin. The list is read from Binance once a day; a
 // symbol reads as crypto until it has loaded.
 func IsTradFiSymbol(symbol string) bool {
+	tradfi, _ := ClassifyTradFi(symbol)
+	return tradfi
+}
+
+// ClassifyTradFi is IsTradFiSymbol plus whether Binance's listing actually
+// covers the symbol. known is false before the listing has loaded and for
+// symbols Binance does not list, so a caller can fall back to another rule
+// instead of reading "not loaded" as "crypto".
+func ClassifyTradFi(symbol string) (tradfi bool, known bool) {
 	tradFiMu.Lock()
 	defer tradFiMu.Unlock()
 	if time.Since(tradFiCachedAt) > 24*time.Hour && time.Since(tradFiTriedAt) > time.Minute {
@@ -235,15 +245,26 @@ func IsTradFiSymbol(symbol string) bool {
 		}
 		if err := publicGet(ctx, "/fapi/v1/exchangeInfo", &info); err == nil && len(info.Symbols) > 0 {
 			set := make(map[string]bool)
+			listed := make(map[string]bool, len(info.Symbols))
 			for _, s := range info.Symbols {
-				if strings.HasPrefix(s.ContractType, "TRADIFI") || (s.UnderlyingType != "" && s.UnderlyingType != "COIN") {
+				listed[s.Symbol] = true
+				if isTradFiListing(s.ContractType, s.UnderlyingType) {
 					set[s.Symbol] = true
 				}
 			}
-			tradFiSymbols, tradFiCachedAt = set, time.Now()
+			tradFiSymbols, listedSymbols, tradFiCachedAt = set, listed, time.Now()
 		}
 	}
-	return tradFiSymbols[symbol]
+	if listedSymbols == nil || !listedSymbols[symbol] {
+		return false, false
+	}
+	return tradFiSymbols[symbol], true
+}
+
+// isTradFiListing is Binance's own classification: TRADIFI_* contract types,
+// or any underlying that is not a coin (EQUITY, KR_EQUITY, COMMODITY, ...).
+func isTradFiListing(contractType, underlyingType string) bool {
+	return strings.HasPrefix(contractType, "TRADIFI") || (underlyingType != "" && underlyingType != "COIN")
 }
 
 var (
