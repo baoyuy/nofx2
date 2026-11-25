@@ -46,9 +46,13 @@ var lastPoolBuild atomic.Int64
 var poolBuildMu sync.Mutex
 
 type poolCandidate struct {
-	symbol   string
-	side     string
-	conv     float64
+	symbol string
+	side   string
+	// conv ranks the candidate (smoothed edge when it agrees with the side).
+	conv float64
+	// raw is the reading's own |bull-bear|, the scale the measured history is
+	// binned on, so a candidate is compared with its own band's record.
+	raw      float64
 	smoothed float64
 }
 
@@ -86,16 +90,10 @@ func (s *Server) buildCoinPool(userID string) (*store.CoinPool, error) {
 		ttlMin = refreshMin * 2
 	}
 
-	// Freshness window for keeping a SCORE in the pool must be at least the
-	// analysis interval + one refresh margin, otherwise scores near the end of
-	// each analysis cycle would be dropped and the pool would flap/empty.
-	freshMin := cfg.IntervalMinutes + refreshMin
-	if freshMin < ttlMin {
-		freshMin = ttlMin
-	}
 	now := time.Now()
 	nowMs := now.UnixMilli()
-	freshMs := int64(freshMin) * 60 * 1000
+	// The same freshness window every consumer uses (see scoreFreshMs).
+	freshMs := cfg.scoreFreshMs()
 
 	rows, err := s.store.CopyTrade().ListCoinScores(userID)
 	if err != nil {
@@ -129,7 +127,8 @@ func (s *Server) buildCoinPool(userID string) (*store.CoinPool, error) {
 			}
 			conv = signed
 		}
-		cands = append(cands, poolCandidate{symbol: r.Symbol, side: a.Bias, conv: conv, smoothed: a.SmoothedEdge})
+		cands = append(cands, poolCandidate{symbol: r.Symbol, side: a.Bias, conv: conv,
+			raw: a.Conviction, smoothed: a.SmoothedEdge})
 	}
 	// Existing pool members get the lower exit threshold (hysteresis).
 	existing := map[string]bool{}
@@ -147,7 +146,12 @@ func (s *Server) buildCoinPool(userID string) (*store.CoinPool, error) {
 	expiry := now.Add(time.Duration(ttlMin) * time.Minute).UnixMilli()
 	var picks []store.CoinPoolCoin
 	if cfg.rankMode() == poolRankMeasured {
-		picks = s.pickMeasured(userID, cands, existing, expiry)
+		// A failed history read must not silently fall back to conviction
+		// ranking: keep the previous pool and report the error.
+		picks, err = s.pickMeasured(userID, cands, existing, expiry)
+		if err != nil {
+			return nil, err
+		}
 	} else {
 		picks = pickByConviction(cands, existing, expiry)
 	}
@@ -234,15 +238,21 @@ func pickByConviction(cands []poolCandidate, existing map[string]bool, expiry in
 //
 // Hysteresis still applies, on the measured rank rather than on conviction, so
 // a coin already in the pool is not dropped by a small change.
-func (s *Server) pickMeasured(userID string, cands []poolCandidate, existing map[string]bool, expiry int64) []store.CoinPoolCoin {
-	snap := s.groupHistory(userID)
+func (s *Server) pickMeasured(userID string, cands []poolCandidate, existing map[string]bool, expiry int64) ([]store.CoinPoolCoin, error) {
+	snap, err := s.groupHistory(userID)
+	if err != nil {
+		return nil, err
+	}
 	inputs := make([]copytrade.GroupRankInput, 0, len(cands))
 	smoothed := make(map[string]float64, len(cands))
 	for _, c := range cands {
 		if snap.breadth.BreadthVetoes(c.side) {
 			continue
 		}
-		inputs = append(inputs, copytrade.GroupRankInput{Symbol: c.symbol, Side: c.side, Conviction: c.conv})
+		// Bin on the RAW conviction, the same scale the history was binned
+		// on (|bull-bear| of each stored reading). Binning on the smoothed
+		// edge put a candidate in a band whose history it did not belong to.
+		inputs = append(inputs, copytrade.GroupRankInput{Symbol: c.symbol, Side: c.side, Conviction: c.raw})
 		smoothed[c.symbol] = c.smoothed
 	}
 	ranked := copytrade.RankCandidates(inputs, snap.stats)
@@ -277,7 +287,7 @@ func (s *Server) pickMeasured(userID string, cands []poolCandidate, existing map
 		picks = append(picks, store.CoinPoolCoin{Symbol: r.Symbol, Direction: r.Side, Score: r.Rank,
 			Note: measuredNote(r, snap.breadth, smoothed[r.Symbol]), ExpiryAt: expiry})
 	}
-	return picks
+	return picks, nil
 }
 
 // measuredNote explains a pick in terms of what was measured, never as a

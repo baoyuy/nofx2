@@ -104,14 +104,9 @@ func (s *Server) handleDirectionShortlist(c *gin.Context) {
 	now := time.Now()
 	uid := c.GetString("user_id")
 	cfg := s.loadCoinScoreAuto()
-	minVol := cfg.MinQuoteVolume
-	if minVol <= 0 {
-		minVol = coinScoreDefaultMinVolume
-	}
-	ttl := cfg.PoolTTLMinutes
-	if ttl < 1 {
-		ttl = 12
-	}
+	minVol := cfg.minVolume()
+	// The shared freshness window (see scoreFreshMs), in minutes.
+	ttl := int(cfg.scoreFreshMs() / 60000)
 	vols, err := binance.PublicQuoteVolumes(ctx)
 	if err != nil || len(vols) == 0 {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "行情成交额暂不可用，方向榜暂停生成"})

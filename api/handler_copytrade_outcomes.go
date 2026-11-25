@@ -64,14 +64,20 @@ func (s *Server) scoreOutcomeLoop(ctx context.Context) {
 	}
 }
 
-// priceAtKh returns the close of the last candle at or before ms, and how far
-// before ms that candle opened. The gap lets callers reject a price that is too
-// old to represent the horizon.
+// priceAtKh returns the close of the last candle that had CLOSED by ms, and how
+// far before ms that close was. Candles are keyed by their open time and are
+// 15 minutes long.
+//
+// It used to take the candle that OPENED at or before ms, whose close lands up
+// to 15 minutes after ms, so a "4h" result read prices from after the horizon.
+// The gap lets callers reject a price too old to represent the horizon.
 func priceAtKh(k []binance.MarketKline, ms int64) (price float64, gapMs int64, ok bool) {
+	const candleSec = 15 * 60
 	sec := ms / 1000
 	for _, c := range k {
-		if c.Time <= sec {
-			price, gapMs, ok = c.Close, (sec-c.Time)*1000, true
+		closeAt := c.Time + candleSec
+		if closeAt <= sec {
+			price, gapMs, ok = c.Close, (sec-closeAt)*1000, true
 		} else {
 			break
 		}
@@ -258,11 +264,21 @@ func dedupOutcomes(rows []store.CopyTradeScoreOutcome) []store.CopyTradeScoreOut
 	return out
 }
 
-// buildBench computes, per horizon, the average raw long return of each cohort
-// (30-min bucket) and an overall fallback ("h|all").
-func buildBench(rows []store.CopyTradeScoreOutcome) map[string]float64 {
-	sums := map[string]float64{}
-	cnts := map[string]int{}
+// benchCohort is one cohort's sum and count of raw long returns, kept so a
+// reading can be compared with the OTHER coins in its cohort.
+type benchCohort struct {
+	sum float64
+	n   int
+}
+
+// marketBench is the per-horizon, per-cohort market benchmark.
+type marketBench map[string]benchCohort
+
+// buildBench sums, per horizon, the raw long return of each cohort (30-min
+// bucket). The benchmark is the mean of the OTHER coins scored in the cohort:
+// see benchFor.
+func buildBench(rows []store.CopyTradeScoreOutcome) marketBench {
+	out := marketBench{}
 	for _, o := range rows {
 		for _, h := range []string{"4h", "24h", "72h"} {
 			r, ok := rawLong(o, h)
@@ -270,34 +286,43 @@ func buildBench(rows []store.CopyTradeScoreOutcome) map[string]float64 {
 				continue
 			}
 			k := cohortKey(h, o.AnalyzedAt)
-			sums[k] += r
-			cnts[k]++
-			ka := h + "|all"
-			sums[ka] += r
-			cnts[ka]++
-		}
-	}
-	out := map[string]float64{}
-	for k, n := range cnts {
-		if n > 0 {
-			out[k] = sums[k] / float64(n)
+			c := out[k]
+			c.sum += r
+			c.n++
+			out[k] = c
 		}
 	}
 	return out
 }
 
-func benchAt(bench map[string]float64, h string, analyzedAt int64) float64 {
-	if v, ok := bench[cohortKey(h, analyzedAt)]; ok {
-		return v
+// benchFor is the market benchmark for one reading: the mean raw long return of
+// the other coins in its cohort.
+//
+// The reading itself is left out. Including it shrank every excess by a factor
+// of (1 - 1/n), and a cohort of one made the excess exactly zero — while still
+// reporting that a benchmark existed. That is part of why excess read ≈ 0.
+// ok is false when no other coin was scored in the cohort, so the caller treats
+// the reading as unbenchmarked instead of comparing it with itself.
+func benchFor(bench marketBench, o store.CopyTradeScoreOutcome, h string) (float64, bool) {
+	c, found := bench[cohortKey(h, o.AnalyzedAt)]
+	if !found {
+		return 0, false
 	}
-	return bench[h+"|all"] // fallback
+	own, ok := rawLong(o, h)
+	if !ok {
+		return 0, false
+	}
+	if c.n <= 1 {
+		return 0, false
+	}
+	return (c.sum - own) / float64(c.n-1), true
 }
 
-func statFor(h, side, band string, rows []store.CopyTradeScoreOutcome, bench map[string]float64) outcomeStat {
+func statFor(h, side, band string, rows []store.CopyTradeScoreOutcome, bench marketBench) outcomeStat {
 	st := outcomeStat{Horizon: h, Side: side, Band: band, CostPct: outcomeRoundTripCost * 100}
 	var sum, exSum float64
 	var netEx []float64
-	hit, beat, n, dirN, netWins := 0, 0, 0, 0, 0
+	hit, beat, n, dirN, netWins, benched := 0, 0, 0, 0, 0, 0
 	for _, o := range rows {
 		r, ok := retOf(o, h)
 		if !ok {
@@ -317,10 +342,14 @@ func statFor(h, side, band string, rows []store.CopyTradeScoreOutcome, bench map
 		if net > 0 {
 			netWins++
 		}
-		bm := benchAt(bench, h, o.AnalyzedAt)
+		bm, hasBench := benchFor(bench, o, h)
+		if !hasBench {
+			continue
+		}
+		benched++
 		// Returns are signed in the predicted direction, while the cohort
-		// benchmark is stored as a raw long return. Flip it for shorts before
-		// comparing; otherwise the page compares a short's PnL to a long return.
+		// benchmark is a raw long return. Flip it for shorts before comparing;
+		// otherwise the page compares a short's PnL to a long return.
 		if o.Bias == "short" {
 			bm = -bm
 		}
@@ -338,9 +367,13 @@ func statFor(h, side, band string, rows []store.CopyTradeScoreOutcome, bench map
 	if dirN > 0 {
 		st.HitRate = float64(hit) / float64(dirN) * 100
 	}
-	st.BeatRate = float64(beat) / float64(n) * 100
 	st.AvgRet = sum / float64(n) * 100
-	st.AvgExcess = exSum / float64(n) * 100
+	// Market-relative figures are over the readings that HAD other coins to
+	// compare with, so a lone reading cannot drag them toward zero.
+	if benched > 0 {
+		st.BeatRate = float64(beat) / float64(benched) * 100
+		st.AvgExcess = exSum / float64(benched) * 100
+	}
 	st.NetAvgRet = st.AvgRet - outcomeRoundTripCost*100
 	st.NetWinRate = float64(netWins) / float64(n) * 100
 	mean, lb := copytrade.MeanLower90(netEx)

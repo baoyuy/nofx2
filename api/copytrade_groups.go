@@ -1,6 +1,8 @@
 package api
 
 import (
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -48,27 +50,49 @@ var (
 
 // groupHistory returns the measured per-group history and the current breadth
 // reading for one user, recomputing at most once per groupStatsTTL.
-func (s *Server) groupHistory(userID string) groupSnapshot {
+// A read failure is returned, never turned into an empty snapshot: an empty
+// one reads as "every group has too little history", which ranks every
+// candidate at the provisional default, vetoes nothing, and labels it all
+// "样本不足" — a silent fallback to conviction ranking presented as data.
+func (s *Server) groupHistory(userID string) (groupSnapshot, error) {
 	if userID == "" {
-		return groupSnapshot{}
+		return groupSnapshot{}, errors.New("no user for group history")
 	}
 	groupCacheMu.Lock()
 	if snap, ok := groupCache[userID]; ok && time.Since(snap.takenAt) < groupStatsTTL {
 		groupCacheMu.Unlock()
-		return snap
+		return snap, nil
 	}
 	groupCacheMu.Unlock()
 
 	rows, _, err := s.store.CopyTrade().ListScoreOutcomesSince(userID, time.Now().UnixMilli()-outcomeStatsWindowMs)
 	if err != nil {
-		return groupSnapshot{}
+		return groupSnapshot{}, fmt.Errorf("read score history: %w", err)
 	}
-	snap := buildGroupSnapshot(rows, time.Now().UnixMilli())
+	snap := buildGroupSnapshot(currentVersionOnly(rows), time.Now().UnixMilli())
 	snap.takenAt = time.Now()
 	groupCacheMu.Lock()
 	groupCache[userID] = snap
 	groupCacheMu.Unlock()
-	return snap
+	return snap, nil
+}
+
+// currentVersionOnly keeps the readings produced by the scoring version in use.
+// A group's history is evidence about how THIS prompt's readings perform;
+// readings from an older prompt measure a different thing. Rows recorded
+// before versions were stored are kept only while no versioned history exists,
+// so the pool is not left with nothing during the switch-over.
+func currentVersionOnly(rows []store.CopyTradeScoreOutcome) []store.CopyTradeScoreOutcome {
+	current := make([]store.CopyTradeScoreOutcome, 0, len(rows))
+	for _, o := range rows {
+		if o.ConfigVersion == coinScoreConfigVersion {
+			current = append(current, o)
+		}
+	}
+	if len(current) == 0 {
+		return rows
+	}
+	return current
 }
 
 // buildGroupSnapshot is the pure part: de-duplicate the stored outcomes the
@@ -84,12 +108,8 @@ func buildGroupSnapshot(rows []store.CopyTradeScoreOutcome, nowMs int64) groupSn
 		}
 		ob := copytrade.GroupObservation{Symbol: o.Symbol, AnalyzedAt: o.AnalyzedAt, Side: o.Bias,
 			Conviction: absf(o.Bull - o.Bear), Return: *o.Ret4h}
-		// benchAt falls back to the all-rows average, which would make every
-		// sample "benchmarked" even with no cohort. Only treat a cohort
-		// benchmark as present when that cohort actually exists.
-		if _, ok := bench[cohortKey("4h", o.AnalyzedAt)]; ok {
-			ob.MarketReturn, ob.HasMarket = benchAt(bench, "4h", o.AnalyzedAt), true
-		}
+		// The other coins in its cohort, never the reading itself.
+		ob.MarketReturn, ob.HasMarket = benchFor(bench, o, "4h")
 		obs = append(obs, ob)
 	}
 	return groupSnapshot{stats: copytrade.GroupStats(obs), breadth: breadthFrom(ded, nowMs), Samples: len(obs)}

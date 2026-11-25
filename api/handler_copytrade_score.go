@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -242,7 +243,9 @@ func (s *Server) handleCoinScoreAnalyze(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 40*time.Second)
 	defer cancel()
 	res, err := s.analyzeCoinCore(ctx, userID, model, symbol, interval, req.Lang)
-	if err != nil {
+	// An unreadable reply is still shown to the user with its raw text, so a
+	// manual run can be inspected; it is simply not saved as a reading.
+	if err != nil && !errors.Is(err, errUnparseableReading) {
 		SafeError(c, http.StatusBadGateway, "AI call failed: "+SanitizeError(err, "check the AI connection settings"), err)
 		return
 	}
@@ -318,7 +321,15 @@ func (s *Server) analyzeCoinCore(ctx context.Context, userID string, model *stor
 	res := coinScoreResult{Symbol: symbol, Interval: "15m+1h+4h", ModelID: model.ID, ModelName: model.Name,
 		AnalyzedAt: time.Now().UnixMilli(), Price: price, Raw: raw}
 	if a, perr := parseCoinScore(raw); perr != nil {
+		// An unparseable reply is a FAILED reading, not a new one. It used to
+		// be saved over the coin's last valid reading (so the pool, rankings
+		// and program lost the coin) and returned as success (so the
+		// scheduler cleared its backoff), while score memory kept the old
+		// time — so the coin was due again and re-called every tick, about
+		// every 15 seconds. Now nothing is saved and the error is returned,
+		// so the last good reading stands and the failure backoff applies.
 		res.ParseError = "The AI reply was not valid JSON; showing the raw text."
+		return res, errUnparseableReading
 	} else {
 		// Light smoothing only. The previous 0.3-new/0.7-old weighting, on
 		// top of a prompt that told the model to keep its last call, made a
@@ -332,7 +343,7 @@ func (s *Server) analyzeCoinCore(ctx context.Context, userID string, model *stor
 	if data, merr := json.Marshal(res); merr == nil {
 		scfg := s.loadCoinScoreAuto()
 		row := store.CopyTradeCoinScore{UserID: userID, Symbol: symbol, ModelID: model.ID, Interval: "15m+1h+4h",
-			Payload: string(data), AnalyzedAt: res.AnalyzedAt, ConfigVersion: coinScoreConfigVersion, MinVolume: scfg.MinQuoteVolume}
+			Payload: string(data), AnalyzedAt: res.AnalyzedAt, ConfigVersion: coinScoreConfigVersion, MinVolume: scfg.minVolume()}
 		if serr := s.store.CopyTrade().SaveCoinScore(&row); serr != nil {
 			logger.Warnf("copy-trade coin score: save %s: %v", symbol, serr)
 			res.ParseError = strings.TrimSpace(res.ParseError + " (result not saved)")
@@ -378,6 +389,54 @@ type coinScoreAutoConfig struct {
 	PoolTTLMinutes     int     `json:"pool_ttl_minutes"`
 	// PoolRankMode: "measured" (default) or "conviction" (previous behaviour).
 	PoolRankMode string `json:"pool_rank_mode,omitempty"`
+}
+
+// scoreFreshMs is how long a coin's AI reading stays valid, for EVERY consumer:
+// the pool, the program-stable trader, the rankings, the status page, the
+// shortlist and the stable-direction badge.
+//
+// It must cover one full scoring interval plus a margin, because a coin is
+// re-scored once per interval. Before, the consumers disagreed: the program,
+// the coin list, status and shortlist used PoolTTLMinutes (default 12), the
+// stable badge used 30, and the pool used interval+refresh (~65). With hourly
+// scoring, a coin was "fresh" for the program only ~12 minutes of every 60, so
+// it closed positions as "score expired" and reopened them next hour: 52
+// program trades held 13 minutes on average and lost to fees.
+//
+// PoolTTLMinutes remains what it says: how long a POOL PICK lasts, so a pool
+// built from readings that then stop arriving cannot be traded forever.
+func (c coinScoreAutoConfig) scoreFreshMs() int64 {
+	interval := c.IntervalMinutes
+	if interval < coinScoreMinInterval {
+		interval = coinScoreDefaultMins
+	}
+	refresh := c.PoolRefreshMinutes
+	if refresh < 1 {
+		refresh = 5
+	}
+	// One interval, plus the pool refresh cadence, plus a quarter interval for
+	// a run that finishes late. Never shorter than the pick TTL.
+	mins := interval + refresh + interval/4
+	if ttl := c.PoolTTLMinutes; ttl > mins {
+		mins = ttl
+	}
+	return int64(mins) * 60 * 1000
+}
+
+// minVolume is the 24h quote-volume floor for the scoring universe AND every
+// page that reports on it.
+//
+// 0 used to mean different things in different places: the scoring universe
+// read it as "no filter" while the status, ranking, accuracy, shortlist and
+// program-stable code substituted coinScoreDefaultMinVolume. Saving 0 then
+// spent tokens scoring small coins that those pages still reported as
+// "out of AI scope" and that never entered a ranking. One rule now: 0 means
+// the default floor, and the settings page says so.
+func (c coinScoreAutoConfig) minVolume() float64 {
+	if c.MinQuoteVolume > 0 {
+		return c.MinQuoteVolume
+	}
+	return coinScoreDefaultMinVolume
 }
 
 // rankMode returns the effective pool ranking mode; anything unrecognised,
@@ -532,7 +591,11 @@ func (s *Server) coinUniverse(ctx context.Context, minVol float64, topN int) []s
 	}
 	out := make([]string, 0, len(sums))
 	for _, x := range sums {
-		if minVol > 0 && x.Volume24h > 0 && x.Volume24h < minVol {
+		// Unknown volume (0) is OUT of scope, as on every page that reports on
+		// this universe. It used to be kept here, and when the volume fetch
+		// failed with no cache the filter switched off entirely, so tokens were
+		// spent scoring coins the rankings then excluded.
+		if minVol > 0 && (x.Volume24h <= 0 || x.Volume24h < minVol) {
 			continue
 		}
 		out = append(out, x.Symbol)
@@ -543,16 +606,16 @@ func (s *Server) coinUniverse(ctx context.Context, minVol float64, topN int) []s
 	return out
 }
 
+// runCoinScoreAll scores the whole universe. The caller must already have
+// claimed the run with coinScoreBegin, so a refusal can be reported to whoever
+// asked instead of being swallowed here.
 func (s *Server) runCoinScoreAll(ctx context.Context, userID string, topN, skipFreshMins int) {
-	if !s.coinScoreBegin() {
-		return
-	}
 	model, uid, err := s.resolveScoreModelAny(userID)
 	if err != nil {
 		s.coinScoreFinish(0, "no AI model: "+err.Error())
 		return
 	}
-	minVol := s.loadCoinScoreAuto().MinQuoteVolume
+	minVol := s.loadCoinScoreAuto().minVolume()
 	symbols := s.coinUniverse(ctx, minVol, topN)
 	if skipFreshMins > 0 {
 		kept := make([]string, 0, len(symbols))
@@ -659,7 +722,7 @@ func (s *Server) tickCoinScoreAuto(ctx context.Context) {
 		return
 	}
 
-	minVol := cfg.MinQuoteVolume
+	minVol := cfg.minVolume()
 	snaps := s.copyTrade.Snapshots()
 	universe := s.coinUniverse(ctx, minVol, cfg.TopN)
 
@@ -730,27 +793,36 @@ func (s *Server) tickCoinScoreAuto(ctx context.Context) {
 		}(d.sym)
 	}
 
-	if len(universe) == 0 {
-		if now-s.coinScore.lastDiagMs > 60000 {
-			logger.Warnf("coin-score: universe empty (snapshots=%d, minVol=%.0f)", len(snaps), minVol)
-			s.coinScore.lastDiagMs = now
-		}
-	} else if launched > 0 {
-		logger.Infof("coin-score tick: universe=%d due=%d fresh=%d launched=%d conc=%d interval=%dm", len(universe), len(due), fresh, launched, conc, interval)
-	} else if now-s.coinScore.lastDiagMs > 60000 {
-		logger.Infof("coin-score tick idle: universe=%d due=%d fresh=%d conc=%d interval=%dm", len(universe), len(due), fresh, conc, interval)
+	// lastDiagMs is shared state: read and written under the lock like the
+	// rest of the status.
+	s.coinScore.mu.Lock()
+	diagDue := now-s.coinScore.lastDiagMs > 60000
+	if diagDue {
 		s.coinScore.lastDiagMs = now
 	}
-
-	s.coinScore.mu.Lock()
 	s.coinScore.total = len(universe)
 	s.coinScore.done = fresh
 	s.coinScore.lastRun = now
 	if launched > 0 {
 		s.coinScore.lastCount = launched
 	}
-	s.coinScore.running = len(s.coinScore.inflight) > 0
+	// A manual full run owns the running flag until it finishes; the scheduler
+	// must not clear it, or a second manual run can start beside the first.
+	if !s.coinScore.manualRunning {
+		s.coinScore.running = len(s.coinScore.inflight) > 0
+	}
 	s.coinScore.mu.Unlock()
+
+	switch {
+	case len(universe) == 0:
+		if diagDue {
+			logger.Warnf("coin-score: universe empty (snapshots=%d, minVol=%.0f)", len(snaps), minVol)
+		}
+	case launched > 0:
+		logger.Infof("coin-score tick: universe=%d due=%d fresh=%d launched=%d conc=%d interval=%dm", len(universe), len(due), fresh, launched, conc, interval)
+	case diagDue:
+		logger.Infof("coin-score tick idle: universe=%d due=%d fresh=%d conc=%d interval=%dm", len(universe), len(due), fresh, conc, interval)
+	}
 }
 
 func (s *Server) handleCoinScoreSettingsGet(c *gin.Context) {
@@ -768,7 +840,7 @@ func (s *Server) handleCoinScoreSettingsGet(c *gin.Context) {
 		coins = len(copytrade.Symbols(s.copyTrade.Snapshots()))
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes, "pool_auto": cfg.PoolAuto, "top_n": cfg.TopN, "concurrency": cfg.Concurrency, "min_quote_volume": cfg.MinQuoteVolume, "pool_refresh_minutes": cfg.PoolRefreshMinutes, "pool_ttl_minutes": cfg.PoolTTLMinutes, "pool_rank_mode": cfg.rankMode(), "min_interval": coinScoreMinInterval,
+		"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes, "pool_auto": cfg.PoolAuto, "top_n": cfg.TopN, "concurrency": cfg.Concurrency, "min_quote_volume": cfg.MinQuoteVolume, "effective_min_quote_volume": cfg.minVolume(), "pool_refresh_minutes": cfg.PoolRefreshMinutes, "pool_ttl_minutes": cfg.PoolTTLMinutes, "pool_rank_mode": cfg.rankMode(), "min_interval": coinScoreMinInterval,
 		"running": running, "done": done, "total": total, "last_run": lastRun, "last_count": lastCount,
 		"last_error": lastErr, "model": modelName, "coin_count": coins,
 	})
@@ -853,11 +925,16 @@ func (s *Server) handleCoinScoreSettingsPut(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"enabled": cfg.Enabled, "interval_minutes": cfg.IntervalMinutes,
-		"pool_auto": cfg.PoolAuto, "top_n": cfg.TopN, "concurrency": cfg.Concurrency, "min_quote_volume": cfg.MinQuoteVolume, "pool_refresh_minutes": cfg.PoolRefreshMinutes, "pool_ttl_minutes": cfg.PoolTTLMinutes, "pool_rank_mode": cfg.rankMode()})
+		"pool_auto": cfg.PoolAuto, "top_n": cfg.TopN, "concurrency": cfg.Concurrency, "min_quote_volume": cfg.MinQuoteVolume, "effective_min_quote_volume": cfg.minVolume(), "pool_refresh_minutes": cfg.PoolRefreshMinutes, "pool_ttl_minutes": cfg.PoolTTLMinutes, "pool_rank_mode": cfg.rankMode()})
 }
 
 func (s *Server) handleCoinScoreRunAll(c *gin.Context) {
 	if !s.copyTradeReady(c) {
+		return
+	}
+	// coinScoreBegin refuses a second run; say so instead of reporting started.
+	if !s.coinScoreBegin() {
+		c.JSON(http.StatusOK, gin.H{"started": false, "reason": "a scoring run is already in progress"})
 		return
 	}
 	go s.runCoinScoreAll(context.Background(), c.GetString("user_id"), 0, 0)
@@ -1009,11 +1086,10 @@ func (s *Server) handleCoinScoresList(c *gin.Context) {
 		return
 	}
 	cfg := s.loadCoinScoreAuto()
-	ttlMin := cfg.PoolTTLMinutes
-	if ttlMin < 1 {
-		ttlMin = 12
-	}
-	ttlMs := int64(ttlMin) * 60 * 1000
+	// One shared definition of "this reading is still current" (see
+	// scoreFreshMs): the program, pool, rankings and status pages must agree,
+	// or a coin is tradeable by one and expired by another.
+	ttlMs := cfg.scoreFreshMs()
 	now := time.Now().UnixMilli()
 	out := make([]coinScoreBrief, 0, len(rows))
 	for _, r := range rows {
@@ -1109,6 +1185,10 @@ func scoreFeaturesJSON(t *binance.MarketTicker, deriv binance.DerivativeInfo, su
 	}
 	return string(raw)
 }
+
+// errUnparseableReading reports a model reply that could not be read as a
+// score. The result still carries the raw text for the manual analyze view.
+var errUnparseableReading = errors.New("AI reply was not valid JSON")
 
 // relStrength is the coin's return minus BTC's over several windows, in
 // percentage points. Positive = stronger than BTC over that window.

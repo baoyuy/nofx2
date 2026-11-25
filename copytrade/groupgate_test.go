@@ -5,11 +5,24 @@ import (
 	"testing"
 )
 
+// obs spreads the samples over separate time cohorts, so they count as
+// independent observations of the market (see GroupCohortMs).
 func obs(side string, conv float64, rets []float64, mkt float64, hasMkt bool) []GroupObservation {
 	out := make([]GroupObservation, 0, len(rets))
 	for i, r := range rets {
-		out = append(out, GroupObservation{Symbol: "X", AnalyzedAt: int64(i), Side: side,
+		out = append(out, GroupObservation{Symbol: "X", AnalyzedAt: int64(i) * GroupCohortMs, Side: side,
 			Conviction: conv, Return: r, MarketReturn: mkt, HasMarket: hasMkt})
+	}
+	return out
+}
+
+// obsOneCohort puts every sample in the SAME cohort: many correlated coins
+// scored together, which must not be read as many independent samples.
+func obsOneCohort(side string, conv float64, rets []float64) []GroupObservation {
+	out := make([]GroupObservation, 0, len(rets))
+	for i, r := range rets {
+		out = append(out, GroupObservation{Symbol: "X", AnalyzedAt: int64(i), Side: side,
+			Conviction: conv, Return: r})
 	}
 	return out
 }
@@ -202,5 +215,39 @@ func TestMeasureBreadthMedianIgnoresNonFinite(t *testing.T) {
 	}
 	if math.Abs(b.Median-0.01) > 1e-9 {
 		t.Fatalf("median = %v, want 0.01", b.Median)
+	}
+}
+
+// Coins scored in the same window move together, so 200 samples from one
+// cohort are one observation of the market, not 200. Treating them as
+// independent made short groups' bounds look positive in a falling market.
+func TestGroupStatsTreatsOneCohortAsOneObservation(t *testing.T) {
+	rows := obsOneCohort("short", 40, rep(0.02, 200))
+	g := GroupStats(rows)[GroupKey{Side: "short", Band: "35-50"}]
+	if g.Samples != 200 || g.Clusters != 1 {
+		t.Fatalf("want 200 samples in 1 cluster, got %d/%d", g.Samples, g.Clusters)
+	}
+	if !g.Thin {
+		t.Fatal("200 rows from a single cohort must be thin: it is one draw")
+	}
+	got := RankCandidates([]GroupRankInput{{Symbol: "AUSDT", Side: "short", Conviction: 40}},
+		map[GroupKey]GroupStat{g.Key: g})
+	if got[0].Blocked || !got[0].Thin {
+		t.Fatalf("a one-cohort group must be provisional, not trusted: %+v", got[0])
+	}
+}
+
+// With enough independent cohorts the bound is informative again.
+func TestGroupStatsTrustsManyCohorts(t *testing.T) {
+	rets := make([]float64, 0, 30)
+	for i := 0; i < 30; i++ {
+		rets = append(rets, 0.01+0.002*float64(i%3)) // some spread
+	}
+	g := GroupStats(obs("short", 40, rets, 0, false))[GroupKey{Side: "short", Band: "35-50"}]
+	if g.Clusters != 30 || g.Thin {
+		t.Fatalf("30 cohorts must be trusted: clusters=%d thin=%v", g.Clusters, g.Thin)
+	}
+	if g.NetLower >= g.NetMean {
+		t.Fatalf("lower bound must sit below the mean: %v vs %v", g.NetLower, g.NetMean)
 	}
 }

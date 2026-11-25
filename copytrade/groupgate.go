@@ -69,8 +69,11 @@ type GroupStat struct {
 	HasExcess bool `json:"has_excess"`
 	// WinRate is the share of samples whose cost-adjusted return was positive.
 	WinRate float64 `json:"win_rate"`
-	// Thin reports that Samples is below GroupMinSamples, so the bounds are not
-	// informative and the caller must fall back rather than trust them.
+	// Clusters is how many independent time cohorts the samples came from.
+	Clusters int `json:"clusters"`
+	// Thin reports that Samples is below GroupMinSamples or Clusters below
+	// GroupMinClusters, so the bounds are not informative and the caller must
+	// fall back rather than trust them.
 	Thin bool `json:"thin"`
 }
 
@@ -97,9 +100,10 @@ type GroupObservation struct {
 // GroupStats measures every group present in obs.
 func GroupStats(obs []GroupObservation) map[GroupKey]GroupStat {
 	type acc struct {
-		net, ex   []float64
 		wins, n   int
 		exSamples int
+		// Per time cohort: the cohort is the independent unit (see below).
+		net, ex map[int64][]float64
 	}
 	buckets := map[GroupKey]*acc{}
 	for _, o := range obs {
@@ -116,11 +120,12 @@ func GroupStats(obs []GroupObservation) map[GroupKey]GroupStat {
 		k := GroupKey{Side: o.Side, Band: band}
 		a := buckets[k]
 		if a == nil {
-			a = &acc{}
+			a = &acc{net: map[int64][]float64{}, ex: map[int64][]float64{}}
 			buckets[k] = a
 		}
+		c := cohortOf(o.AnalyzedAt)
 		net := o.Return - GroupCost
-		a.net = append(a.net, net)
+		a.net[c] = append(a.net[c], net)
 		a.n++
 		if net > 0 {
 			a.wins++
@@ -130,15 +135,18 @@ func GroupStats(obs []GroupObservation) map[GroupKey]GroupStat {
 			if o.Side == "short" {
 				bm = -bm
 			}
-			a.ex = append(a.ex, net-bm)
+			a.ex[c] = append(a.ex[c], net-bm)
 			a.exSamples++
 		}
 	}
 	out := make(map[GroupKey]GroupStat, len(buckets))
 	for k, a := range buckets {
-		st := GroupStat{Key: k, Samples: a.n, Thin: a.n < GroupMinSamples}
-		st.NetMean, st.NetLower = meanLower(a.net)
-		st.ExcessMean, st.ExcessLower = meanLower(a.ex)
+		st := GroupStat{Key: k, Samples: a.n, Clusters: len(a.net)}
+		// Thin is judged on independent clusters, not raw rows: 200 rows from
+		// three cohorts are three observations of the market, not 200.
+		st.Thin = a.n < GroupMinSamples || st.Clusters < GroupMinClusters
+		st.NetMean, st.NetLower = clusterMeanLower(a.net)
+		st.ExcessMean, st.ExcessLower = clusterMeanLower(a.ex)
 		st.HasExcess = a.exSamples > 0
 		if a.n > 0 {
 			st.WinRate = float64(a.wins) / float64(a.n)
@@ -146,6 +154,54 @@ func GroupStats(obs []GroupObservation) map[GroupKey]GroupStat {
 		out[k] = st
 	}
 	return out
+}
+
+// GroupCohortMs is the time cohort used as the independent unit. Coins scored
+// in the same window move together in a one-way market, so treating each as
+// an independent draw divided the standard error by sqrt(coins) too many and
+// made every short group's bound look positive in a falling market: "short
+// everything" again, now with a confidence label.
+const GroupCohortMs = int64(4 * 60 * 60 * 1000)
+
+// GroupMinClusters is the fewest independent cohorts a group needs before its
+// bound is trusted.
+const GroupMinClusters = 6
+
+func cohortOf(atMs int64) int64 { return atMs / GroupCohortMs }
+
+// clusterMeanLower is meanLower over cohort means: each cohort contributes one
+// value (the mean of its samples), so correlated samples inside a cohort do
+// not shrink the bound. The mean is weighted by cohort size, so a large cohort
+// still counts for more in the point estimate.
+func clusterMeanLower(byCohort map[int64][]float64) (float64, float64) {
+	if len(byCohort) == 0 {
+		return 0, 0
+	}
+	var total, n float64
+	means := make([]float64, 0, len(byCohort))
+	for _, xs := range byCohort {
+		var sum float64
+		for _, x := range xs {
+			sum += x
+		}
+		means = append(means, sum/float64(len(xs)))
+		total += sum
+		n += float64(len(xs))
+	}
+	_, lower := meanLower(means)
+	mean := total / n
+	// The bound is centred on the cohort-mean spread but must not sit above
+	// the pooled mean.
+	gap := meanOf(means) - lower
+	return mean, mean - gap
+}
+
+func meanOf(xs []float64) float64 {
+	var s float64
+	for _, x := range xs {
+		s += x
+	}
+	return s / float64(len(xs))
 }
 
 // MeanLower90 is meanLower, exported for the statistics endpoints so the pool

@@ -27,15 +27,12 @@ func (s *Server) stableRanksForProgram(userID string) []kernel.StableRank {
 		return nil
 	}
 	cfg := s.loadCoinScoreAuto()
-	minVol := cfg.MinQuoteVolume
-	if minVol <= 0 {
-		minVol = coinScoreDefaultMinVolume
-	}
-	ttlMin := cfg.PoolTTLMinutes
-	if ttlMin < 1 {
-		ttlMin = 12
-	}
-	ttlMs := int64(ttlMin) * 60 * 1000
+	minVol := cfg.minVolume()
+	// One shared definition of "this reading is still current" (see
+	// scoreFreshMs): the program, pool, rankings and status pages must agree,
+	// or a coin is tradeable by one and expired by another.
+	ttlMs := cfg.scoreFreshMs()
+	freshWindow := time.Duration(ttlMs) * time.Millisecond
 
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
@@ -86,27 +83,17 @@ func (s *Server) stableRanksForProgram(userID string) []kernel.StableRank {
 		aiRows, _ := s.store.CopyTrade().RecentMatureScoreOutcomes(uid, sum.Symbol, now.Add(-30*24*time.Hour).UnixMilli())
 		tradeRows, _ := s.store.CopyTrade().RecentMatureSignals(sum.Symbol, now.Add(-30*24*time.Hour).Unix())
 		// Shared with the coin list and detail, so every page counts the
-		// same samples the same way (and skips the BTC self-benchmark).
-		ah, an, th, tn := stableCounts(aiRows, tradeRows)
+		// same samples the same way: one call per run, only the side
+		// being shown, and no BTC self-benchmark.
+		ah, an, th, tn := stableCountsFor(aiRows, tradeRows, dir)
 		risk := float64(sum.Liquidated+sum.Long.Trapped+sum.Short.Trapped) / float64(max(1, sum.Long.Traders+sum.Short.Traders))
-		fresh := copytrade.StableFresh(a.at, now)
+		fresh := copytrade.StableFresh(a.at, now, freshWindow)
 		sd := copytrade.StableScore(ah, an, th, tn, dir, risk, fresh)
-		fourH := clampPct(sd.Accuracy * 100)
-		histHit := clampPct(sd.AIAccuracy * 100)
-		dirQ := clampPct(sum.Rank.Score)
-		consensus := clampPct(sum.Confidence.Score)
-		freshPct := 0.0
-		if sd.Fresh {
-			freshPct = 100
-		}
-		ded := 20 * sd.Risk
-		if sd.AI_Samples < 4 {
-			ded += 10
-		}
-		if sum.Confidence.Agreement < 0.5 {
-			ded += 10
-		}
-		comp := clampPct(.30*fourH + .25*dirQ + .20*histHit + .15*freshPct + .10*consensus - ded)
+		// The one shared composite (see stableComposite): the crowd only
+		// helps when it agrees with the AI side, the AI rate counts once,
+		// and freshness is the gate above rather than a bonus.
+		comp := stableComposite(stableInputs{Dir: dir, Accuracy: sd.Accuracy, AIRate: sd.AIAccuracy,
+			AISample: sd.AI_Samples, Rank: sum.Rank, Conf: sum.Confidence, Risk: sd.Risk})
 		out = append(out, kernel.StableRank{Symbol: sum.Symbol, Direction: dir, Stable: comp, AI: clampPct(a.score)})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Stable > out[j].Stable })

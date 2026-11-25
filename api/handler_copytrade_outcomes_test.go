@@ -12,15 +12,16 @@ func TestAIOutcomeHitRateUsesDirectionAdjustedReturn(t *testing.T) {
 	// price fell. The market benchmark must not change direction hit-rate.
 	shortHit, shortMiss := .02, -.01
 	longHit, longMiss := .03, -.02
-	bench := .10
+	stored := .10 // a stored per-row benchmark must not be what statFor uses
 	rows := []store.CopyTradeScoreOutcome{
-		{Symbol: "BTCUSDT", Bias: "short", AnalyzedAt: 1, Ret4h: &shortHit, Bench4h: &bench},
+		{Symbol: "BTCUSDT", Bias: "short", AnalyzedAt: 1, Ret4h: &shortHit, Bench4h: &stored},
 		{Symbol: "ETHUSDT", Bias: "short", AnalyzedAt: 1, Ret4h: &shortMiss},
 		{Symbol: "SOLUSDT", Bias: "long", AnalyzedAt: 1, Ret4h: &longHit},
 		{Symbol: "XRPUSDT", Bias: "long", AnalyzedAt: 1, Ret4h: &longMiss},
 	}
-	short := statFor("4h", "short", "all", rows[:2], nil)
-	long := statFor("4h", "long", "all", rows[2:], nil)
+	bench := buildBench(rows)
+	short := statFor("4h", "short", "all", rows[:2], bench)
+	long := statFor("4h", "long", "all", rows[2:], bench)
 	if short.HitRate != 50 || long.HitRate != 50 {
 		t.Fatalf("direction hit rate must use the stored signed return; short=%+v long=%+v", short, long)
 	}

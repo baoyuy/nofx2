@@ -495,6 +495,8 @@ func (s *Server) handleCopyTradeSymbols(c *gin.Context) {
 // and the single-coin detail so both report the same samples.
 func (s *Server) attachStableDirections(userID string, sums []copytrade.SymbolSummary) {
 	now := time.Now()
+	// The one shared freshness window (see scoreFreshMs).
+	freshWindow := time.Duration(s.loadCoinScoreAuto().scoreFreshMs()) * time.Millisecond
 	currentScores, _ := s.store.CopyTrade().ListCoinScores(userID)
 	scoreAtBySymbol := make(map[string]int64, len(currentScores))
 	for _, score := range currentScores {
@@ -506,7 +508,6 @@ func (s *Server) attachStableDirections(userID string, sums []copytrade.SymbolSu
 		sum := &sums[i]
 		aiRows, _ := s.store.CopyTrade().RecentMatureScoreOutcomes(userID, sum.Symbol, now.Add(-30*24*time.Hour).UnixMilli())
 		tradeRows, _ := s.store.CopyTrade().RecentMatureSignals(sum.Symbol, now.Add(-30*24*time.Hour).Unix())
-		ah, an, th, tn := stableCounts(aiRows, tradeRows)
 		dir := sum.StyleReading.Direction
 		if dir == "neutral" {
 			dir = sum.Rank.Direction
@@ -514,12 +515,33 @@ func (s *Server) attachStableDirections(userID string, sums []copytrade.SymbolSu
 		if dir == "neutral" {
 			dir = sum.Shadow.Direction
 		}
+		// Accuracy of calls on the direction shown, not of both sides.
+		ah, an, th, tn := stableCountsFor(aiRows, tradeRows, dir)
 		risk := float64(sum.Liquidated+sum.Long.Trapped+sum.Short.Trapped) / float64(max(1, sum.Long.Traders+sum.Short.Traders))
 		// Per-coin freshness (a single fresh trader must NOT mark every coin fresh).
-		fresh := copytrade.StableFresh(scoreAtBySymbol[sum.Symbol], now)
+		fresh := copytrade.StableFresh(scoreAtBySymbol[sum.Symbol], now, freshWindow)
 		sum.Stable = copytrade.StableScore(ah, an, th, tn, dir, risk, fresh)
 		sum.Stable.Traders = sum.Long.Traders + sum.Short.Traders
 	}
+}
+
+// dedupSignals keeps one sample per (symbol, direction) per 4h run: an
+// unchanged hourly signal is the same call, not a new one.
+func dedupSignals(rows []store.CopyTradeSignal) []store.CopyTradeSignal {
+	sorted := append([]store.CopyTradeSignal(nil), rows...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Hour < sorted[j].Hour })
+	const windowSec = int64(4 * 3600)
+	kept := map[string]int64{}
+	out := make([]store.CopyTradeSignal, 0, len(sorted))
+	for _, sig := range sorted {
+		k := sig.Symbol + "|" + sig.Direction
+		if last, ok := kept[k]; ok && sig.Hour-last < windowSec {
+			continue
+		}
+		kept[k] = sig.Hour
+		out = append(out, sig)
+	}
+	return out
 }
 
 // stableCounts turns mature rows into hit/sample counts.
@@ -527,9 +549,29 @@ func (s *Server) attachStableDirections(userID string, sums []copytrade.SymbolSu
 //     both sides). A move under the neutral threshold is neither hit nor miss.
 //   - Trader signals are judged on excess over BTC in the signal's direction;
 //     BTC itself, being the benchmark, is judged on its absolute move.
+// stableCounts counts every side; see stableCountsFor to count one.
 func stableCounts(aiRows []store.CopyTradeScoreOutcome, tradeRows []store.CopyTradeSignal) (ah, an, th, tn int) {
+	return stableCountsFor(aiRows, tradeRows, "")
+}
+
+// stableCountsFor counts only the samples called on `side` ("long"/"short");
+// "" counts both. A ranking that SHOWS one direction must report the accuracy
+// of calls on that direction. Counting both let a "short" badge carry a hit
+// rate that long calls had earned, and the two sides usually differ sharply
+// (on the owner's data AI shorts hit 65% and AI longs 40%).
+func stableCountsFor(aiRows []store.CopyTradeScoreOutcome, tradeRows []store.CopyTradeSignal, side string) (ah, an, th, tn int) {
+	// Independent samples only. Both sources repeat the same call: coins are
+	// re-scored every interval and trader signals are recorded hourly, so one
+	// 8-hour view produced ~8 overlapping 4h samples that were counted as 8
+	// opinions. The shown "AI 样本 30" could be ~8 independent calls, and the
+	// 4-sample minimum was met by a single unchanged run.
+	aiRows = dedupOutcomes(aiRows)
+	tradeRows = dedupSignals(tradeRows)
 	for _, o := range aiRows {
 		if o.Bias != "long" && o.Bias != "short" || o.Ret4h == nil {
+			continue
+		}
+		if side != "" && o.Bias != side {
 			continue
 		}
 		r := *o.Ret4h
@@ -543,6 +585,9 @@ func stableCounts(aiRows []store.CopyTradeScoreOutcome, tradeRows []store.CopyTr
 	}
 	for _, sig := range tradeRows {
 		if sig.Direction != "long" && sig.Direction != "short" || sig.Ret4h == nil {
+			continue
+		}
+		if side != "" && sig.Direction != side {
 			continue
 		}
 		ex := *sig.Ret4h

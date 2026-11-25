@@ -20,14 +20,24 @@ func kl15(startSec int64, closes ...float64) []binance.MarketKline {
 	return out
 }
 
-func TestPriceAtKhReportsGapToDueTime(t *testing.T) {
-	k := kl15(1000, 1, 2, 3) // opens at 1000s, 1900s, 2800s
+func TestPriceAtKhUsesCandlesClosedByTheDueTime(t *testing.T) {
+	// 15m candles opening at 1000s, 1900s, 2800s; they CLOSE 900s later.
+	k := kl15(1000, 1, 2, 3)
+	// At 2000s only the first candle (closed at 1900s) has closed.
 	p, gap, ok := priceAtKh(k, 2000*1000)
-	if !ok || p != 2 || gap != 100*1000 {
-		t.Fatalf("want close 2 with a 100s gap, got %v %v %v", p, gap, ok)
+	if !ok || p != 1 || gap != 100*1000 {
+		t.Fatalf("want the candle closed at 1900s (close 1, gap 100s), got %v %v %v", p, gap, ok)
+	}
+	// Just before the second candle closes (2800s), still the first.
+	if p, _, _ := priceAtKh(k, 2799*1000); p != 1 {
+		t.Fatalf("a candle that has not closed yet must not be used, got %v", p)
+	}
+	// Once it has closed, it is used.
+	if p, _, _ := priceAtKh(k, 2800*1000); p != 2 {
+		t.Fatalf("want close 2 once the candle closed, got %v", p)
 	}
 	if _, _, ok := priceAtKh(k, 500*1000); ok {
-		t.Fatal("a time before the first candle has no price")
+		t.Fatal("a time before any candle closed has no price")
 	}
 	// Far past the last candle: the price exists but the gap exposes it as
 	// stale, which is what lets the evaluator refuse it.

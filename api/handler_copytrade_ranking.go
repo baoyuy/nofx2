@@ -97,15 +97,13 @@ func (s *Server) handleCoinRanking(c *gin.Context) {
 		mode = "stable"
 	}
 	cfg := s.loadCoinScoreAuto()
-	minVol := cfg.MinQuoteVolume
-	if minVol <= 0 {
-		minVol = coinScoreDefaultMinVolume
-	}
-	ttlMin := cfg.PoolTTLMinutes
-	if ttlMin < 1 {
-		ttlMin = 12
-	}
-	ttlMs := int64(ttlMin) * 60 * 1000
+	minVol := cfg.minVolume()
+	// One shared definition of "this reading is still current" (see
+	// scoreFreshMs): the program, pool, rankings and status pages must agree,
+	// or a coin is tradeable by one and expired by another.
+	ttlMs := cfg.scoreFreshMs()
+	ttlMin := int(ttlMs / 60000)
+	freshWindow := time.Duration(ttlMs) * time.Millisecond
 	userID := c.GetString("user_id")
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 40*time.Second)
@@ -172,10 +170,11 @@ func (s *Server) handleCoinRanking(c *gin.Context) {
 				aiRows, _ := s.store.CopyTrade().RecentMatureScoreOutcomes(userID, sum.Symbol, now.Add(-30*24*time.Hour).UnixMilli())
 				tradeRows, _ := s.store.CopyTrade().RecentMatureSignals(sum.Symbol, now.Add(-30*24*time.Hour).Unix())
 				// Shared with the coin list and detail, so every page counts the
-				// same samples the same way (and skips the BTC self-benchmark).
-				ah, an, th, tn := stableCounts(aiRows, tradeRows)
+				// same samples the same way: one call per run, only the side
+				// being shown, and no BTC self-benchmark.
+				ah, an, th, tn := stableCountsFor(aiRows, tradeRows, dir)
 				risk := float64(sum.Liquidated+sum.Long.Trapped+sum.Short.Trapped) / float64(max(1, sum.Long.Traders+sum.Short.Traders))
-				fresh := copytrade.StableFresh(a.at, now)
+				fresh := copytrade.StableFresh(a.at, now, freshWindow)
 				sd := copytrade.StableScore(ah, an, th, tn, dir, risk, fresh)
 				row.StableAccuracy = sd.Accuracy
 				row.AIAccuracy = sd.AIAccuracy
@@ -186,26 +185,16 @@ func (s *Server) handleCoinRanking(c *gin.Context) {
 				row.Fresh = sd.Fresh
 				row.Eligible = sd.Eligible
 				if dir != "" {
-					fourH := clampPct(sd.Accuracy * 100)
-					histHit := clampPct(sd.AIAccuracy * 100)
-					dirQ := clampPct(sum.Rank.Score)
-					consensus := clampPct(sum.Confidence.Score)
-					freshPct := 0.0
-					if sd.Fresh {
-						freshPct = 100
-					}
-					ded := 20 * sd.Risk
-					if sd.AI_Samples < 4 {
-						ded += 10
-					}
-					if sum.Confidence.Agreement < 0.5 {
-						ded += 10
-					}
+					// The same composite the program trader opens orders on, so
+					// the page shows exactly what the program acts on.
+					stable := stableComposite(stableInputs{Dir: dir, Accuracy: sd.Accuracy, AIRate: sd.AIAccuracy,
+						AISample: sd.AI_Samples, Rank: sum.Rank, Conf: sum.Confidence, Risk: sd.Risk})
 					if minVol > 0 && sum.Volume24h > 0 && sum.Volume24h < minVol*1.2 {
-						ded += 5
+						stable = clampPct(stable - 5) // near the volume floor
 					}
-					row.Composite = clampPct(.25*clampPct(a.score) + .25*dirQ + .20*fourH + .15*histHit + .10*consensus + .05*freshPct - ded)
-					row.StableScore = clampPct(.30*fourH + .25*dirQ + .20*histHit + .15*freshPct + .10*consensus - ded)
+					row.StableScore = stable
+					// The AI view adds the model's own score to the same base.
+					row.Composite = clampPct(0.75*stable + 0.25*clampPct(a.score))
 					row.Reliability = reliabilityOf(sd.AI_Samples, sd.AIAccuracy*100, sd.Fresh, sd.Accuracy*100)
 				}
 				if row.AgeMs <= ttlMs {

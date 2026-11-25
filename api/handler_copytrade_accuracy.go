@@ -45,14 +45,9 @@ func (s *Server) handleCoinAccuracy(c *gin.Context) {
 	}
 	userID := c.GetString("user_id")
 	cfg := s.loadCoinScoreAuto()
-	minVol := cfg.MinQuoteVolume
-	if minVol <= 0 {
-		minVol = coinScoreDefaultMinVolume
-	}
-	ttlMin := cfg.PoolTTLMinutes
-	if ttlMin < 1 {
-		ttlMin = 12
-	}
+	minVol := cfg.minVolume()
+	// Reported only; the shared freshness window (see scoreFreshMs).
+	ttlMin := int(cfg.scoreFreshMs() / 60000)
 	neutral := coinScoreNeutralMovePct / 100.0
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)

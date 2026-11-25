@@ -48,15 +48,12 @@ func (s *Server) handleCoinStatus(c *gin.Context) {
 	}
 	userID := c.GetString("user_id")
 	cfg := s.loadCoinScoreAuto()
-	minVol := cfg.MinQuoteVolume
-	if minVol <= 0 {
-		minVol = coinScoreDefaultMinVolume
-	}
-	ttlMin := cfg.PoolTTLMinutes
-	if ttlMin < 1 {
-		ttlMin = 12
-	}
-	ttlMs := int64(ttlMin) * 60 * 1000
+	minVol := cfg.minVolume()
+	// One shared definition of "this reading is still current" (see
+	// scoreFreshMs): the program, pool, rankings and status pages must agree,
+	// or a coin is tradeable by one and expired by another.
+	ttlMs := cfg.scoreFreshMs()
+	ttlMin := int(ttlMs / 60000)
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()

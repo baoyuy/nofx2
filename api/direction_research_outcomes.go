@@ -68,6 +68,11 @@ func observeDirection(p directionPick, at int64, bars []binance.MarketKline) (di
 	return o, true
 }
 
+// directionGiveUpMs is how long a research record may wait for candles
+// before it is finished with the picks that could be observed. 15m candles
+// for a 4h window are normally available within minutes; a day is generous.
+const directionGiveUpMs = int64(24 * 3600 * 1000)
+
 func (s *Server) evaluateDirectionResearch(ctx context.Context) {
 	records, err := s.store.CopyTrade().PendingDirectionResearch(time.Now().UnixMilli())
 	if err != nil {
@@ -85,11 +90,22 @@ func (s *Server) evaluateDirectionResearch(ctx context.Context) {
 		}
 		out := []directionObserved{}
 		complete := true
+		// A record that can never complete (a pick's candles are gone, e.g.
+		// a delisted coin) used to stay pending forever, and up to 200 such
+		// records, oldest first, could block every newer evaluation. Past the
+		// give-up age, finish it with whatever picks could be observed and
+		// mark the rest unobservable, instead of retrying it every tick.
+		expired := time.Now().UnixMilli()-record.At > directionGiveUpMs
+		var unobserved []string
 		for _, p := range append(payload.Long, payload.Short...) {
 			bars, ok := cache[p.Symbol]
 			if !ok {
 				bars, err = binance.GetPublicKlines(ctx, p.Symbol, "15m", 1500)
 				if err != nil {
+					if expired {
+						unobserved = append(unobserved, p.Symbol)
+						continue
+					}
 					complete = false
 					break
 				}
@@ -97,6 +113,10 @@ func (s *Server) evaluateDirectionResearch(ctx context.Context) {
 			}
 			result, ok := observeDirection(p, record.At, bars)
 			if !ok {
+				if expired {
+					unobserved = append(unobserved, p.Symbol)
+					continue
+				}
 				complete = false
 				break
 			}
@@ -105,7 +125,7 @@ func (s *Server) evaluateDirectionResearch(ctx context.Context) {
 		if !complete {
 			continue
 		}
-		data, err := json.Marshal(map[string]any{"items": out, "cost_assumption": .002, "partial_start_interval_unverified": true, "endpoint_tolerance_seconds": 900, "version": directionRuleVersion})
+		data, err := json.Marshal(map[string]any{"items": out, "unobservable": unobserved, "cost_assumption": .002, "partial_start_interval_unverified": true, "endpoint_tolerance_seconds": 900, "version": directionRuleVersion})
 		if err == nil {
 			if err = s.store.CopyTrade().FinishDirectionResearch(record.ID, string(data)); err != nil {
 				logger.Warnf("direction research save: %v", err)

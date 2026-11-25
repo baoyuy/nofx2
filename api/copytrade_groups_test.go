@@ -22,13 +22,16 @@ func outcomeRow(sym, bias string, at int64, bull, bear, ret float64) store.CopyT
 }
 
 func TestBuildGroupSnapshotMeasuresGroupsFromStoredOutcomes(t *testing.T) {
-	// 30 short readings, conviction 40, each +1.5% in the predicted direction,
-	// every one in its own cohort so the cohort benchmark equals its own raw
-	// return. Net-of-cost excess over its own cohort is then -cost: the group
-	// made money but showed no selection, so it is kept and not credited.
+	// 30 cohorts. In each, our short reading earns +1.5% and one other coin
+	// scored alongside it fell by the same amount (stored as a winning short
+	// of +1.5% too). So the market moved exactly as our call did: the group
+	// made money, but showed no selection over the other coins.
 	var rows []store.CopyTradeScoreOutcome
 	for i := 0; i < 30; i++ {
-		rows = append(rows, outcomeRow("C"+string(rune('A'+i))+"USDT", "short", int64(i)*outcomeDedupMs, 30, 70, 0.015))
+		at := int64(i) * outcomeDedupMs
+		rows = append(rows,
+			outcomeRow("C"+string(rune('A'+i))+"USDT", "short", at, 30, 70, 0.015),
+			outcomeRow("M"+string(rune('A'+i))+"USDT", "short", at, 45, 55, 0.015)) // a market peer
 	}
 	snap := buildGroupSnapshot(rows, int64(40)*outcomeDedupMs)
 	g, ok := snap.stats[copytrade.GroupKey{Side: "short", Band: "35-50"}]
@@ -42,10 +45,10 @@ func TestBuildGroupSnapshotMeasuresGroupsFromStoredOutcomes(t *testing.T) {
 		t.Fatalf("absolute net mean should be positive (1.5%% - cost), got %v", g.NetMean)
 	}
 	if g.ExcessMean >= 0 {
-		t.Fatalf("a call that only matched its own cohort has no excess after cost, got %v", g.ExcessMean)
+		t.Fatalf("a call that only matched the other coins has no excess after cost, got %v", g.ExcessMean)
 	}
 	if !g.HasExcess {
-		t.Fatal("cohort benchmarks exist, so excess must be marked as measured")
+		t.Fatal("cohort peers exist, so excess must be marked as measured")
 	}
 	got := copytrade.RankCandidates([]copytrade.GroupRankInput{{Symbol: "NEWUSDT", Side: "short", Conviction: 40}}, snap.stats)
 	if len(got) != 1 || got[0].Blocked || got[0].Reason != "net-positive-excess-unproven" {
@@ -53,6 +56,18 @@ func TestBuildGroupSnapshotMeasuresGroupsFromStoredOutcomes(t *testing.T) {
 	}
 }
 
+// A reading alone in its cohort has nothing to be compared with. It used to be
+// compared with itself (excess exactly 0) while being marked as benchmarked.
+func TestBuildGroupSnapshotDoesNotBenchmarkALoneReading(t *testing.T) {
+	var rows []store.CopyTradeScoreOutcome
+	for i := 0; i < 30; i++ {
+		rows = append(rows, outcomeRow("C"+string(rune('A'+i))+"USDT", "short", int64(i)*outcomeDedupMs, 30, 70, 0.015))
+	}
+	g := buildGroupSnapshot(rows, int64(40)*outcomeDedupMs).stats[copytrade.GroupKey{Side: "short", Band: "35-50"}]
+	if g.HasExcess {
+		t.Fatalf("no cohort peer means no benchmark, got %+v", g)
+	}
+}
 func TestBuildGroupSnapshotBlocksGroupThatLostAfterCost(t *testing.T) {
 	var rows []store.CopyTradeScoreOutcome
 	for i := 0; i < 30; i++ {
@@ -243,4 +258,32 @@ func saveCoinScoreAutoForTest(t *testing.T, s *Server, cfg coinScoreAutoConfig) 
 		t.Fatal(err)
 	}
 	resetGroupCache()
+}
+
+// A group's history must describe the scoring version in use; older prompt
+// versions measure something else. Unversioned legacy rows are only used
+// while no versioned history exists yet.
+func TestCurrentVersionOnlyPrefersTheVersionInUse(t *testing.T) {
+	rows := []store.CopyTradeScoreOutcome{
+		{Symbol: "A", ConfigVersion: coinScoreConfigVersion},
+		{Symbol: "B", ConfigVersion: "copytrade-ai-v12"},
+		{Symbol: "C"},
+	}
+	got := currentVersionOnly(rows)
+	if len(got) != 1 || got[0].Symbol != "A" {
+		t.Fatalf("only the current version must remain: %+v", got)
+	}
+	legacy := []store.CopyTradeScoreOutcome{{Symbol: "B", ConfigVersion: "copytrade-ai-v12"}, {Symbol: "C"}}
+	if got := currentVersionOnly(legacy); len(got) != 2 {
+		t.Fatalf("with no current-version history, keep what exists: %+v", got)
+	}
+}
+
+// A user with no id has no history to read; that is an error, not "every
+// group is thin".
+func TestGroupHistoryReportsAMissingUser(t *testing.T) {
+	s, _ := coinPoolServer(t)
+	if _, err := s.groupHistory(""); err == nil {
+		t.Fatal("a missing user must be reported, not returned as an empty snapshot")
+	}
 }

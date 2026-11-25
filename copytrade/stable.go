@@ -67,6 +67,11 @@ func boolFloat(v bool) float64 {
 	return 0
 }
 
-func StableFresh(at int64, now time.Time) bool {
-	return at > 0 && now.Sub(time.UnixMilli(at)) <= 30*time.Minute
+// StableFresh reports whether a reading taken at `at` is still current under
+// the caller's freshness window. The window used to be a fixed 30 minutes here
+// while scoring ran hourly, so a coin with hundreds of samples read
+// "insufficient samples" (Eligible needs fresh) and had its score halved for
+// half of every hour. Callers now pass the one shared window.
+func StableFresh(at int64, now time.Time, window time.Duration) bool {
+	return at > 0 && window > 0 && now.Sub(time.UnixMilli(at)) <= window
 }
