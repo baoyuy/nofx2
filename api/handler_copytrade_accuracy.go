@@ -87,6 +87,12 @@ func (s *Server) handleCoinAccuracy(c *gin.Context) {
 		if !inScope[o.Symbol] {
 			continue
 		}
+		// A neutral reading made no call. Its stored return is the raw long
+		// return, so counting it here scored every neutral as a long call
+		// (by_side already skipped it, so the two rows disagreed).
+		if o.Bias != "long" && o.Bias != "short" {
+			continue
+		}
 		k := o.Symbol + "|" + o.Bias
 		if last, ok := seen[k]; ok && o.AnalyzedAt-last < 4*3600*1000 {
 			continue

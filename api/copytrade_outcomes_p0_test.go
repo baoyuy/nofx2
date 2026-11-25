@@ -93,10 +93,13 @@ func TestBaselinesShowWhatNeedsNoModel(t *testing.T) {
 }
 
 func TestBaselineMomentumFollowsTheCoinsPreviousMove(t *testing.T) {
+	// A full 4h apart each time, so each previous window has matured: using a
+	// previous reading whose window is still open would read the future.
+	h := int64(4 * 3600 * 1000)
 	rows := []store.CopyTradeScoreOutcome{
-		outcomeWith("A", "long", 0, 0.03),  // raw +3%
-		outcomeWith("A", "long", 1, 0.02),  // momentum goes long: +2%
-		outcomeWith("A", "short", 2, 0.01), // raw -1%; previous raw +2% so momentum long: -1%
+		outcomeWith("A", "long", 0, 0.03),    // raw +3%
+		outcomeWith("A", "long", h, 0.02),    // momentum goes long: +2%
+		outcomeWith("A", "short", 2*h, 0.01), // raw -1%; previous raw +2% so momentum long: -1%
 	}
 	var m baselineStat
 	for _, b := range baselinesFor("4h", rows) {
@@ -213,5 +216,103 @@ func TestScoreFeaturesOmitWhatWasNotMeasured(t *testing.T) {
 	}
 	if f, _ := m["funding"].(float64); math.Abs(f-0.01) > 1e-12 {
 		t.Fatalf("funding is stored in %%: got %v", m["funding"])
+	}
+}
+
+// A neutral reading is not a call: its stored return is the raw long return, so
+// counting it scored every neutral as a long. In a falling market that dragged
+// the AI's measured net down (+0.50% -> +0.07% per 4h on the owner's data).
+func TestAIStatsCountOnlyDirectionalCallsWhileBaselinesKeepEveryCoin(t *testing.T) {
+	s, router := coinPoolServer(t)
+	router.GET("/copytrade/coin-score/outcomes", s.handleCoinScoreOutcomes)
+	now := time.Now().UnixMilli()
+	add := func(sym, bias string, at int64, ret float64) {
+		o := store.CopyTradeScoreOutcome{UserID: "alice", Symbol: sym, Bias: bias, AnalyzedAt: at,
+			Bull: 60, Bear: 20, Ret4h: fp(ret), Done4h: true}
+		if err := s.store.CopyTrade().SaveScoreOutcome(&o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Two real short calls that worked, plus three neutral readings on coins
+	// that fell (stored as negative long returns).
+	add("AUSDT", "short", now-10*3600e3, 0.02)
+	add("BUSDT", "short", now-10*3600e3, 0.02)
+	for i, sym := range []string{"NUSDT", "OUSDT", "PUSDT"} {
+		add(sym, "neutral", now-10*3600e3+int64(i), -0.03)
+	}
+
+	w := call(router, http.MethodGet, "/copytrade/coin-score/outcomes", "alice", "")
+	if w.Code != http.StatusOK {
+		t.Fatal(w.Body.String())
+	}
+	var resp struct {
+		Rows      []outcomeStat             `json:"rows"`
+		Baselines map[string][]baselineStat `json:"baselines"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	all := resp.Rows[0]
+	if all.Horizon != "4h" || all.Side != "all" || all.Band != "all" {
+		t.Fatalf("unexpected first row: %+v", all)
+	}
+	if all.Samples != 2 {
+		t.Fatalf("AI row must count the 2 directional calls only, got %d", all.Samples)
+	}
+	if all.HitRate != 100 {
+		t.Fatalf("both calls were right: hit rate = %v, want 100", all.HitRate)
+	}
+	// The baselines still describe the whole market, neutral coins included:
+	// 5 coins, of which 3 fell 3% and 2 "fell" (winning shorts of 2%).
+	var shortAll baselineStat
+	for _, b := range resp.Baselines["4h"] {
+		if b.Name == "short_all" {
+			shortAll = b
+		}
+	}
+	if shortAll.Samples != 5 {
+		t.Fatalf("baselines must keep every scored coin, got %d", shortAll.Samples)
+	}
+}
+
+// The momentum baseline may only use a previous reading whose own window has
+// finished; its forward return is not knowable before that.
+func TestMomentumBaselineIgnoresAnUnfinishedPreviousWindow(t *testing.T) {
+	base := int64(0)
+	h := int64(4 * 3600 * 1000)
+	mk := func(at int64, ret float64) store.CopyTradeScoreOutcome {
+		return store.CopyTradeScoreOutcome{Symbol: "AUSDT", Bias: "long", AnalyzedAt: at, Ret4h: fp(ret), Done4h: true}
+	}
+	// Second reading only 1h after the first: the first window is still open.
+	overlapping := []store.CopyTradeScoreOutcome{mk(base, 0.05), mk(base+3600e3, 0.04)}
+	var m baselineStat
+	for _, b := range baselinesFor("4h", overlapping) {
+		if b.Name == "momentum" {
+			m = b
+		}
+	}
+	if m.Samples != 0 {
+		t.Fatalf("an unfinished previous window must not be used, got %d samples", m.Samples)
+	}
+	// A full horizon apart: usable.
+	spaced := []store.CopyTradeScoreOutcome{mk(base, 0.05), mk(base+h, 0.04)}
+	for _, b := range baselinesFor("4h", spaced) {
+		if b.Name == "momentum" {
+			m = b
+		}
+	}
+	if m.Samples != 1 {
+		t.Fatalf("a matured previous window must be used, got %d samples", m.Samples)
+	}
+	if m.HitRate != 100 {
+		t.Fatalf("up then up again is a hit: %v", m.HitRate)
+	}
+}
+
+func TestHorizonMillisMatchesTheLabels(t *testing.T) {
+	for label, want := range map[string]int64{"4h": 4 * 3600 * 1000, "24h": 24 * 3600 * 1000, "72h": 72 * 3600 * 1000} {
+		if got := horizonMillis(label); got != want {
+			t.Fatalf("horizonMillis(%q) = %d, want %d", label, got, want)
+		}
 	}
 }

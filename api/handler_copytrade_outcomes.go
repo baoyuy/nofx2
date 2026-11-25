@@ -348,6 +348,17 @@ func statFor(h, side, band string, rows []store.CopyTradeScoreOutcome, bench map
 	return st
 }
 
+// horizonMillis is the length of a statistics horizon label.
+func horizonMillis(h string) int64 {
+	switch h {
+	case "24h":
+		return 24 * 3600 * 1000
+	case "72h":
+		return 72 * 3600 * 1000
+	}
+	return 4 * 3600 * 1000
+}
+
 // baselinesFor measures reference rules over the same de-duplicated readings,
 // so the AI's numbers can be compared with what needed no model:
 //   - short_all / long_all: take every scored coin on one side. In a trending
@@ -363,9 +374,14 @@ func baselinesFor(h string, rows []store.CopyTradeScoreOutcome) []baselineStat {
 		rets []float64
 	}
 	sides := map[string]*acc{"long_all": {}, "short_all": {}, "momentum": {}}
-	// Previous raw long return per coin, for the momentum rule.
-	prevRet := map[string]float64{}
-	seenPrev := map[string]bool{}
+	horizonMs := horizonMillis(h)
+	// Previous reading per coin, for the momentum rule: its raw long return
+	// and when it was taken.
+	type prevReading struct {
+		at  int64
+		ret float64
+	}
+	prev := map[string]prevReading{}
 	for _, o := range rows {
 		raw, ok := rawLong(o, h)
 		if !ok {
@@ -373,15 +389,24 @@ func baselinesFor(h string, rows []store.CopyTradeScoreOutcome) []baselineStat {
 		}
 		sides["long_all"].rets = append(sides["long_all"].rets, raw)
 		sides["short_all"].rets = append(sides["short_all"].rets, -raw)
-		if seenPrev[o.Symbol] {
-			// Continue the coin's own previous direction.
-			if prevRet[o.Symbol] > 0 {
+		// Continue the coin's own previous direction, but only when that
+		// previous window had FINISHED by now. Its forward return is only
+		// knowable once its horizon has elapsed; using it earlier reads the
+		// future. This used to be unchecked: 44% of pairs overlapped, which
+		// inflated the baseline from +0.19% to +0.91% per 4h after cost.
+		if p, seen := prev[o.Symbol]; seen && o.AnalyzedAt-p.at >= horizonMs {
+			if p.ret > 0 {
 				sides["momentum"].rets = append(sides["momentum"].rets, raw)
-			} else if prevRet[o.Symbol] < 0 {
+			} else if p.ret < 0 {
 				sides["momentum"].rets = append(sides["momentum"].rets, -raw)
 			}
 		}
-		prevRet[o.Symbol], seenPrev[o.Symbol] = raw, true
+		// Keep the earliest reading whose window is still open as the
+		// reference until it matures, rather than overwriting it with a
+		// later, still-unknowable one.
+		if p, seen := prev[o.Symbol]; !seen || o.AnalyzedAt-p.at >= horizonMs {
+			prev[o.Symbol] = prevReading{o.AnalyzedAt, raw}
+		}
 	}
 	labels := map[string]string{
 		"long_all":  "全部做多（不用AI）",
@@ -421,6 +446,17 @@ func baselinesFor(h string, rows []store.CopyTradeScoreOutcome) []baselineStat {
 	return out
 }
 
+// directionalOnly keeps the readings that made a long or short call.
+func directionalOnly(rows []store.CopyTradeScoreOutcome) []store.CopyTradeScoreOutcome {
+	out := make([]store.CopyTradeScoreOutcome, 0, len(rows))
+	for _, o := range rows {
+		if o.Bias == "long" || o.Bias == "short" {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
 // outcomeVersion labels a row's scoring version; rows recorded before the
 // version was stored are "legacy".
 func outcomeVersion(o store.CopyTradeScoreOutcome) string {
@@ -449,14 +485,21 @@ func (s *Server) handleCoinScoreOutcomes(c *gin.Context) {
 		}
 	}
 	rows = dedupOutcomes(rows)
+	// The market benchmark and the no-model baselines describe every scored
+	// coin, neutral readings included: that is "the market".
 	bench := buildBench(rows)
+	// The AI's own rows count only the calls it actually made. A neutral
+	// reading is not a call; its stored return is the raw long return, so
+	// counting it in "all" scored every neutral as a long, which in a falling
+	// market dragged the AI's net from +0.50% to +0.07% per 4h.
+	calls := directionalOnly(rows)
 	var out []outcomeStat
 	baselines := map[string][]baselineStat{}
 	for _, h := range []string{"4h", "24h", "72h"} {
-		out = append(out, statFor(h, "all", "all", rows, bench))
+		out = append(out, statFor(h, "all", "all", calls, bench))
 		for _, side := range []string{"long", "short"} {
 			var sub []store.CopyTradeScoreOutcome
-			for _, o := range rows {
+			for _, o := range calls {
 				if o.Bias == side {
 					sub = append(sub, o)
 				}
@@ -465,7 +508,7 @@ func (s *Server) handleCoinScoreOutcomes(c *gin.Context) {
 		}
 		for _, band := range []string{"high", "mid", "low"} {
 			var sub []store.CopyTradeScoreOutcome
-			for _, o := range rows {
+			for _, o := range calls {
 				if bandOf(o.Bull, o.Bear) == band {
 					sub = append(sub, o)
 				}
