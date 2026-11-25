@@ -273,7 +273,17 @@ func (at *AutoTrader) verifyOpeningFill(d *kernel.Decision) error {
 		if !finitePositive(math.Abs(qty)) {
 			return fmt.Errorf("invalid confirmed quantity")
 		}
-		if !at.usesSignalManagedExit() && math.Abs(qty)*entry*risk > d.RiskUSD*1.01 {
+		// The budget is approved as a notional at the quote; the fill is never
+		// the quote. Because the quantity is sized as notional/quote, an adverse
+		// entry of allowance A raises the USD risk by A of the notional, so a
+		// bare 1.01 margin leaves only 1% of the STOP DISTANCE for slippage
+		// (0.02% of price on a 2% stop) — every ordinary fill fails. Add the
+		// same entry allowance sizeOpening already requires the plan to survive
+		// (worstEntryRatio). Observed on SUI short, decision 3078: fill 0.013%
+		// below the quote, $0.29 over a $6.54 budget, opened and immediately
+		// emergency-closed each cycle.
+		limit := d.RiskUSD*1.01 + entrySlipAllowance*math.Abs(qty)*entry
+		if !at.usesSignalManagedExit() && math.Abs(qty)*entry*risk > limit {
 			return fmt.Errorf("actual fill exceeds approved stop-risk budget")
 		}
 		return nil

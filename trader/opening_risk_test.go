@@ -173,3 +173,31 @@ func TestPrepareOpeningUsesPrimaryATRAndPortfolioStops(t *testing.T) {
 		t.Fatal("stale execution quote admitted")
 	}
 }
+
+// Decision 3078 (SUI short): sizeOpening approved $6.54 of stop risk at the
+// quote; the paper venue filled 0.013% below it and the 1.01 margin on the
+// budget rejected the fill as a 4.5% overrun, so the order was opened and
+// emergency-closed in the same second. The fill is inside the entry slippage
+// the plan is required to survive (entrySlipAllowance), so it must be kept.
+func TestVerifyFillKeepsAnOrdinaryAdverseEntry(t *testing.T) {
+	cfg := store.GetDefaultStrategyConfig("en")
+	cfg.RiskControl.MinRiskRewardRatio = 2.8
+	fill := 0.627374
+	qty := 476.00471555543254
+	fake := &emergencyCloseTestTrader{positions: []map[string]interface{}{{
+		"symbol": "SUIUSDT", "side": "short", "entryPrice": fill, "positionAmt": qty,
+	}}}
+	at := &AutoTrader{trader: fake, config: AutoTraderConfig{StrategyConfig: &cfg}, strategyEngine: kernel.NewStrategyEngine(&cfg)}
+	// Approved notional 298.931 at quote 0.628: 298.931 * (0.0128/0.628 + 0.0015).
+	d := kernel.Decision{Symbol: "SUIUSDT", Action: "open_short", StopLoss: 0.6408, TakeProfit: 0.585, RiskUSD: 6.542}
+	if err := at.verifyOpeningFill(&d); err != nil {
+		t.Fatalf("ordinary fill rejected: %v", err)
+	}
+	// The allowance is a bound, not a removal of the check: a fill 2% worse
+	// than the quote must still be refused on risk alone.
+	cfg.RiskControl.MinRiskRewardRatio = 0.1
+	fake.positions[0]["entryPrice"] = 0.615
+	if at.verifyOpeningFill(&d) == nil {
+		t.Fatal("fill outside the entry allowance accepted")
+	}
+}

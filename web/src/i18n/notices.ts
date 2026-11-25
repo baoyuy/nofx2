@@ -150,6 +150,10 @@ const rules: [RegExp, string | ((match: RegExpMatchArray) => string)][] = [
     '平仓请求未发送，请检查账户及持仓后重试。',
   ],
   [
+    /post-fill risk verification|exceeds approved stop-risk budget|violates configured net reward\/risk/i,
+    '开仓后的复核未通过（成交价与信号价偏离过大），仓位已被自动平掉；不是配置或资金问题，等下一轮信号即可。',
+  ],
+  [
     /stop.loss.*(?:fail|not set)|protection.*fail/i,
     '止损保护未确认设置成功，请立即检查交易所的持仓和保护订单。',
   ],

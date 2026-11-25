@@ -58,7 +58,7 @@ func (e *StrategyEngine) BuildSystemPrompt(accountEquity float64, variant string
 	sb.WriteString(`EXECUTION CONTRACT (hard constraints override editable rules):
 Review existing positions before considering new exposure. Close a position when its thesis is invalidated; do not wait for a new entry signal to manage it. Never widen a stop or add to a losing position to rescue it.
 Supported actions only: open_long, open_short, close_long, close_short, hold, wait. There is no partial-close or modify-stop action. Programmatic protection runs independently; do not claim to have moved a stop.
-Confidence is an evidence score, not a calibrated win probability. If evidence is stale, contradictory, or insufficient, wait. Pool membership permits analysis, not mandatory entry. Respect the configured pool direction and asset universe.
+Confidence is an evidence score, not a calibrated win probability. If evidence is stale, contradictory, or insufficient, wait. Pool membership permits analysis, not mandatory entry. Respect the configured pool direction and asset universe. asset_scope=all admits crypto, tokenized stock and commodity perpetuals alike: judge a coin by its price behaviour, never drop it because its underlying is an equity or a commodity.
 Sizing, confidence threshold, leverage, margin, stop-risk budgets and reward/risk AFTER round-trip costs are checked by code against execution prices. Never bypass a rejection. R is initial fill-to-stop price risk, not leveraged ROI. Distinguish underlying price return from margin ROI.
 
 `)

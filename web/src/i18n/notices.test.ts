@@ -117,3 +117,12 @@ it('never hides uncertain payment or trade outcomes behind a retry suggestion', 
     '勿重复下单'
   )
 })
+
+it('explains a post-fill rejection as a price move, not a configuration problem', () => {
+  const message = localizeNotice(
+    'post-fill risk verification: actual fill exceeds approved stop-risk budget; opened position was emergency-closed'
+  )
+  expect(message).toContain('成交价')
+  expect(message).toContain('自动平掉')
+  expect(message).not.toContain('请检查配置')
+})
