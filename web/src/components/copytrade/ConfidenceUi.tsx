@@ -1,5 +1,6 @@
 import { NoticeText } from '../NoticeText'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import useSWR from 'swr'
 import { api } from '../../lib/api'
 import type {
   Confidence,
@@ -204,26 +205,20 @@ export function HitRatePanel({ language }: { language: string }) {
   const [direction, setDirection] = useState<'all' | 'long' | 'short'>('all')
   const [group, setGroup] = useState<HitGroup>('confidence')
   const [measure, setMeasure] = useState<'raw' | 'excess'>('raw')
-  const [rows, setRows] = useState<HitRate[]>([])
-  const [error, setError] = useState('')
-  useEffect(() => {
-    let cancelled = false
-    api
-      .getHitRate(days)
-      .then((r) => {
-        if (!cancelled) {
-          setRows(r.rows || [])
-          setError('')
-        }
-      })
-      .catch(
-        (e) =>
-          !cancelled && setError(e instanceof Error ? e.message : String(e))
-      )
-    return () => {
-      cancelled = true
-    }
-  }, [days])
+  // Fetched through SWR under the same key the coin detail uses, so the 30-day
+  // record is read once per page instead of twice (a useEffect fetch here could
+  // not share the detail panel's cache, despite the comment there).
+  const { data, error: swrError } = useSWR(
+    `copytrade/hit-rate:${days}`,
+    () => api.getHitRate(days),
+    { refreshInterval: 60000, revalidateOnFocus: false }
+  )
+  const rows: HitRate[] = data?.rows || []
+  const error = swrError
+    ? swrError instanceof Error
+      ? swrError.message
+      : String(swrError)
+    : ''
   const find = (band: HitRate['band'], horizon: HitRate['horizon']) =>
     rows.find(
       (x) =>

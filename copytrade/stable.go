@@ -19,6 +19,11 @@ type StableDirection struct {
 	Risk           float64 `json:"risk"`
 	Fresh          bool    `json:"fresh"`
 	Eligible       bool    `json:"eligible"`
+	// Reason says why it is not eligible, so the page does not have to guess:
+	// "no_direction", "stale", "few_ai", "few_trader", or "" when eligible.
+	// The page used to show "样本不足" for every case, including a coin with
+	// hundreds of samples whose reading was merely a few minutes old.
+	Reason string `json:"reason,omitempty"`
 }
 
 // StableScore uses modest shrinkage so a few lucky outcomes cannot dominate.
@@ -43,7 +48,17 @@ func StableScore(aiHits, aiN, traderHits, traderN int, direction string, risk fl
 	}
 	// Each source must independently clear its minimum so one source cannot
 	// hide the absence of the other in a fused ranking.
-	out.Eligible = aiN >= 4 && traderN >= 4 && fresh && (direction == "long" || direction == "short")
+	switch {
+	case direction != "long" && direction != "short":
+		out.Reason = "no_direction"
+	case !fresh:
+		out.Reason = "stale"
+	case aiN < 4:
+		out.Reason = "few_ai"
+	case traderN < 4:
+		out.Reason = "few_trader"
+	}
+	out.Eligible = out.Reason == ""
 	return out
 }
 

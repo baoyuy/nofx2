@@ -2,6 +2,16 @@ import { NoticeText } from '../NoticeText'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { LOCAL_SNAPSHOT_OPTIONS } from '../../lib/liveSnapshot'
+
+// The coin list and coin detail now attach the 4h stable direction, which reads
+// mature history from the database per coin (two queries of up to 500 rows
+// each), plus a volume lookup. That is not a local-snapshot read, so it must not
+// poll at the 4-second snapshot cadence. Holdings still update every 15 s.
+const STABLE_VIEW_OPTIONS = {
+  ...LOCAL_SNAPSHOT_OPTIONS,
+  refreshInterval: 15000,
+  dedupingInterval: 10000,
+}
 import { api } from '../../lib/api'
 import type {
   CoinScoreBrief,
@@ -68,11 +78,36 @@ const traderCount = (s: SymbolSummary) => s.long.traders + s.short.traders
 const consensus = (s: SymbolSummary) =>
   Math.abs(s.long.traders - s.short.traders) / Math.max(1, traderCount(s))
 
+/**
+ * The direction a coin is filtered on. Under the AI and 4h-stable sorts it is
+ * the direction THAT ranking shows; otherwise it is the trader head count.
+ * Using head count everywhere meant "偏空 + AI 分最高" could list coins whose AI
+ * call was long, because the two lists disagreed about what "short" meant.
+ */
+export function directionFor(
+  s: SymbolSummary,
+  sort: CoinSort,
+  aiBias?: (symbol: string) => string | undefined
+): 'long' | 'short' | 'neutral' {
+  if (sort === 'ai' && aiBias) {
+    const d = aiBias(s.symbol)
+    return d === 'long' || d === 'short' ? d : 'neutral'
+  }
+  if (sort === 'stable') {
+    const d = s.stable_direction?.direction
+    return d === 'long' || d === 'short' ? d : 'neutral'
+  }
+  if (s.long.traders > s.short.traders) return 'long'
+  if (s.short.traders > s.long.traders) return 'short'
+  return 'neutral'
+}
+
 export function sortCoins(
   list: SymbolSummary[],
   sort: CoinSort,
   bias: CoinBias,
-  aiScore: (symbol: string) => number = () => 0
+  aiScore: (symbol: string) => number = () => 0,
+  aiBias?: (symbol: string) => string | undefined
 ): SymbolSummary[] {
   const key: Record<CoinSort, (s: SymbolSummary) => number> = {
     rank: (s) => s.rank?.score || 0,
@@ -86,13 +121,7 @@ export function sortCoins(
     consensus,
   }
   return list
-    .filter(
-      (s) =>
-        bias === 'all' ||
-        (bias === 'long'
-          ? s.long.traders > s.short.traders
-          : s.short.traders > s.long.traders)
-    )
+    .filter((s) => bias === 'all' || directionFor(s, sort, aiBias) === bias)
     .sort(
       (a, b) =>
         key[sort](b) - key[sort](a) ||
@@ -148,16 +177,87 @@ function AiTag({ b, language }: { b?: CoinScoreBrief; language: string }) {
   )
 }
 
-function reliabilityGrade(s: SymbolSummary): string {
+/** Chinese/English label for a long/short/neutral direction. */
+function dirLabel(language: string, d?: string): string {
+  if (d === 'long') return tr(language, '偏多', 'long')
+  if (d === 'short') return tr(language, '偏空', 'short')
+  return tr(language, '观望', 'neutral')
+}
+
+/**
+ * Why a stable direction is not eligible. The backend says which; the page
+ * used to print "样本不足" for every case, including a coin with hundreds of
+ * samples whose reading was simply a few minutes old.
+ */
+export function ineligibleText(language: string, reason?: string): string {
+  switch (reason) {
+    case 'stale':
+      return tr(
+        language,
+        '评分已过期，等待下一轮',
+        'reading expired, waiting for the next one'
+      )
+    case 'few_ai':
+      return tr(
+        language,
+        'AI 独立样本不足，仅供观察',
+        'too few AI calls; observe only'
+      )
+    case 'few_trader':
+      return tr(
+        language,
+        '带单独立样本不足，仅供观察',
+        'too few trader calls; observe only'
+      )
+    case 'no_direction':
+      return tr(language, '没有明确方向', 'no clear direction')
+  }
+  return tr(language, '暂不满足条件，仅供观察', 'not eligible; observe only')
+}
+
+/**
+ * Evidence label for the stable direction: how much independent, mature
+ * history backs it, and on which side. It replaces a bare "可靠A/B/C/D" grade
+ * that had no stated basis, mixed long and short calls, counted repeated
+ * readings as new samples, and sat beside the AI's own call even when the two
+ * pointed different ways.
+ *
+ * It describes the size of the record, NOT the chance the next call is right.
+ */
+export function evidenceLabel(
+  s: SymbolSummary,
+  language: string
+): { text: string; tone: string; title: string } | null {
   const sd = s.stable_direction
-  if (!sd) return 'D'
-  const samples = sd.ai_samples || 0
-  const hit = (sd.ai_accuracy || 0) * 100
-  const cons = (sd.accuracy || 0) * 100
-  if (samples >= 30 && hit >= 55 && sd.fresh && cons >= 55) return 'A'
-  if (samples >= 10 && hit >= 50) return 'B'
-  if (samples >= 4) return 'C'
-  return 'D'
+  if (!sd || (sd.direction !== 'long' && sd.direction !== 'short')) return null
+  const n = sd.ai_samples || 0
+  const side =
+    sd.direction === 'long'
+      ? tr(language, '做多', 'long')
+      : tr(language, '做空', 'short')
+  const hit = Math.round((sd.ai_accuracy || 0) * 100)
+  const title = tr(
+    language,
+    `历史证据：该币过去 30 天 AI 在「${side}」方向的独立判断 ${n} 次（每 4 小时同向只计一次），平滑后命中 ${hit}%。这是样本量与历史记录，不是下一次判断的胜率。`,
+    `Evidence: ${n} independent AI ${side} calls on this coin in 30 days (one per 4h run), smoothed hit ${hit}%. A record of past calls, not the odds of the next one.`
+  )
+  if (n >= 20)
+    return {
+      text: tr(language, `证据充足 ${n}`, `n=${n}`),
+      tone: 'text-nofx-text',
+      title,
+    }
+  if (n >= 8)
+    return {
+      text: tr(language, `证据一般 ${n}`, `n=${n}`),
+      tone: 'text-nofx-text-muted',
+      title,
+    }
+  return {
+    text: tr(language, `证据少 ${n}`, `n=${n}`),
+    tone: 'text-nofx-text-muted',
+    title,
+  }
 }
 
 /** AI cell: never shows "AI 0/—" for coins filtered out of AI scope. */
@@ -191,14 +291,16 @@ function CoinScoreCell({
   if (status && status.status === 'failed') {
     return <span className="text-[11px] text-nofx-danger">{tr(language, 'AI 评分失败', 'AI failed')}</span>
   }
-  const grade = reliabilityGrade(s)
-  const gcolor = grade === 'A' ? 'text-nofx-success' : grade === 'B' ? 'text-nofx-text' : 'text-nofx-text-muted'
+  const ev = evidenceLabel(s, language)
+  // Only show the evidence next to the AI call when both point the same way;
+  // otherwise it would read as backing for a call it says nothing about.
+  const sameSide = !!ev && !!b && b.bias === s.stable_direction?.direction
   return (
     <span className="inline-flex items-center gap-1">
       <AiTag b={b} language={language} />
-      {b ? (
-        <span className={`text-[10px] ${gcolor}`} title={tr(language, '可靠度', 'Reliability')}>
-          {tr(language, '可靠', 'Rel')}{grade}
+      {ev && sameSide ? (
+        <span className={`text-[10px] ${ev.tone}`} title={ev.title}>
+          {ev.text}
         </span>
       ) : null}
     </span>
@@ -444,7 +546,7 @@ function CoinDetail({
   const { data: detail } = useSWR(
     ['copytrade/symbol', symbol],
     () => api.getCopyTradeSymbol(symbol),
-    LOCAL_SNAPSHOT_OPTIONS
+    STABLE_VIEW_OPTIONS
   )
   const holders = detail?.holders || []
   const summary = detail?.summary ?? null
@@ -587,7 +689,9 @@ function CoinDetail({
           {summary?.stable_direction ? (
             <span className={`rounded px-2 py-1 text-xs tabular-nums ${summary.stable_direction.direction === 'long' ? 'bg-nofx-success/10 text-nofx-success' : summary.stable_direction.direction === 'short' ? 'bg-nofx-danger/10 text-nofx-danger' : 'bg-nofx-bg-deeper text-nofx-text-muted'}`} title={tr(language, `4h 稳定分 ${summary.stable_direction.score.toFixed(1)} · 校准准确率 ${Math.round(summary.stable_direction.accuracy * 100)}% · AI ${summary.stable_direction.ai_samples} 样本 · 带单 ${summary.stable_direction.trader_samples} 样本 · 风险 ${Math.round(summary.stable_direction.risk * 100)}%`, `4h stable score ${summary.stable_direction.score.toFixed(1)} · calibrated accuracy ${Math.round(summary.stable_direction.accuracy * 100)}% · AI ${summary.stable_direction.ai_samples} samples · traders ${summary.stable_direction.trader_samples} samples · risk ${Math.round(summary.stable_direction.risk * 100)}%`)}>
               4h {summary.stable_direction.direction === 'long' ? tr(language, '偏多', 'Long') : summary.stable_direction.direction === 'short' ? tr(language, '偏空', 'Short') : tr(language, '观望', 'Neutral')} · {summary.stable_direction.score.toFixed(0)}
-              {!summary.stable_direction.eligible ? ` · ${tr(language, '低样本', 'low sample')}` : ''}
+              {!summary.stable_direction.eligible
+                ? ` · ${summary.stable_direction.reason === 'stale' ? tr(language, '过期', 'stale') : tr(language, '低样本', 'low sample')}`
+                : ''}
             </span>
           ) : null}
           {summary ? (
@@ -688,16 +792,57 @@ function CoinDetail({
         ) : null}
         {summary?.stable_direction ? (
           <div className="mb-2 rounded border border-nofx-border bg-nofx-bg-deeper px-3 py-2 text-xs">
-            <div className="font-semibold text-nofx-text">{tr(language, '4 小时稳定方向排名', '4-hour stable direction ranking')}</div>
-            <div className="mt-1 text-nofx-text-muted">{tr(language, `风格带单方向：${summary.style_reading?.direction || 'neutral'} · 有效交易员 ${summary.style_reading?.traders || 0}`, `Style-adjusted trader direction: ${summary.style_reading?.direction || 'neutral'} · effective traders ${summary.style_reading?.traders || 0}`)}</div>
+            <div className="font-semibold text-nofx-text">
+              {tr(
+                language,
+                '4 小时稳定方向排名',
+                '4-hour stable direction ranking'
+              )}
+            </div>
+            <div className="mt-1 text-nofx-text-muted">
+              {tr(
+                language,
+                `风格带单方向：${dirLabel(language, summary.style_reading?.direction)} · 有效交易员 ${summary.style_reading?.traders || 0}`,
+                `Style-adjusted trader direction: ${dirLabel(language, summary.style_reading?.direction)} · effective traders ${summary.style_reading?.traders || 0}`
+              )}
+            </div>
             <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-nofx-text-muted">
-              <span>{tr(language, '方向', 'Direction')}: {summary.stable_direction.direction}</span>
-              <span>{tr(language, '稳定分', 'Stable score')}: {summary.stable_direction.score.toFixed(1)}</span>
-              <span>{tr(language, '校准命中', 'Calibrated hit rate')}: {Math.round(summary.stable_direction.accuracy * 100)}%</span>
-              <span>{tr(language, 'AI 样本', 'AI samples')}: {summary.stable_direction.ai_samples}</span>
-              <span>{tr(language, '带单样本', 'Trader samples')}: {summary.stable_direction.trader_samples}</span>
-              <span>{tr(language, '风险折扣', 'Risk adjustment')}: {Math.round(summary.stable_direction.risk * 100)}%</span>
-              {!summary.stable_direction.eligible ? <span className="text-nofx-gold">{tr(language, '样本不足，仅供观察', 'Insufficient samples; observe only')}</span> : null}
+              <span>
+                {tr(language, '方向', 'Direction')}:{' '}
+                {dirLabel(language, summary.stable_direction.direction)}
+              </span>
+              <span>
+                {tr(language, '稳定分', 'Stable score')}:{' '}
+                {summary.stable_direction.score.toFixed(1)}
+              </span>
+              <span>
+                {tr(language, '校准命中', 'Calibrated hit rate')}:{' '}
+                {Math.round(summary.stable_direction.accuracy * 100)}%
+              </span>
+              <span>
+                {tr(language, 'AI 样本', 'AI samples')}:{' '}
+                {summary.stable_direction.ai_samples}
+              </span>
+              <span>
+                {tr(language, '带单样本', 'Trader samples')}:{' '}
+                {summary.stable_direction.trader_samples}
+              </span>
+              {/* The score is multiplied by (1 - 0.35 x risk): show that discount, not the raw risk share. */}
+              <span
+                title={tr(
+                  language,
+                  `被套或已爆仓的持仓者占 ${Math.round(summary.stable_direction.risk * 100)}%，按其 35% 折算`,
+                  `${Math.round(summary.stable_direction.risk * 100)}% of holders trapped or liquidated, discounted at 35%`
+                )}
+              >
+                {tr(language, '风险折扣', 'Risk discount')}:{' '}
+                {Math.round(summary.stable_direction.risk * 35)}%
+              </span>
+              {!summary.stable_direction.eligible ? (
+                <span className="text-nofx-gold">
+                  {ineligibleText(language, summary.stable_direction.reason)}
+                </span>
+              ) : null}
             </div>
           </div>
         ) : null}
@@ -960,7 +1105,7 @@ export function CoinsTab({
   const { data } = useSWR(
     'copytrade/symbols',
     () => api.getCopyTradeSymbols(),
-    LOCAL_SNAPSHOT_OPTIONS
+    STABLE_VIEW_OPTIONS
   )
   const symbols = data?.symbols || []
   const { data: scoreData } = useSWR(
@@ -1003,17 +1148,28 @@ export function CoinsTab({
   const [sort, setSort] = useState<CoinSort>('stable')
   const [bias, setBias] = useState<CoinBias>('all')
   const needRank = sort === 'stable' || sort === 'ai'
-  const { data: rankData } = useSWR(
+  const { data: rankData, error: rankError } = useSWR(
     needRank ? ['coin-ranking', sort] : null,
     () => api.getCoinRanking(sort === 'ai' ? 'ai' : 'stable'),
     { refreshInterval: 60000 }
   )
+  // While the ranking loads or after it fails, there is no order to apply.
+  // Filtering to an empty ranking used to blank the list and say "no coin
+  // leans this way", which reads as a market fact rather than a loading state.
+  const rankPending = needRank && !rankData && !rankError
+  const rankFailed = needRank && !!rankError
   const shown = useMemo(() => {
-    let list = sortCoins(symbols, sort, bias, aiScore)
+    let list = sortCoins(
+      symbols,
+      sort,
+      bias,
+      aiScore,
+      (sym) => scoreMap.get(sym)?.bias
+    )
     // Both the "4h stable" and "AI" rankings use the SAME backend set (scored +
     // clear direction) and are ORDERED by the backend composite for that mode.
-    if (sort === 'stable' || sort === 'ai') {
-      const items = ((rankData?.items as { symbol: string }[] | undefined) ?? [])
+    if ((sort === 'stable' || sort === 'ai') && rankData) {
+      const items = (rankData.items as { symbol: string }[] | undefined) ?? []
       const order = new Map<string, number>()
       items.forEach((it, i) => order.set(it.symbol, i))
       list = list
@@ -1021,7 +1177,7 @@ export function CoinsTab({
         .sort((a, b) => (order.get(a.symbol) ?? 0) - (order.get(b.symbol) ?? 0))
     }
     return list
-  }, [symbols, sort, bias, aiScore, statusMap, rankData])
+  }, [symbols, sort, bias, aiScore, scoreMap, rankData])
   // Freeze the default detail coin once, so a ranking reshuffle does not swap
   // the chart under the user; an explicit selection still wins.
   const [pinned, setPinned] = useState('')
@@ -1186,7 +1342,15 @@ export function CoinsTab({
             </ul>
           ) : (
             <p className={ui.muted}>
-              {symbols.length
+              {rankPending
+                ? tr(language, '排名加载中…', 'Loading the ranking…')
+                : rankFailed
+                  ? tr(
+                      language,
+                      '排名加载失败，请稍后刷新。',
+                      'Ranking failed to load; refresh in a moment.'
+                    )
+                  : symbols.length
                 ? tr(
                     language,
                     '没有符合这个方向的币。',

@@ -77,11 +77,17 @@ export function CoinPoolPanel({ language }: { language: string }) {
           {coins.map((c) => {
             const short = c.direction === 'short'
             const neutral = c.direction === 'neutral'
-            const cls = neutral
-              ? 'text-nofx-text-muted border-[rgba(25,36,52,0.2)]'
-              : short
-                ? 'text-nofx-danger border-nofx-danger/40'
-                : 'text-nofx-success border-nofx-success/40'
+            // An expired pick is ignored by the engine (store/coin_pool.go),
+            // so it must not render like a live one. It used to clamp to
+            // "· 0m" in full colour, reading as a position being traded.
+            const expired = !!c.expiry_at && c.expiry_at <= now
+            const cls = expired
+              ? 'text-nofx-text-muted border-[rgba(25,36,52,0.2)] line-through opacity-60'
+              : neutral
+                ? 'text-nofx-text-muted border-[rgba(25,36,52,0.2)]'
+                : short
+                  ? 'text-nofx-danger border-nofx-danger/40'
+                  : 'text-nofx-success border-nofx-success/40'
             const expMin = c.expiry_at
               ? Math.max(0, Math.round((c.expiry_at - now) / 60000))
               : null
@@ -89,7 +95,15 @@ export function CoinPoolPanel({ language }: { language: string }) {
               <span
                 key={c.symbol}
                 className={`rounded border px-2 py-1 text-xs tabular-nums ${cls}`}
-                title={c.note || ''}
+                title={
+                  expired
+                    ? tr(
+                        language,
+                        '已过期，策略不会再交易这个选币',
+                        'Expired; the strategy no longer trades this pick'
+                      ) + (c.note ? ` · ${c.note}` : '')
+                    : c.note || ''
+                }
               >
                 {base(c.symbol)}{' '}
                 {neutral
@@ -98,7 +112,11 @@ export function CoinPoolPanel({ language }: { language: string }) {
                     ? tr(language, '空', 'S')
                     : tr(language, '多', 'L')}
                 {c.score != null ? ` ${Math.round(c.score)}` : ''}
-                {expMin != null ? ` · ${tr(language, `${expMin}m`, `${expMin}m`)}` : ''}
+                {expired
+                  ? ` · ${tr(language, '已过期', 'expired')}`
+                  : expMin != null
+                    ? ` · ${tr(language, `${expMin}m`, `${expMin}m`)}`
+                    : ''}
               </span>
             )
           })}

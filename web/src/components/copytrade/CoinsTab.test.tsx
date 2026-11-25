@@ -65,22 +65,26 @@ describe('copy-trade coin snapshot polling', () => {
     expect(mocks.detail).toHaveBeenCalledWith('BTCUSDT')
     expect(mocks.klines).toHaveBeenCalledTimes(1)
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(4100)
+      await vi.advanceTimersByTimeAsync(15100)
     })
+    // The summary and detail refresh on their 15 s cadence. The chart keeps its
+    // own 12 s timer: it ticks once in this window, rather than once per
+    // summary refresh.
     expect(mocks.symbols).toHaveBeenCalledTimes(2)
     expect(mocks.detail).toHaveBeenCalledTimes(2)
-    expect(mocks.klines).toHaveBeenCalledTimes(1)
+    expect(mocks.klines).toHaveBeenCalledTimes(2)
   })
 
   it('does not hold coin details behind a slow summary list', async () => {
     mocks.symbols.mockReturnValue(new Promise(() => {}))
     mount()
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(4100)
+      await vi.advanceTimersByTimeAsync(15100)
     })
     expect(mocks.symbols).toHaveBeenCalledTimes(1)
     expect(mocks.detail).toHaveBeenCalledTimes(2)
-    expect(mocks.klines).toHaveBeenCalledTimes(1)
+    // Its own 12 s chart timer, independent of the stalled summary list.
+    expect(mocks.klines).toHaveBeenCalledTimes(2)
   })
 })
 
@@ -126,7 +130,7 @@ describe('copy-trade holder identity', () => {
       expect(screen.getAllByText('Backfilling')).toHaveLength(3)
       holders = [holder('public-id', 110)]
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(4100)
+        await vi.advanceTimersByTimeAsync(15100)
       })
       expect(
         screen.getAllByRole('link', { name: 'RocketTrader' })

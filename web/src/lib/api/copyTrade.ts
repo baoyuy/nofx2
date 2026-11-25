@@ -381,6 +381,8 @@ export interface CoinScoreSettings {
   top_n: number
   concurrency: number
   min_quote_volume: number
+  /** The floor actually enforced: min_quote_volume, or the default when it is 0. */
+  effective_min_quote_volume?: number
   pool_refresh_minutes: number
   pool_ttl_minutes: number
   interval_minutes: number
@@ -649,6 +651,8 @@ export interface SymbolSummary {
     risk: number
     fresh: boolean
     eligible: boolean
+    /** Why it is not eligible: no_direction | stale | few_ai | few_trader. */
+    reason?: 'no_direction' | 'stale' | 'few_ai' | 'few_trader'
   }
 }
 

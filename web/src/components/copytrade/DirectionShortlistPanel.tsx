@@ -1,7 +1,7 @@
 import useSWR from 'swr'
 import { api } from '../../lib/api'
 import { tr, ui } from '../market/marketUi'
-import { ago, base } from './format'
+import { ago, base, price } from './format'
 
 export function DirectionShortlistPanel({ language, onSelect }: {
   language: string; onSelect: (symbol: string) => void
@@ -23,7 +23,7 @@ export function DirectionShortlistPanel({ language, onSelect }: {
         {data[side].length ? <ol className="space-y-2 mt-2">{data[side].map(p => <li key={p.symbol}>
           <button type="button" className="text-nofx-text font-semibold hover:underline" onClick={() => onSelect(p.symbol)}>{base(p.symbol)}</button>
           <p className={`${ui.muted} text-xs`}>{tr(language, 'AI / 带单历史命中', 'AI / trader historical hit')}: {(p.ai_history.hit_rate * 100).toFixed(1)}% / {(p.trader_history.hit_rate * 100).toFixed(1)}% · {tr(language, '样本', 'samples')} {p.ai_history.samples}/{p.trader_history.samples}</p>
-          <p className={`${ui.muted} text-xs`}>{tr(language, '近期独立信号', 'Recent independent calls')}: {p.calls} · {tr(language, '方向失效参考价', 'Invalidation reference')}: {p.invalidation_price}</p>
+          <p className={`${ui.muted} text-xs`}>{tr(language, '近期独立信号', 'Recent independent calls')}: {p.calls} · {tr(language, '方向失效参考价', 'Invalidation reference')}: {price(p.invalidation_price)}</p>
         </li>)}</ol> : <p className={`${ui.muted} text-sm mt-2`}>{tr(language, '目前没有证据足够的币，保持观望。', 'No coin has sufficient evidence; stand aside.')}</p>}
       </div>)}</div>
       <details className="mt-2 text-xs"><summary className={`cursor-pointer ${ui.muted}`}>{tr(language, '查看未入选原因', 'Exclusion breakdown')}</summary>

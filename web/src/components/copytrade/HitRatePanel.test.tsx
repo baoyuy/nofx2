@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { SWRConfig } from 'swr'
 import type { HitRate } from '../../lib/api/copyTrade'
 import { HitRatePanel } from './ConfidenceUi'
 
@@ -20,7 +21,13 @@ const row = (changes: Partial<HitRate>): HitRate => ({
 
 async function mount(rows: HitRate[]) {
   mocks.hitRate.mockResolvedValue({ days: 30, rows })
-  render(<HitRatePanel language="zh" />)
+  // A fresh SWR cache per test: the panel now shares its fetch with the coin
+  // detail through SWR, so without this one test reuses the previous data.
+  render(
+    <SWRConfig value={{ provider: () => new Map() }}>
+      <HitRatePanel language="zh" />
+    </SWRConfig>
+  )
   await act(async () => {})
 }
 

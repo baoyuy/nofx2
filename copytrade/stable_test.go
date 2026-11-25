@@ -31,3 +31,26 @@ func TestStableScoreShrinksSmallSamplesAndRequiresMaturity(t *testing.T) {
 		t.Fatalf("invalid counts should be clamped: %+v", invalid)
 	}
 }
+
+// The reason must distinguish a stale reading from thin history: the page used
+// to say "insufficient samples" for both.
+func TestStableScoreReportsWhyItIsNotEligible(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		aiN, trN int
+		dir      string
+		fresh    bool
+		want     string
+	}{
+		{"eligible", 10, 10, "long", true, ""},
+		{"stale with plenty of history", 200, 150, "long", false, "stale"},
+		{"few AI samples", 2, 10, "short", true, "few_ai"},
+		{"few trader samples", 10, 2, "short", true, "few_trader"},
+		{"no direction", 10, 10, "neutral", true, "no_direction"},
+	} {
+		got := StableScore(tc.aiN/2, tc.aiN, tc.trN/2, tc.trN, tc.dir, 0, tc.fresh)
+		if got.Reason != tc.want || got.Eligible != (tc.want == "") {
+			t.Errorf("%s: reason=%q eligible=%v, want %q", tc.name, got.Reason, got.Eligible, tc.want)
+		}
+	}
+}

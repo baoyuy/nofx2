@@ -219,8 +219,19 @@ export function CoinScoreSettings({ language }: { language: string }) {
               setDirty(true)
             }}
             className={`${ui.inputInline} w-28`}
-            title={tr(language, '24h 成交额低于此值的币不做 AI 分析（防插针），0=不过滤', 'Coins with 24h quote volume below this are skipped by AI scoring (avoid wicks); 0 = no filter')}
+            title={tr(
+              language,
+              '24h 成交额低于此值的币不做 AI 分析（防插针）。0 表示使用默认门槛 1 亿 USDT，所有页面一致。',
+              'Coins with 24h quote volume below this are skipped by AI scoring (avoid wicks). 0 uses the default floor of 100M USDT, the same on every page.'
+            )}
           />
+          {data.effective_min_quote_volume ? (
+            <span className="text-[11px] tabular-nums">
+              {tr(language, '生效', 'in effect')}{' '}
+              {(data.effective_min_quote_volume / 1e8).toFixed(2)}
+              {tr(language, ' 亿', '×100M')}
+            </span>
+          ) : null}
         </label>
         <label className={`${ui.muted} flex items-center gap-1`}>
           {tr(language, '币池刷新(分钟)', 'Pool refresh (min)')}
